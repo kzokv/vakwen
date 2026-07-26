@@ -8490,10 +8490,35 @@ export class MemoryPersistence implements Persistence {
       },
     });
 
+    const capabilities = deriveCapabilitiesDto(store.accounts);
+    if (changedFields.includes("defaultCurrency")) {
+      const prefsBefore = await this.getUserPreferences(input.userId);
+      const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
+      const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+      const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
+        ? null
+        : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
+          ? reportingCurrencyBefore
+          : capabilities.configuredCurrencies[0]!;
+      if (reportingCurrencyBefore !== reportingCurrencyAfter) {
+        const nextPrefs = { ...prefsBefore };
+        if (reportingCurrencyAfter === null) {
+          delete nextPrefs.reportingCurrency;
+        } else {
+          nextPrefs.reportingCurrency = reportingCurrencyAfter;
+        }
+        if (Object.keys(nextPrefs).length === 0) {
+          this.userPreferences.delete(input.userId);
+        } else {
+          this.userPreferences.set(input.userId, nextPrefs);
+        }
+      }
+    }
+
     return {
       account,
       feeProfile: toFeeProfileDto(feeProfile),
-      capabilities: deriveCapabilitiesDto(store.accounts),
+      capabilities,
       changedFields,
     };
   }

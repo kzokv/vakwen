@@ -211,4 +211,21 @@ describe("MemoryPersistence account mutations", () => {
       reportingCurrency: "USD",
     });
   });
+
+  it("persists reporting fallback when the sole account changes from implicit TWD to USD", async () => {
+    const updated = await persistence.updateAccount({
+      userId,
+      accountId: "acc-1",
+      defaultCurrency: "USD",
+      auditInput,
+    });
+
+    expect(updated.capabilities).toEqual({
+      configuredMarkets: ["US"],
+      configuredCurrencies: ["USD"],
+    });
+    await expect(persistence.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
+  });
 });

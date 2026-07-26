@@ -401,12 +401,17 @@ export function AccountsListSection({
     }
   }
 
-  async function saveAccountTypeChange(accountId: string, accountType: AccountType) {
+  async function saveAccountTypeChange(
+    accountId: string,
+    accountType: AccountType,
+    previousAccountType: AccountType,
+  ) {
     setSavingAccountTypeIds((current) => new Set(current).add(accountId));
     setAccountErrorById((current) => ({ ...current, [accountId]: "" }));
     try {
       await onSaveAccountType(accountId, accountType);
     } catch {
+      onUpdateAccountType(accountId, previousAccountType);
       setAccountErrorById((current) => ({
         ...current,
         [accountId]: dict.settings.accountsListAccountUpdateError,
@@ -840,7 +845,7 @@ export function AccountsListSection({
                       onChange={(event) => {
                         const nextType = event.target.value as AccountType;
                         onUpdateAccountType(account.id, nextType);
-                        void saveAccountTypeChange(account.id, nextType);
+                        void saveAccountTypeChange(account.id, nextType, accountTypeValue);
                       }}
                       className={fieldClassName}
                       data-testid={`settings-account-type-${account.id}`}

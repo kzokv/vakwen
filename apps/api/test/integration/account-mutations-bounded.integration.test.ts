@@ -242,6 +242,27 @@ describePostgres("bounded account mutations (postgres integration)", () => {
     });
   });
 
+  it("updateAccount persists reporting fallback when the sole account changes from implicit TWD to USD", async () => {
+    const updated = await persistence!.updateAccount({
+      userId,
+      accountId: seededAccountId,
+      defaultCurrency: "USD",
+      auditInput: {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "PATCH /accounts/:id" },
+      },
+    });
+
+    expect(updated.capabilities).toEqual({
+      configuredMarkets: ["US"],
+      configuredCurrencies: ["USD"],
+    });
+    await expect(persistence!.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
+  });
+
   it("softDeleteAccount atomically falls the owner reporting currency to the first remaining configured currency", async () => {
     await persistence!._setUserPreferences(userId, { reportingCurrency: "TWD" });
     await persistence!.createAccount({

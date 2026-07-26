@@ -97,6 +97,7 @@ superseded_by: null
 - The lazy-capability loading skeleton was revalidated with the desktop dashboard fit and quick-actions Chromium regression: 1 passed.
 - Final review regressions cover first-call memory-store initialization without crossing the full-store boundary, concurrent final-account deletion with owner-serialized reporting fallback, out-of-order shell refreshes, constrained global transaction markets, safe post-create return navigation, best-effort post-commit account event fanout, serialized account-type selection, and lazy capability loading before currency actions.
 - Current-head review follow-up preserves the dividend-settings audit when a history-free account changes market and normalizes an unset (implicitly TWD) reporting preference when deletion or active purge leaves only non-TWD currencies. Focused memory tests passed 6/6; targeted lint and API typecheck passed; the managed PostgreSQL suite passed 1,148 tests with 1 skipped across 107 files.
+- Account currency updates apply the same reporting-preference normalization as lifecycle removal, and failed optimistic account-type saves restore the authoritative selector value. Focused validation passed: memory account mutations 7/7, managed PostgreSQL account mutations 11/11, account settings UI 10/10, targeted lint, and both app typechecks.
 - Durable implementation rules were promoted to `.claude/rules/account-capability-authority.md` and `.claude/rules/bounded-account-mutations.md`.
 
 ## Out of Scope

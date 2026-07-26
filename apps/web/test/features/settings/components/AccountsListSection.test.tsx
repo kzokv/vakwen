@@ -505,7 +505,7 @@ describe("AccountsListSection", () => {
     expect(select.disabled).toBe(false);
   });
 
-  it("preserves local account controls and shows an inline error when account updates fail", async () => {
+  it("restores the authoritative account type and shows an inline error when saving fails", async () => {
     onSaveAccountType.mockRejectedValueOnce(new Error("boom"));
 
     render();
@@ -516,6 +516,8 @@ describe("AccountsListSection", () => {
     expect(container.querySelector('[data-testid="accounts-card-acc-1-account-error"]')?.textContent)
       .toBe(dict.settings.accountsListAccountUpdateError);
     expect((container.querySelector('[data-testid="settings-account-type-acc-1"]') as HTMLSelectElement).value)
-      .toBe("wallet");
+      .toBe("broker");
+    expect(onUpdateAccountType).toHaveBeenNthCalledWith(1, "acc-1", "wallet");
+    expect(onUpdateAccountType).toHaveBeenNthCalledWith(2, "acc-1", "broker");
   });
 });

@@ -20229,6 +20229,23 @@ export class PostgresPersistence implements Persistence {
         },
       });
       const capabilities = await loadPortfolioCapabilitiesTx(client, input.userId);
+      if (changedFields.includes("defaultCurrency")) {
+        const prefsBefore = await loadUserPreferencesTx(client, input.userId);
+        const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
+        const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+        const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
+          ? null
+          : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
+            ? reportingCurrencyBefore
+            : capabilities.configuredCurrencies[0]!;
+        if (reportingCurrencyBefore !== reportingCurrencyAfter) {
+          await setStoredReportingCurrencyPreferenceTx(
+            client,
+            input.userId,
+            reportingCurrencyAfter,
+          );
+        }
+      }
       await client.query("COMMIT");
       return {
         account: {
