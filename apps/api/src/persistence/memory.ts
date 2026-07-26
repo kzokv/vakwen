@@ -8394,11 +8394,13 @@ export class MemoryPersistence implements Persistence {
     input: import("./types.js").UpdateAccountInput,
   ): Promise<import("./types.js").AccountMutationPersistenceResult> {
     const store = this.getOrCreateStore(input.userId);
-    const account = store.accounts.find((item) => item.id === input.accountId);
+    const accountIndex = store.accounts.findIndex((item) => item.id === input.accountId);
+    const account = store.accounts[accountIndex];
     if (!account) {
       throw routeError(404, "account_not_found", `Account ${input.accountId} was not found.`);
     }
 
+    const nextAccount = { ...account };
     const changedFields: string[] = [];
 
     if (input.feeProfileId !== undefined) {
@@ -8413,7 +8415,7 @@ export class MemoryPersistence implements Persistence {
           `Fee profile ${input.feeProfileId} is not owned by account ${account.id}.`,
         );
       }
-      account.feeProfileId = input.feeProfileId;
+      nextAccount.feeProfileId = input.feeProfileId;
       changedFields.push("feeProfileId");
     }
 
@@ -8422,7 +8424,7 @@ export class MemoryPersistence implements Persistence {
       if (store.accounts.some((item) => item.id !== account.id && item.name === name)) {
         throw routeError(409, "account_name_in_use", "An account with that name already exists.");
       }
-      account.name = name;
+      nextAccount.name = name;
       changedFields.push("name");
     }
 
@@ -8436,8 +8438,25 @@ export class MemoryPersistence implements Persistence {
           "Cannot change default currency: account has existing cash entries or trade events. Open a new account or contact support.",
         );
       }
+      nextAccount.defaultCurrency = input.defaultCurrency;
+      changedFields.push("defaultCurrency");
+    }
+
+    if (input.accountType !== undefined) {
+      nextAccount.accountType = input.accountType;
+      changedFields.push("accountType");
+    }
+
+    const feeProfile = store.feeProfiles.find((item) => item.id === nextAccount.feeProfileId);
+    if (!feeProfile) {
+      throw routeError(404, "fee_profile_not_found", `Fee profile ${nextAccount.feeProfileId} was not found.`);
+    }
+
+    store.accounts[accountIndex] = nextAccount;
+
+    if (changedFields.includes("defaultCurrency")) {
       const previousMarketCode = marketCodeFor(account.defaultCurrency);
-      const nextMarketCode = marketCodeFor(input.defaultCurrency);
+      const nextMarketCode = marketCodeFor(nextAccount.defaultCurrency);
       if (previousMarketCode !== nextMarketCode) {
         const key = `${account.id}:${previousMarketCode}`;
         const previousSettings = this.accountMarketDividendSettings.get(key);
@@ -8461,18 +8480,6 @@ export class MemoryPersistence implements Persistence {
           });
         }
       }
-      account.defaultCurrency = input.defaultCurrency;
-      changedFields.push("defaultCurrency");
-    }
-
-    if (input.accountType !== undefined) {
-      account.accountType = input.accountType;
-      changedFields.push("accountType");
-    }
-
-    const feeProfile = store.feeProfiles.find((item) => item.id === account.feeProfileId);
-    if (!feeProfile) {
-      throw routeError(404, "fee_profile_not_found", `Fee profile ${account.feeProfileId} was not found.`);
     }
 
     await this.appendAuditLog({
@@ -8481,11 +8488,11 @@ export class MemoryPersistence implements Persistence {
       targetUserId: input.userId,
       metadata: {
         ...input.auditInput.metadata,
-        accountId: account.id,
-        accountName: account.name,
-        accountType: account.accountType,
-        defaultCurrency: account.defaultCurrency,
-        feeProfileId: account.feeProfileId,
+        accountId: nextAccount.id,
+        accountName: nextAccount.name,
+        accountType: nextAccount.accountType,
+        defaultCurrency: nextAccount.defaultCurrency,
+        feeProfileId: nextAccount.feeProfileId,
         changedFields,
       },
     });
@@ -8516,7 +8523,7 @@ export class MemoryPersistence implements Persistence {
     }
 
     return {
-      account,
+      account: nextAccount,
       feeProfile: toFeeProfileDto(feeProfile),
       capabilities,
       changedFields,

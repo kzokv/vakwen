@@ -9,6 +9,10 @@ import type {
   EnrichedCashLedgerEntry,
 } from "../../../features/cash-ledger/types";
 
+const { mockUseEventStream } = vi.hoisted(() => ({
+  mockUseEventStream: vi.fn(),
+}));
+
 vi.mock("../../../features/cash-ledger/services/cashLedgerService", () => ({
   fetchCashLedgerEntries: vi.fn(),
   fetchAccounts: vi.fn().mockResolvedValue([]),
@@ -21,7 +25,7 @@ vi.mock("../../../features/cash-ledger/services/cashLedgerService", () => ({
 }));
 
 vi.mock("../../../hooks/useEventStream", () => ({
-  useEventStream: () => undefined,
+  useEventStream: mockUseEventStream,
 }));
 
 vi.mock("next/navigation", () => ({
@@ -103,6 +107,7 @@ describe("CashLedgerClient pagination", () => {
     mockFetch.mockReset();
     mockFetchAccounts.mockReset();
     mockFetchAccounts.mockResolvedValue([]);
+    mockUseEventStream.mockReset();
   });
 
   afterEach(() => {
@@ -157,6 +162,30 @@ describe("CashLedgerClient pagination", () => {
 
     expect(container.querySelector('[data-testid="fx-transfer-enablement"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="new-fx-transfer-button"]')).toBeNull();
+  });
+
+  it("refreshes account metadata when an account lifecycle event arrives", async () => {
+    await renderCashLedgerClient(root, { initialData: buildResponse(0, 0) });
+    expect(mockFetchAccounts).toHaveBeenCalledTimes(1);
+
+    const streamOptions = mockUseEventStream.mock.calls[0]?.[0] as {
+      eventTypes: string[];
+      onEvent: () => void;
+    };
+    expect(streamOptions.eventTypes).toEqual(expect.arrayContaining([
+      "account_created",
+      "account_updated",
+      "account_soft_deleted",
+      "account_restored",
+      "account_hard_purged",
+    ]));
+
+    await act(async () => {
+      streamOptions.onEvent();
+      await Promise.resolve();
+    });
+
+    expect(mockFetchAccounts).toHaveBeenCalledTimes(2);
   });
 
   it("disables prev button on page 1", async () => {

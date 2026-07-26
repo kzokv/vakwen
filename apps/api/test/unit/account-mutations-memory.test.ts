@@ -133,9 +133,20 @@ describe("MemoryPersistence account mutations", () => {
     await expect(persistence.updateAccount({
       userId,
       accountId: created.account.id,
+      name: "Should Roll Back",
       defaultCurrency: "TWD",
       auditInput,
     })).rejects.toMatchObject({ statusCode: 409, code: "currency_change_blocked" });
+
+    await expect(persistence.listActiveAccounts(userId)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: created.account.id,
+          name: "Guard Target",
+          defaultCurrency: "USD",
+        }),
+      ]),
+    );
   });
 
   it("clears the previous market dividend fallback when a history-free account changes currency", async () => {

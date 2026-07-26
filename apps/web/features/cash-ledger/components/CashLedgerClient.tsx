@@ -262,9 +262,8 @@ export function CashLedgerClient({
     void fetchData({ pg: 1 });
   }, [fetchData]);
 
-  // SSE: pre-connect pattern (always enabled). KZO-168: also listen for
-  // `currency_wallet_recomputed` so FX-transfer mutations refresh the ledger
-  // and account balances.
+  // SSE: pre-connect pattern (always enabled). Refresh account metadata for
+  // account lifecycle mutations so FX controls never use a stale account list.
   useEventStream({
     enabled: true,
     eventTypes: [
@@ -272,6 +271,11 @@ export function CashLedgerClient({
       "dividend_posted",
       "dividend_updated",
       "currency_wallet_recomputed",
+      "account_created",
+      "account_updated",
+      "account_soft_deleted",
+      "account_restored",
+      "account_hard_purged",
     ],
     onEvent: () => {
       void fetchData();
