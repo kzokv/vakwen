@@ -109,7 +109,15 @@ describe("DividendsPage", () => {
     cookiesMock.mockResolvedValue({ get: () => undefined } as never);
     getJsonMock.mockImplementation((async (path: string) => {
       if (path === "/settings") return { locale: "en" };
-      if (path === "/settings/fee-config") return { accounts: [{ id: "acc-1", name: "Main" }] };
+      if (path === "/settings/fee-config") {
+        return {
+          accounts: [{ id: "acc-1", name: "Main" }],
+          capabilities: {
+            configuredMarkets: ["TW"],
+            configuredCurrencies: ["TWD"],
+          },
+        };
+      }
       if (path === "/profile") return {};
       return {};
     }) as never);
@@ -147,7 +155,7 @@ describe("DividendsPage", () => {
     });
     expect(fetchDividendLedgerReviewMock).not.toHaveBeenCalled();
     expect(fetchDividendLedgerYearsMock).not.toHaveBeenCalled();
-    expect(getJsonMock).not.toHaveBeenCalledWith("/settings/fee-config");
+    expect(getJsonMock).toHaveBeenCalledWith("/settings/fee-config");
     expect(result).toBeTruthy();
   });
 
@@ -190,7 +198,7 @@ describe("DividendsPage", () => {
     expect(fetchDividendLedgerReviewMock).not.toHaveBeenCalled();
     expect(fetchDividendLedgerYearsMock).not.toHaveBeenCalled();
     expect(fetchDividendCalendarSnapshotMock).not.toHaveBeenCalled();
-    expect(getJsonMock).not.toHaveBeenCalledWith("/settings/fee-config");
+    expect(getJsonMock).toHaveBeenCalledWith("/settings/fee-config");
     expect(html).toContain('data-accounts-count="1"');
     expect(html).toContain('data-has-review-data="true"');
     expect(result).toBeTruthy();
