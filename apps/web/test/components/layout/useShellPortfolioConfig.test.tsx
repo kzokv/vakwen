@@ -160,6 +160,7 @@ describe("useShellPortfolioConfig", () => {
 
     expect(fetchShellPortfolioConfig).not.toHaveBeenCalled();
     expect(result.accounts).toEqual([]);
+    expect(result.capabilities).toBeUndefined();
     expect(result.isLoading).toBe(false);
 
     await act(async () => {

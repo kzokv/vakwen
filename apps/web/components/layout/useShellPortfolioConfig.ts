@@ -40,10 +40,6 @@ const EMPTY_CONFIG: ShellPortfolioConfigDto = {
   feeProfiles: [],
   feeProfileBindings: [],
   integrityIssue: null,
-  capabilities: {
-    configuredMarkets: [],
-    configuredCurrencies: [],
-  },
 };
 
 export function useShellPortfolioConfig({
