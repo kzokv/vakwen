@@ -1,7 +1,10 @@
 import { getJson } from "../../../lib/api";
-import type {
-  PortfolioCapabilitiesDto,
-  ShellPortfolioConfigDto as SharedShellPortfolioConfigDto,
+import {
+  ACCOUNT_DEFAULT_CURRENCIES,
+  marketCodeFor,
+  type AccountDto,
+  type PortfolioCapabilitiesDto,
+  type ShellPortfolioConfigDto as SharedShellPortfolioConfigDto,
 } from "@vakwen/shared-types";
 
 export interface ShellPortfolioConfigDto extends SharedShellPortfolioConfigDto {
@@ -15,9 +18,17 @@ export async function fetchShellPortfolioConfig(): Promise<ShellPortfolioConfigD
 
   return {
     ...response,
-    capabilities: response.capabilities ?? {
-      configuredMarkets: [],
-      configuredCurrencies: [],
-    },
+    capabilities: response.capabilities ?? deriveCapabilitiesFromAccounts(response.accounts),
+  };
+}
+
+function deriveCapabilitiesFromAccounts(
+  accounts: readonly AccountDto[],
+): PortfolioCapabilitiesDto {
+  const configuredCurrencies = ACCOUNT_DEFAULT_CURRENCIES.filter((currency) =>
+    accounts.some((account) => account.defaultCurrency === currency));
+  return {
+    configuredMarkets: configuredCurrencies.map(marketCodeFor),
+    configuredCurrencies: [...configuredCurrencies],
   };
 }

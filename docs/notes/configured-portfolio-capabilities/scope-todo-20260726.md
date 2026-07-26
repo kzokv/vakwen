@@ -103,6 +103,7 @@ superseded_by: null
 - Memory account updates validate a projected account before committing any field changes, matching PostgreSQL rollback behavior for invalid multi-field updates. Cash Ledger subscribes to account mutation/lifecycle events and refreshes account metadata alongside ledger data so FX controls cannot expose stale accounts.
 - PostgreSQL records when the one-time default portfolio bootstrap has completed. Subsequent reads therefore preserve an intentionally empty portfolio after the final account is permanently purged instead of recreating the deterministic Main account. The bounded account mutation suite passed 13/13 against the full numbered migration chain, and the fresh-baseline versus upgrade-path schema parity check passed.
 - Server-seeded daily-review reports omit `range` when the route does, preserving the configured API default; explicit report ranges remain authoritative.
+- Migration 114 normalizes existing reporting-currency preferences against active-account capabilities, and mixed-version shell responses derive missing optional capabilities from their returned active accounts instead of assuming an empty portfolio. Focused validation passed: migration backfill plus schema parity 2/2 and shell service/hook 9/9.
 - Durable implementation rules were promoted to `.claude/rules/account-capability-authority.md` and `.claude/rules/bounded-account-mutations.md`.
 
 ## Out of Scope

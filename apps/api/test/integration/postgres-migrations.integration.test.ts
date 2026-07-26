@@ -851,6 +851,56 @@ describePostgres("postgres migrations", () => {
     expect(baselineSignature).toEqual(upgradedSignature);
   }, 15_000);
 
+  it("migration 114 normalizes stale reporting currencies and marks existing portfolios initialized", async () => {
+    await resetDatabase();
+    await applyMigrationFiles(await getNumberedMigrationsBefore("114_user_portfolio_initialization_marker.sql"));
+    await pool.query(
+      `INSERT INTO users (id, email)
+       VALUES
+         ('migration-114-us', 'migration-114-us@example.com'),
+         ('migration-114-empty', 'migration-114-empty@example.com')`,
+    );
+    await seedAccountWithFeeProfilePost042({
+      userId: "migration-114-us",
+      accountId: "migration-114-us-account",
+      accountName: "USD Only",
+      feeProfileId: "migration-114-us-profile",
+      defaultCurrency: "USD",
+    });
+    await pool.query(
+      `INSERT INTO user_preferences (user_id, preferences)
+       VALUES
+         ('migration-114-us', '{"reportingCurrency":"TWD","locale":"en"}'::jsonb),
+         ('migration-114-empty', '{"reportingCurrency":"AUD","locale":"en"}'::jsonb)`,
+    );
+
+    await applyMigrationFiles(["114_user_portfolio_initialization_marker.sql"]);
+
+    const result = await pool.query<{
+      id: string;
+      portfolio_initialized: boolean;
+      preferences: Record<string, unknown>;
+    }>(
+      `SELECT u.id, u.portfolio_initialized, up.preferences
+         FROM users u
+         JOIN user_preferences up ON up.user_id = u.id
+        WHERE u.id IN ('migration-114-us', 'migration-114-empty')
+        ORDER BY u.id`,
+    );
+    expect(result.rows).toEqual([
+      {
+        id: "migration-114-empty",
+        portfolio_initialized: true,
+        preferences: { locale: "en" },
+      },
+      {
+        id: "migration-114-us",
+        portfolio_initialized: true,
+        preferences: { locale: "en", reportingCurrency: "USD" },
+      },
+    ]);
+  });
+
   it("converts legacy full-year market calendar rows into exception-only records", async () => {
     await resetDatabase();
     await applyMigrationFiles(await getNumberedMigrationsBefore("082_market_calendar_activity_schema_reconcile.sql"));
