@@ -117,6 +117,34 @@ describePostgres("bounded account mutations (postgres integration)", () => {
     expect(audit.rows[0]?.metadata.accountId).toBe(result.account.id);
   });
 
+  it("createAccount atomically initializes reporting currency for the first active account", async () => {
+    await persistence!.softDeleteAccount(seededAccountId, userId, {
+      actorUserId: userId,
+      ipAddress: "127.0.0.1",
+      metadata: { routeKey: "DELETE /accounts/:id" },
+    });
+
+    const result = await persistence!.createAccount({
+      userId,
+      name: "First Active USD",
+      defaultCurrency: "USD",
+      accountType: "wallet",
+      auditInput: {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "POST /accounts" },
+      },
+    });
+
+    expect(result.capabilities).toEqual({
+      configuredMarkets: ["US"],
+      configuredCurrencies: ["USD"],
+    });
+    await expect(persistence!.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
+  });
+
   it("updateAccount avoids full-store persistence and preserves ownership guards", async () => {
     const created = await persistence!.createAccount({
       userId,
@@ -236,6 +264,13 @@ describePostgres("bounded account mutations (postgres integration)", () => {
       effective: "TWD",
       reason: null,
     });
+    expect(restored.feeProfiles).toEqual([
+      expect.objectContaining({
+        id: restored.account.feeProfileId,
+        accountId: seededAccountId,
+      }),
+    ]);
+    expect(restored.feeProfileBindings).toEqual([]);
     await expect(persistence!.getUserPreferences(userId)).resolves.toEqual({ locale: "en" });
   });
 

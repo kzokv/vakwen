@@ -1020,6 +1020,8 @@ export interface AccountLifecycleMutationResponseDto {
   finalName: string | null;
   capabilities: PortfolioCapabilitiesDto;
   reportingCurrency: PortfolioSelectionNormalizationResult<AccountDefaultCurrency>;
+  feeProfiles?: FeeProfileDto[];
+  feeProfileBindings?: FeeProfileBindingDto[];
 }
 
 // KZO-183: closed-set market code derived from an account's defaultCurrency.

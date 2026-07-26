@@ -2825,6 +2825,8 @@ export interface AccountLifecyclePersistenceResult {
   reportingCurrency: import("@vakwen/shared-types").PortfolioSelectionNormalizationResult<
     import("@vakwen/shared-types").AccountDefaultCurrency
   >;
+  feeProfiles?: import("@vakwen/shared-types").FeeProfileDto[];
+  feeProfileBindings?: import("@vakwen/shared-types").FeeProfileBindingDto[];
 }
 
 export interface Persistence {

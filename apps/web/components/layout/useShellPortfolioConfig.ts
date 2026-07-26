@@ -107,7 +107,29 @@ export function useShellPortfolioConfig({
         ? upsertById(current.accounts, response.account)
         : current.accounts.filter((account) => account.id !== response.accountId);
       if (operation !== "hard_purge") {
-        return { ...current, accounts, capabilities: response.capabilities };
+        const restoredFeeProfiles = operation === "restore" && response.feeProfiles
+          ? [
+              ...current.feeProfiles.filter(
+                (profile) => profile.accountId !== response.accountId,
+              ),
+              ...response.feeProfiles,
+            ]
+          : current.feeProfiles;
+        const restoredFeeProfileBindings = operation === "restore" && response.feeProfileBindings
+          ? [
+              ...current.feeProfileBindings.filter(
+                (binding) => binding.accountId !== response.accountId,
+              ),
+              ...response.feeProfileBindings,
+            ]
+          : current.feeProfileBindings;
+        return {
+          ...current,
+          accounts,
+          capabilities: response.capabilities,
+          feeProfiles: restoredFeeProfiles,
+          feeProfileBindings: restoredFeeProfileBindings,
+        };
       }
       const removedProfileIds = new Set(
         current.feeProfiles

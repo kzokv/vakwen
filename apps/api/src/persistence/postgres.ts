@@ -53,6 +53,7 @@ import type {
 import type {
   AccountDefaultCurrency,
   FeeProfileDto,
+  FeeProfileBindingDto,
   AccountMarketDividendSettingsDto,
   AiConnectorAccessKind,
   AiConnectorAccessResult,
@@ -19968,6 +19969,23 @@ export class PostgresPersistence implements Persistence {
     try {
       await client.query("BEGIN");
       await client.query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [input.userId],
+      );
+      const activeAccountResult = await client.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM accounts
+           WHERE user_id = $1
+             AND deleted_at IS NULL
+         ) AS exists`,
+        [input.userId],
+      );
+      const hadActiveAccounts = activeAccountResult.rows[0]?.exists ?? false;
+      await client.query(
         `INSERT INTO accounts (id, user_id, name, fee_profile_id, default_currency, account_type)
          VALUES ($1, $2, $3, $4, $5, $6)`,
         [accountId, input.userId, name, feeProfile.id, input.defaultCurrency, input.accountType],
@@ -20004,6 +20022,9 @@ export class PostgresPersistence implements Persistence {
         ],
       );
       await ensureFeeProfileTaxRules(client, feeProfile);
+      if (!hadActiveAccounts) {
+        await setStoredReportingCurrencyPreferenceTx(client, input.userId, input.defaultCurrency);
+      }
       await this.appendAuditLogTx(client, {
         ...input.auditInput,
         action: "account_created",
@@ -20364,6 +20385,7 @@ export class PostgresPersistence implements Persistence {
       }
       const capabilities = await loadPortfolioCapabilitiesTx(client, userId);
       const prefs = await loadUserPreferencesTx(client, userId);
+      const feeConfig = await loadAccountFeeConfigTx(client, accountId);
 
       await this.appendAuditLogTx(client, {
         ...auditInput,
@@ -20373,7 +20395,14 @@ export class PostgresPersistence implements Persistence {
       });
 
       await client.query("COMMIT");
-      return buildLifecyclePersistenceResult(restoredAccount, null, finalName, capabilities, prefs);
+      return buildLifecyclePersistenceResult(
+        restoredAccount,
+        null,
+        finalName,
+        capabilities,
+        prefs,
+        feeConfig,
+      );
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       throw error;
@@ -24363,6 +24392,10 @@ function buildLifecyclePersistenceResult(
   finalName: string | null,
   capabilities: PortfolioCapabilitiesDto,
   prefs: Record<string, unknown>,
+  feeConfig?: {
+    feeProfiles: FeeProfileDto[];
+    feeProfileBindings: FeeProfileBindingDto[];
+  },
 ): AccountLifecyclePersistenceResult {
   return {
     account,
@@ -24373,6 +24406,59 @@ function buildLifecyclePersistenceResult(
       capabilities.configuredCurrencies,
       getStoredReportingCurrencyPreference(prefs),
     ),
+    ...feeConfig,
+  };
+}
+
+async function loadAccountFeeConfigTx(
+  client: PoolClient,
+  accountId: string,
+): Promise<{
+  feeProfiles: FeeProfileDto[];
+  feeProfileBindings: FeeProfileBindingDto[];
+}> {
+  const profilesResult = await client.query<Record<string, unknown>>(
+    `SELECT id,
+            account_id,
+            name,
+            commission_rate_bps,
+            board_commission_rate,
+            commission_discount_percent,
+            commission_discount_bps,
+            minimum_commission_amount,
+            commission_currency,
+            commission_rounding_mode,
+            tax_rounding_mode,
+            stock_sell_tax_rate_bps,
+            stock_day_trade_tax_rate_bps,
+            etf_sell_tax_rate_bps,
+            bond_etf_sell_tax_rate_bps,
+            commission_charge_mode
+     FROM fee_profiles
+     WHERE account_id = $1
+     ORDER BY id`,
+    [accountId],
+  );
+  const bindingsResult = await client.query<{
+    account_id: string;
+    ticker: string;
+    fee_profile_id: string;
+  }>(
+    `SELECT account_id, ticker, fee_profile_id
+     FROM account_fee_profile_overrides
+     WHERE account_id = $1
+     ORDER BY ticker`,
+    [accountId],
+  );
+  return {
+    feeProfiles: profilesResult.rows.map((row) =>
+      toFeeProfileDto(buildFeeProfileFromRow(row, "id", "name", String(row.account_id))),
+    ),
+    feeProfileBindings: bindingsResult.rows.map((row) => ({
+      accountId: row.account_id,
+      ticker: row.ticker,
+      feeProfileId: row.fee_profile_id,
+    })),
   };
 }
 

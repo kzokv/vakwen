@@ -199,6 +199,12 @@ describe("account mutation routes", () => {
         effective: "USD",
         reason: null,
       },
+      feeProfiles: [
+        {
+          accountId: "acc-1",
+        },
+      ],
+      feeProfileBindings: [],
     });
     await expect(app.persistence.getUserPreferences(ownerUserId)).resolves.toMatchObject({
       reportingCurrency: "USD",

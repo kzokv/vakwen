@@ -1903,6 +1903,10 @@ async function buildAccountLifecycleResponse(
       sessionUserId,
       useAuthoritativeOwnerPreference,
     ),
+    ...(payload.feeProfiles ? { feeProfiles: payload.feeProfiles } : {}),
+    ...(payload.feeProfileBindings
+      ? { feeProfileBindings: payload.feeProfileBindings }
+      : {}),
   };
 }
 

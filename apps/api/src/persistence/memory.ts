@@ -482,6 +482,10 @@ function buildLifecyclePersistenceResult(
   finalName: string | null,
   capabilities: PortfolioCapabilitiesDto,
   prefs: Record<string, unknown>,
+  feeConfig?: {
+    feeProfiles: FeeProfileDto[];
+    feeProfileBindings: import("@vakwen/shared-types").FeeProfileBindingDto[];
+  },
 ): AccountLifecyclePersistenceResult {
   return {
     account,
@@ -492,6 +496,7 @@ function buildLifecyclePersistenceResult(
       capabilities.configuredCurrencies,
       getStoredReportingCurrencyPreference(prefs),
     ),
+    ...feeConfig,
   };
 }
 
@@ -8337,6 +8342,7 @@ export class MemoryPersistence implements Persistence {
   ): Promise<import("./types.js").AccountMutationPersistenceResult> {
     const store = this.getOrCreateStore(input.userId);
     const name = input.name.trim();
+    const hadActiveAccounts = store.accounts.length > 0;
 
     if (store.accounts.some((account) => account.name === name)) {
       throw routeError(409, "account_name_in_use", "An account with that name already exists.");
@@ -8354,6 +8360,13 @@ export class MemoryPersistence implements Persistence {
     };
     store.feeProfiles.push(feeProfile);
     store.accounts.push(account);
+    if (!hadActiveAccounts) {
+      const currentPreferences = this.userPreferences.get(input.userId) ?? {};
+      this.userPreferences.set(input.userId, {
+        ...currentPreferences,
+        reportingCurrency: input.defaultCurrency,
+      });
+    }
 
     await this.appendAuditLog({
       ...input.auditInput,
@@ -8585,6 +8598,11 @@ export class MemoryPersistence implements Persistence {
     this.softDeletedAccounts.delete(shadowKey);
     const capabilities = deriveCapabilitiesDto(store.accounts);
     const prefs = await this.getUserPreferences(userId);
+    const feeProfiles = store.feeProfiles
+      .filter((profile) => profile.accountId === accountId)
+      .map(toFeeProfileDto);
+    const feeProfileBindings = store.feeProfileBindings
+      .filter((binding) => binding.accountId === accountId);
 
     await this.appendAuditLog({
       ...auditInput,
@@ -8593,7 +8611,14 @@ export class MemoryPersistence implements Persistence {
       metadata: { ...auditInput.metadata, accountId, priorName, finalName },
     });
 
-    return buildLifecyclePersistenceResult(restoredAccount, null, finalName, capabilities, prefs);
+    return buildLifecyclePersistenceResult(
+      restoredAccount,
+      null,
+      finalName,
+      capabilities,
+      prefs,
+      { feeProfiles, feeProfileBindings },
+    );
   }
 
   async hardPurgeAccount(

@@ -225,4 +225,45 @@ describe("useShellPortfolioConfig", () => {
     expect(fetchShellPortfolioConfig).toHaveBeenCalledTimes(1);
     expect(result.accounts).toEqual([lifecycleResponse.account]);
   });
+
+  it("restores the account fee configuration when the page loaded after deletion", async () => {
+    vi.mocked(fetchShellPortfolioConfig).mockResolvedValue({
+      ...loadedConfig,
+      accounts: [],
+      feeProfiles: [],
+      feeProfileBindings: [],
+      capabilities: {
+        configuredMarkets: [],
+        configuredCurrencies: [],
+      },
+    });
+    act(() => {
+      root.render(<Harness fetchMode="eager" />);
+    });
+    await act(async () => {});
+
+    await act(async () => {
+      result.applyAccountLifecycleMutation({
+        ...lifecycleResponse,
+        deletedAt: null,
+        finalName: "Brokerage",
+        capabilities: loadedConfig.capabilities!,
+        feeProfiles: loadedConfig.feeProfiles,
+        feeProfileBindings: [{
+          accountId: "account-1",
+          ticker: "2330",
+          feeProfileId: "fee-1",
+        }],
+      }, "restore");
+    });
+
+    expect(fetchShellPortfolioConfig).toHaveBeenCalledTimes(1);
+    expect(result.accounts).toEqual(loadedConfig.accounts);
+    expect(result.feeProfiles).toEqual(loadedConfig.feeProfiles);
+    expect(result.feeProfileBindings).toEqual([{
+      accountId: "account-1",
+      ticker: "2330",
+      feeProfileId: "fee-1",
+    }]);
+  });
 });

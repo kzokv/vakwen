@@ -53,6 +53,26 @@ describe("MemoryPersistence account mutations", () => {
     });
   });
 
+  it("createAccount initializes reporting currency when no active account remains", async () => {
+    await persistence.softDeleteAccount("acc-1", userId, auditInput);
+
+    const result = await persistence.createAccount({
+      userId,
+      name: "First Active USD",
+      defaultCurrency: "USD",
+      accountType: "wallet",
+      auditInput,
+    });
+
+    expect(result.capabilities).toEqual({
+      configuredMarkets: ["US"],
+      configuredCurrencies: ["USD"],
+    });
+    await expect(persistence.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
+  });
+
   it("updateAccount enforces fee-profile ownership and currency-change guard without loading unrelated history", async () => {
     const created = await persistence.createAccount({
       userId,
