@@ -8448,6 +8448,17 @@ export class MemoryPersistence implements Persistence {
             version: previousSettings.version + 1,
             updatedAt: new Date().toISOString(),
           });
+          await this.appendAuditLog({
+            ...input.auditInput,
+            action: "account_market_dividend_settings_updated",
+            targetUserId: input.userId,
+            metadata: {
+              ...input.auditInput.metadata,
+              accountId: input.accountId,
+              marketCode: previousMarketCode,
+              fallbackParValue: null,
+            },
+          });
         }
       }
       account.defaultCurrency = input.defaultCurrency;
@@ -8517,13 +8528,12 @@ export class MemoryPersistence implements Persistence {
     const capabilities = deriveCapabilitiesDto(store.accounts);
     const prefsBefore = await this.getUserPreferences(userId);
     const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
-    const hasConfiguredRequestedCurrency = reportingCurrencyBefore !== null
-      && capabilities.configuredCurrencies.includes(reportingCurrencyBefore);
-    const reportingCurrencyAfter = reportingCurrencyBefore === null
+    const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+    const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
       ? null
-      : hasConfiguredRequestedCurrency
+      : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
         ? reportingCurrencyBefore
-        : capabilities.configuredCurrencies[0] ?? null;
+        : capabilities.configuredCurrencies[0]!;
     if (reportingCurrencyBefore !== reportingCurrencyAfter) {
       const nextPrefs = { ...prefsBefore };
       if (reportingCurrencyAfter === null) {
@@ -8719,11 +8729,12 @@ export class MemoryPersistence implements Persistence {
     const capabilities = deriveCapabilitiesDto(store?.accounts ?? []);
     const prefsBefore = await this.getUserPreferences(userId);
     const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
-    const reportingCurrencyAfter = reportingCurrencyBefore === null
+    const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+    const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
       ? null
-      : capabilities.configuredCurrencies.includes(reportingCurrencyBefore)
+      : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
         ? reportingCurrencyBefore
-        : capabilities.configuredCurrencies[0] ?? null;
+        : capabilities.configuredCurrencies[0]!;
     if (reportingCurrencyBefore !== reportingCurrencyAfter) {
       const nextPrefs = { ...prefsBefore };
       if (reportingCurrencyAfter === null) {

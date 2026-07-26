@@ -189,6 +189,59 @@ describePostgres("bounded account mutations (postgres integration)", () => {
     expect(updated.changedFields).toEqual(["name", "accountType"]);
   });
 
+  it("updateAccount audits an implicit dividend-setting clear in the same mutation", async () => {
+    const created = await persistence!.createAccount({
+      userId,
+      name: "Currency Audit Target",
+      defaultCurrency: "USD",
+      accountType: "broker",
+      auditInput: { actorUserId: userId, ipAddress: "127.0.0.1", metadata: { routeKey: "POST /accounts" } },
+    });
+    await persistence!.patchAccountMarketDividendSettings(userId, {
+      accountId: created.account.id,
+      marketCode: "US",
+      fallbackParValue: "10",
+      auditInput: {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "PATCH /accounts/:id/dividend-settings" },
+      },
+    });
+
+    await persistence!.updateAccount({
+      userId,
+      accountId: created.account.id,
+      defaultCurrency: "AUD",
+      auditInput: {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "PATCH /accounts/:id" },
+      },
+    });
+
+    const audit = await pool.query<{
+      action: string;
+      metadata: { accountId?: string; marketCode?: string; fallbackParValue?: string | null };
+    }>(
+      `SELECT action, metadata
+         FROM audit_log
+        WHERE target_user_id = $1
+          AND action = 'account_market_dividend_settings_updated'
+          AND metadata->>'accountId' = $2
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [userId, created.account.id],
+    );
+    expect(audit.rows[0]).toMatchObject({
+      action: "account_market_dividend_settings_updated",
+      metadata: {
+        accountId: created.account.id,
+        marketCode: "US",
+        fallbackParValue: null,
+      },
+    });
+  });
+
   it("softDeleteAccount atomically falls the owner reporting currency to the first remaining configured currency", async () => {
     await persistence!._setUserPreferences(userId, { reportingCurrency: "TWD" });
     await persistence!.createAccount({
@@ -230,6 +283,31 @@ describePostgres("bounded account mutations (postgres integration)", () => {
     expect(audit.rows[0]?.metadata).toMatchObject({
       reportingCurrencyBefore: "TWD",
       reportingCurrencyAfter: "USD",
+    });
+  });
+
+  it("softDeleteAccount normalizes an implicit TWD preference when only USD remains", async () => {
+    await persistence!.createAccount({
+      userId,
+      name: "Implicit Fallback USD",
+      defaultCurrency: "USD",
+      accountType: "broker",
+      auditInput: { actorUserId: userId, ipAddress: "127.0.0.1", metadata: { routeKey: "POST /accounts" } },
+    });
+
+    const deleted = await persistence!.softDeleteAccount(seededAccountId, userId, {
+      actorUserId: userId,
+      ipAddress: "127.0.0.1",
+      metadata: { routeKey: "DELETE /accounts/:id" },
+    });
+
+    expect(deleted.reportingCurrency).toEqual({
+      requested: "USD",
+      effective: "USD",
+      reason: null,
+    });
+    await expect(persistence!.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
     });
   });
 
@@ -359,5 +437,39 @@ describePostgres("bounded account mutations (postgres integration)", () => {
       [userId],
     );
     expect(audit.rows[0]?.action).toBe("account_hard_purged");
+  });
+
+  it("hardPurgeAccount normalizes an implicit TWD preference when only USD remains", async () => {
+    await persistence!.createAccount({
+      userId,
+      name: "Implicit Purge USD",
+      defaultCurrency: "USD",
+      accountType: "broker",
+      auditInput: {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "POST /accounts" },
+      },
+    });
+
+    const purged = await persistence!.hardPurgeAccount(
+      seededAccountId,
+      userId,
+      {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "POST /accounts/:id/purge" },
+      },
+      { mustBeSoftDeleted: false },
+    );
+
+    expect(purged.reportingCurrency).toEqual({
+      requested: "USD",
+      effective: "USD",
+      reason: null,
+    });
+    await expect(persistence!.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
   });
 });

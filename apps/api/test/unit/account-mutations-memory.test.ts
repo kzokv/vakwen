@@ -174,5 +174,41 @@ describe("MemoryPersistence account mutations", () => {
       fallbackParValue: null,
       version: configured.version + 1,
     });
+    const audit = await persistence.listAuditLog({
+      page: 1,
+      limit: 20,
+      actions: ["account_market_dividend_settings_updated"],
+    });
+    expect(audit.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        targetUserId: userId,
+        metadata: expect.objectContaining({
+          accountId: created.account.id,
+          marketCode: "US",
+          fallbackParValue: null,
+        }),
+      }),
+    ]));
+  });
+
+  it("persists a configured reporting currency when deleting the implicit TWD account", async () => {
+    await persistence.createAccount({
+      userId,
+      name: "Remaining USD",
+      defaultCurrency: "USD",
+      accountType: "broker",
+      auditInput,
+    });
+
+    const deleted = await persistence.softDeleteAccount("acc-1", userId, auditInput);
+
+    expect(deleted.reportingCurrency).toEqual({
+      requested: "USD",
+      effective: "USD",
+      reason: null,
+    });
+    await expect(persistence.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
   });
 });

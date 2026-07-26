@@ -20164,16 +20164,30 @@ export class PostgresPersistence implements Persistence {
         const previousMarketCode = marketCodeFor(existingAccount.default_currency);
         const nextMarketCode = marketCodeFor(input.defaultCurrency);
         if (previousMarketCode !== nextMarketCode) {
-          await client.query(
+          const clearedDividendSettings = await client.query(
             `UPDATE account_market_dividend_settings
              SET fallback_par_value = NULL,
                  version = version + 1,
                  updated_at = CURRENT_TIMESTAMP
              WHERE account_id = $1
                AND market_code = $2
-               AND fallback_par_value IS NOT NULL`,
+               AND fallback_par_value IS NOT NULL
+             RETURNING account_id`,
             [input.accountId, previousMarketCode],
           );
+          if ((clearedDividendSettings.rowCount ?? 0) > 0) {
+            await this.appendAuditLogTx(client, {
+              ...input.auditInput,
+              action: "account_market_dividend_settings_updated",
+              targetUserId: input.userId,
+              metadata: {
+                ...input.auditInput.metadata,
+                accountId: input.accountId,
+                marketCode: previousMarketCode,
+                fallbackParValue: null,
+              },
+            });
+          }
         }
 
         nextDefaultCurrency = input.defaultCurrency;
@@ -20302,13 +20316,12 @@ export class PostgresPersistence implements Persistence {
         ? deletedAtRaw.toISOString()
         : new Date(deletedAtRaw).toISOString();
       const capabilities = await loadPortfolioCapabilitiesTx(client, userId);
-      const hasConfiguredRequestedCurrency = reportingCurrencyBefore !== null
-        && capabilities.configuredCurrencies.includes(reportingCurrencyBefore);
-      const reportingCurrencyAfter = reportingCurrencyBefore === null
+      const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+      const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
         ? null
-        : hasConfiguredRequestedCurrency
+        : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
           ? reportingCurrencyBefore
-          : capabilities.configuredCurrencies[0] ?? null;
+          : capabilities.configuredCurrencies[0]!;
       if (reportingCurrencyBefore !== reportingCurrencyAfter) {
         await setStoredReportingCurrencyPreferenceTx(client, userId, reportingCurrencyAfter);
       }
@@ -20542,11 +20555,12 @@ export class PostgresPersistence implements Persistence {
       await client.query("DELETE FROM accounts WHERE id = $1 AND user_id = $2", [accountId, userId]);
 
       const capabilities = await loadPortfolioCapabilitiesTx(client, userId);
-      const reportingCurrencyAfter = reportingCurrencyBefore === null
+      const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+      const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
         ? null
-        : capabilities.configuredCurrencies.includes(reportingCurrencyBefore)
+        : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
           ? reportingCurrencyBefore
-          : capabilities.configuredCurrencies[0] ?? null;
+          : capabilities.configuredCurrencies[0]!;
       if (reportingCurrencyBefore !== reportingCurrencyAfter) {
         await setStoredReportingCurrencyPreferenceTx(client, userId, reportingCurrencyAfter);
       }
