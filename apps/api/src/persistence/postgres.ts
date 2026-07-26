@@ -19919,6 +19919,10 @@ export class PostgresPersistence implements Persistence {
       if (accountIds.rows.length > 0) {
         const ids = accountIds.rows.map((r) => r.id);
         await client.query("DELETE FROM daily_holding_snapshots WHERE account_id = ANY($1)", [ids]);
+        await client.query(
+          "DELETE FROM position_action_migration_audit WHERE account_id = ANY($1)",
+          [ids],
+        );
         // KZO-165: composite FK (account_id, user_id) → accounts(id, user_id), so wallet
         // rows must be deleted before the accounts row below. Delete by account_id (PK
         // includes account_id, so this is index-supported).
@@ -20586,6 +20590,10 @@ export class PostgresPersistence implements Persistence {
       // adds zero user-observable benefit; reaped on user hard-purge or remain
       // harmless. Same orphan tolerance pattern as fee_profiles).
       await client.query("DELETE FROM daily_holding_snapshots WHERE account_id = $1", [accountId]);
+      await client.query(
+        "DELETE FROM position_action_migration_audit WHERE account_id = $1",
+        [accountId],
+      );
       await client.query("DELETE FROM currency_wallet_snapshots WHERE account_id = $1", [accountId]);
       await client.query("DELETE FROM cash_ledger_entries WHERE account_id = $1", [accountId]);
       await client.query(

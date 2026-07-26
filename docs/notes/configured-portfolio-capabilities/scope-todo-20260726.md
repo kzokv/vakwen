@@ -105,6 +105,7 @@ superseded_by: null
 - Server-seeded daily-review reports omit `range` when the route does, preserving the configured API default; explicit report ranges remain authoritative.
 - Migration 114 normalizes existing reporting-currency preferences against active-account capabilities, and mixed-version shell responses derive missing optional capabilities from their returned active accounts instead of assuming an empty portfolio. Focused validation passed: migration backfill plus schema parity 2/2 and shell service/hook 9/9.
 - Explicit account creation marks the portfolio initialized in the same transaction, preventing later default seeding after recovery from an interrupted initial bootstrap.
+- Account and user hard-purge flows remove account-scoped `position_action_migration_audit` rows before deleting accounts, including migration-102 historical audit records with non-cascading foreign keys. The bounded managed-PostgreSQL account-mutation suite passed 15/15.
 - Durable implementation rules were promoted to `.claude/rules/account-capability-authority.md` and `.claude/rules/bounded-account-mutations.md`.
 
 ## Out of Scope

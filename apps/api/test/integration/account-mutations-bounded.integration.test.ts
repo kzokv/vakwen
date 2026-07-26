@@ -571,6 +571,37 @@ describePostgres("bounded account mutations (postgres integration)", () => {
     });
   });
 
+  it("hardPurgeAccount removes blocking position-action migration audit rows", async () => {
+    await pool.query(
+      `INSERT INTO position_action_migration_audit (
+         id, account_id, ticker, lot_id, opened_at,
+         open_quantity, total_cost_amount, reason
+       ) VALUES (
+         'migration-audit-purge', $1, '2330', 'legacy-lot',
+         DATE '2026-01-01', 1, 0, 'test_blocking_fk'
+       )`,
+      [seededAccountId],
+    );
+
+    await expect(persistence!.hardPurgeAccount(
+      seededAccountId,
+      userId,
+      {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "POST /accounts/:id/purge" },
+      },
+      { mustBeSoftDeleted: false },
+    )).resolves.toMatchObject({
+      account: { id: seededAccountId },
+    });
+
+    await expect(pool.query(
+      `SELECT id FROM position_action_migration_audit WHERE account_id = $1`,
+      [seededAccountId],
+    )).resolves.toMatchObject({ rows: [] });
+  });
+
   it("does not reseed the bootstrap account after the final account is hard-purged", async () => {
     const purged = await persistence!.hardPurgeAccount(
       seededAccountId,
