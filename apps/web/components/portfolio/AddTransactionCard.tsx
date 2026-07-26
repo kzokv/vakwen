@@ -188,7 +188,7 @@ export function AddTransactionCard({
 }: AddTransactionCardProps) {
   const accountSelectId = useId();
   const constrainedMarkets = useMemo(() => {
-    if (!availableMarkets || availableMarkets.length === 0) {
+    if (!availableMarkets) {
       return [...MARKET_CHIPS];
     }
 

@@ -187,6 +187,51 @@ describe("useShellPortfolioConfig", () => {
     expect(result.accounts[0]?.id).toBe("account-1");
   });
 
+  it("discards an older refresh result that completes after a newer request", async () => {
+    let resolveOlder!: (value: ShellPortfolioConfigDto) => void;
+    let resolveNewer!: (value: ShellPortfolioConfigDto) => void;
+    const olderPromise = new Promise<ShellPortfolioConfigDto>((resolve) => {
+      resolveOlder = resolve;
+    });
+    const newerPromise = new Promise<ShellPortfolioConfigDto>((resolve) => {
+      resolveNewer = resolve;
+    });
+    const newerConfig: ShellPortfolioConfigDto = {
+      ...loadedConfig,
+      capabilities: {
+        configuredMarkets: ["TW", "US"],
+        configuredCurrencies: ["TWD", "USD"],
+      },
+    };
+    vi.mocked(fetchShellPortfolioConfig)
+      .mockImplementationOnce(() => olderPromise)
+      .mockImplementationOnce(() => newerPromise);
+
+    act(() => {
+      root.render(<Harness fetchMode="lazy" />);
+    });
+
+    let olderRefresh!: Promise<ShellPortfolioConfigDto>;
+    let newerRefresh!: Promise<ShellPortfolioConfigDto>;
+    act(() => {
+      olderRefresh = result.refresh();
+      newerRefresh = result.refresh();
+    });
+
+    await act(async () => {
+      resolveNewer(newerConfig);
+      await newerRefresh;
+    });
+    expect(result.capabilities).toEqual(newerConfig.capabilities);
+
+    await act(async () => {
+      resolveOlder(loadedConfig);
+      await olderRefresh;
+    });
+    expect(result.capabilities).toEqual(newerConfig.capabilities);
+    expect(result.isLoading).toBe(false);
+  });
+
   it("applies authoritative account mutation responses without a follow-up fetch", async () => {
     act(() => {
       root.render(<Harness fetchMode="lazy" />);

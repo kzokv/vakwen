@@ -53,21 +53,29 @@ export function useShellPortfolioConfig({
   const [showIntegrityDialog, setShowIntegrityDialog] = useState(Boolean(initialConfig?.integrityIssue));
   const hasLoadedRef = useRef(initialConfig !== null);
   const loadPromiseRef = useRef<Promise<void> | null>(null);
+  const fetchRequestIdRef = useRef(0);
 
   const fetchConfig = useCallback(async (): Promise<ShellPortfolioConfigDto> => {
+    const requestId = ++fetchRequestIdRef.current;
     setIsLoading(true);
     try {
       const nextConfig = await fetchShellPortfolioConfig();
-      setConfig(nextConfig);
-      setShowIntegrityDialog(Boolean(nextConfig.integrityIssue));
-      setErrorMessage("");
-      hasLoadedRef.current = true;
+      if (requestId === fetchRequestIdRef.current) {
+        setConfig(nextConfig);
+        setShowIntegrityDialog(Boolean(nextConfig.integrityIssue));
+        setErrorMessage("");
+        hasLoadedRef.current = true;
+      }
       return nextConfig;
     } catch (error) {
-      setErrorMessage(resolveErrorMessage(error));
+      if (requestId === fetchRequestIdRef.current) {
+        setErrorMessage(resolveErrorMessage(error));
+      }
       throw error;
     } finally {
-      setIsLoading(false);
+      if (requestId === fetchRequestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   }, []);
 

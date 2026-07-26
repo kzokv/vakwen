@@ -252,6 +252,32 @@ describe("AddTransactionCard — chip + account-filter render contract", () => {
     expect(html).not.toContain('data-testid="tx-market-chip-JP"');
   });
 
+  it("does not expose fallback market chips when no market is configured", () => {
+    const html = renderToStaticMarkup(
+      <AddTransactionCard
+        value={valueWith({ marketCode: null })}
+        accountOptions={[]}
+        availableMarkets={[]}
+        pending={false}
+        onChange={() => undefined}
+        onSubmit={async () => undefined}
+        dict={dict}
+        locale="en"
+        framed={false}
+        priceHint={null}
+        showPriceUnavailableHint={false}
+        feeEstimate={null}
+      />,
+    );
+
+    expect(html).not.toContain('data-testid="tx-market-chip-TW"');
+    expect(html).not.toContain('data-testid="tx-market-chip-US"');
+    expect(html).not.toContain('data-testid="tx-market-chip-AU"');
+    expect(html).not.toContain('data-testid="tx-market-chip-KR"');
+    expect(html).not.toContain('data-testid="tx-market-chip-JP"');
+    expect(html).toContain('data-testid="tx-no-account-error"');
+  });
+
   it("renders a static market context when only one configured market exists", () => {
     const html = renderToStaticMarkup(
       <AddTransactionCard

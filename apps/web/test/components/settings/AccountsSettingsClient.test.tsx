@@ -6,8 +6,14 @@ import type {
   AccountMutationResponseDto,
 } from "@vakwen/shared-types";
 
+const navigationMock = vi.hoisted(() => ({
+  searchParams: new URLSearchParams(""),
+  replace: vi.fn(),
+}));
+
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => new URLSearchParams(""),
+  useSearchParams: () => navigationMock.searchParams,
+  useRouter: () => ({ replace: navigationMock.replace }),
 }));
 
 vi.mock("../../../components/layout/AppShellDataContext", () => ({
@@ -120,6 +126,8 @@ describe("AccountsSettingsClient", () => {
     });
     accountCreateFormPropsMock.current = null;
     accountsListSectionPropsMock.current = null;
+    navigationMock.searchParams = new URLSearchParams("");
+    navigationMock.replace.mockReset();
   });
 
   afterEach(() => {
@@ -255,6 +263,33 @@ describe("AccountsSettingsClient", () => {
 
     expect(applyAccountMutationResponse).toHaveBeenCalledWith(mutationResponse);
     expect(refreshPortfolioConfig).not.toHaveBeenCalled();
+  });
+
+  it("returns zero-account onboarding to a validated initiating route after creation", async () => {
+    navigationMock.searchParams = new URLSearchParams("returnTo=%2Fdividends%3Fmonth%3D2026-07");
+    vi.mocked(useAppShellData).mockReturnValue({
+      accounts: [],
+      feeProfiles: [],
+      feeProfileBindings: [],
+      refreshPortfolioConfig: vi.fn(),
+      applyAccountMutationResponse: vi.fn(),
+      isPortfolioConfigLoading: false,
+      isSharedContext: false,
+      sharedContextPermissions: { canManageAccounts: true },
+      uiDict: dict,
+    } as never);
+
+    act(() => {
+      root.render(<AccountsSettingsClient />);
+    });
+    const onAccountsRefresh = accountCreateFormPropsMock.current
+      ?.onAccountsRefresh as ((response?: AccountMutationResponseDto) => Promise<void>);
+
+    await act(async () => {
+      await onAccountsRefresh(mutationResponse);
+    });
+
+    expect(navigationMock.replace).toHaveBeenCalledWith("/dividends?month=2026-07");
   });
 
   it("threads authoritative lifecycle responses into the shell without a full refresh", async () => {

@@ -330,6 +330,7 @@ export function AppShell({
     }
   }, [portfolioConfig]);
 
+  const accountEventRefreshIdRef = useRef(0);
   useEventStream({
     eventTypes: [
       "account_created",
@@ -339,14 +340,17 @@ export function AppShell({
       "account_hard_purged",
     ],
     onEvent: () => {
+      const refreshId = ++accountEventRefreshIdRef.current;
       clearPortfolioContextRouteCaches();
       bumpContextRefreshSignal();
       void (async () => {
         const nextConfig = await portfolioConfig.refresh();
+        if (refreshId !== accountEventRefreshIdRef.current) return;
         setPortfolioCapabilities(nextConfig.capabilities ?? null);
         const preferenceResponse = await getJson<{
           preferences: { reportingCurrency?: AccountDefaultCurrency };
         }>("/user-preferences", { contextScope: "session" });
+        if (refreshId !== accountEventRefreshIdRef.current) return;
         const requested = preferenceResponse.preferences.reportingCurrency ?? null;
         const effective = requested
           && nextConfig.capabilities?.configuredCurrencies.includes(requested)
@@ -547,6 +551,7 @@ export function AppShell({
               }}
               pending={transactionSubmission.isSubmitting}
               accountOptions={transactionAccountOptions}
+              availableMarkets={portfolioConfig.capabilities?.configuredMarkets ?? []}
               message={transactionSubmission.message}
               errorMessage={transactionSubmission.errorMessage}
               dict={dict}

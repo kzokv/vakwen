@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Plus } from "lucide-react";
 import type {
   AccountDefaultCurrency,
@@ -28,6 +28,7 @@ import { toSettingsFormModel } from "../../features/settings/mappers/settingsMap
 import { parseAccountDividendSettingsFocus } from "../../features/dividends/services/dividendCalculationService";
 import { Button } from "../ui/Button";
 import { Drawer } from "../ui/Drawer";
+import { normalizeCapabilityReturnTo } from "../../features/portfolio-capabilities/portfolioCapabilities";
 
 interface AccountSettingsDraft extends SettingsAccountBindingModel {
   accountType: AccountType;
@@ -58,6 +59,7 @@ function parsePrefillCurrency(raw: string | null): AccountDefaultCurrency | unde
  * profile-card has its own narrow save action.)
  */
 export function AccountsSettingsClient() {
+  const router = useRouter();
   const { locale, initialSettings } = useSettingsRouteContext();
   const dict = getDictionary(locale);
   const shellData = useAppShellData();
@@ -77,6 +79,7 @@ export function AccountsSettingsClient() {
     () => searchParams ? parseAccountDividendSettingsFocus(searchParams) : null,
     [searchParams],
   );
+  const returnTo = normalizeCapabilityReturnTo(searchParams?.get("returnTo") ?? null);
 
   // Build a local working copy of the settings form model from the
   // shell account config. AccountsListSection still operates on its own
@@ -398,12 +401,16 @@ export function AccountsSettingsClient() {
   const handleAccountsRefresh = useCallback(
     async (response?: AccountMutationResponseDto | undefined) => {
       if (response) {
+        const shouldReturn = shellData.accounts.length === 0 && returnTo !== null;
         applyAccountMutation(response);
         setHighlightedAccountId(response.account.id);
         setCreateFlowOpen(false);
+        if (shouldReturn) {
+          router.replace(returnTo);
+        }
       }
     },
-    [applyAccountMutation],
+    [applyAccountMutation, returnTo, router, shellData.accounts.length],
   );
 
   if (!initialSettings) {
