@@ -94,6 +94,8 @@ export function useShellPortfolioConfig({
   }, [fetchConfig]);
 
   const applyAccountMutation = useCallback((response: AccountMutationResponseDto) => {
+    fetchRequestIdRef.current += 1;
+    setIsLoading(false);
     setConfig((current) => ({
       ...current,
       accounts: upsertById(current.accounts, response.account),
@@ -106,6 +108,8 @@ export function useShellPortfolioConfig({
     response: AccountLifecycleMutationResponseDto,
     operation: "soft_delete" | "restore" | "hard_purge",
   ) => {
+    fetchRequestIdRef.current += 1;
+    setIsLoading(false);
     setConfig((current) => {
       const accounts = operation === "restore"
         ? upsertById(current.accounts, response.account)

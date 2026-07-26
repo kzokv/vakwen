@@ -247,6 +247,68 @@ describe("useShellPortfolioConfig", () => {
     expect(result.feeProfiles).toEqual([accountMutationResponse.feeProfile]);
   });
 
+  it("keeps authoritative mutation state when an older config read finishes later", async () => {
+    let resolveAccountRead!: (value: ShellPortfolioConfigDto) => void;
+    let resolveLifecycleRead!: (value: ShellPortfolioConfigDto) => void;
+    vi.mocked(fetchShellPortfolioConfig)
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveAccountRead = resolve;
+      }))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveLifecycleRead = resolve;
+      }));
+
+    act(() => {
+      root.render(<Harness fetchMode="lazy" />);
+    });
+
+    let accountRefresh!: Promise<ShellPortfolioConfigDto>;
+    act(() => {
+      accountRefresh = result.refresh();
+    });
+    await act(async () => {
+      result.applyAccountMutation(accountMutationResponse);
+    });
+    expect(result.accounts).toEqual([accountMutationResponse.account]);
+    expect(result.isLoading).toBe(false);
+
+    await act(async () => {
+      resolveAccountRead(loadedConfig);
+      await accountRefresh;
+    });
+    expect(result.accounts).toEqual([accountMutationResponse.account]);
+    expect(result.capabilities).toEqual(accountMutationResponse.capabilities);
+
+    let lifecycleRefresh!: Promise<ShellPortfolioConfigDto>;
+    act(() => {
+      lifecycleRefresh = result.refresh();
+    });
+    await act(async () => {
+      result.applyAccountLifecycleMutation(
+        {
+          ...lifecycleResponse,
+          accountId: accountMutationResponse.account.id,
+          account: accountMutationResponse.account,
+        },
+        "soft_delete",
+      );
+    });
+    expect(result.accounts).toEqual([]);
+    expect(result.isLoading).toBe(false);
+
+    await act(async () => {
+      resolveLifecycleRead({
+        ...loadedConfig,
+        accounts: [accountMutationResponse.account],
+        feeProfiles: [accountMutationResponse.feeProfile],
+        capabilities: accountMutationResponse.capabilities,
+      });
+      await lifecycleRefresh;
+    });
+    expect(result.accounts).toEqual([]);
+    expect(result.capabilities).toEqual(lifecycleResponse.capabilities);
+  });
+
   it("applies lifecycle capability deltas without a follow-up fetch", async () => {
     act(() => {
       root.render(<Harness fetchMode="eager" />);
