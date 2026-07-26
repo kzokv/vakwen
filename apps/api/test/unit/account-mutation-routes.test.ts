@@ -61,6 +61,38 @@ describe("account mutation routes", () => {
     expect(saveStoreSpy).not.toHaveBeenCalled();
   });
 
+  it("POST /accounts returns the committed result when post-commit fanout target lookup fails", async () => {
+    vi.spyOn(app.persistence, "listSharesForOwner").mockRejectedValue(
+      new Error("fanout target lookup unavailable"),
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/accounts",
+      headers: {
+        cookie: sessionCookie,
+      },
+      payload: {
+        name: "Committed Create",
+        defaultCurrency: "USD",
+        accountType: "broker",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      account: {
+        name: "Committed Create",
+        defaultCurrency: "USD",
+      },
+    });
+    await expect(app.persistence.listActiveAccounts(ownerUserId)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Committed Create", defaultCurrency: "USD" }),
+      ]),
+    );
+  });
+
   it("PATCH /accounts/:id uses the specialized persistence write and never falls back to loadStore/saveStore", async () => {
     const loadStoreSpy = vi.spyOn(app.persistence, "loadStore").mockRejectedValue(
       new Error("PATCH /accounts/:id should not call loadStore"),
@@ -85,6 +117,34 @@ describe("account mutation routes", () => {
     expect(updateAccountSpy).toHaveBeenCalledTimes(1);
     expect(loadStoreSpy).not.toHaveBeenCalled();
     expect(saveStoreSpy).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /accounts/:id returns the committed result when post-commit event delivery fails", async () => {
+    vi.spyOn(app.eventBus, "publishEvent").mockRejectedValue(new Error("event delivery unavailable"));
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/accounts/acc-1",
+      headers: {
+        cookie: sessionCookie,
+      },
+      payload: {
+        accountType: "wallet",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      account: {
+        id: "acc-1",
+        accountType: "wallet",
+      },
+    });
+    await expect(app.persistence.listActiveAccounts(ownerUserId)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "acc-1", accountType: "wallet" }),
+      ]),
+    );
   });
 
   it("DELETE /accounts/:id returns the authoritative lifecycle delta and falls owner reporting currency to remaining USD", async () => {

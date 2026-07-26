@@ -87,14 +87,14 @@ superseded_by: null
 - Repository regression gate completed:
   - `npx eslint .`: 0 errors (46 pre-existing warnings);
   - `npm run typecheck`: passed;
-  - web unit tests: 1,353 passed, 2 skipped across the split run;
-  - API unit and memory-backed integration tests: 2,194 passed, 503 skipped;
+  - web unit tests: 1,354 passed, 2 skipped across the split run;
+  - API unit and memory-backed integration tests: 2,196 passed, 503 skipped;
   - managed PostgreSQL integration tests: 1,145 passed, 1 skipped;
   - standard `dev_bypass` E2E: 426 passed, 21 skipped;
   - OAuth E2E: 121 passed;
   - OAuth API HTTP tests: 312 passed, 2 skipped.
 - The final account-helper locator cleanup was revalidated with the account-creation and account-market-binding Chromium specs: 4 passed.
-- Final review regressions cover first-call memory-store initialization without crossing the full-store boundary, concurrent final-account deletion with owner-serialized reporting fallback, out-of-order shell refreshes, constrained global transaction markets, and safe post-create return navigation.
+- Final review regressions cover first-call memory-store initialization without crossing the full-store boundary, concurrent final-account deletion with owner-serialized reporting fallback, out-of-order shell refreshes, constrained global transaction markets, safe post-create return navigation, best-effort post-commit account event fanout, and serialized account-type selection.
 - Durable implementation rules were promoted to `.claude/rules/account-capability-authority.md` and `.claude/rules/bounded-account-mutations.md`.
 
 ## Out of Scope

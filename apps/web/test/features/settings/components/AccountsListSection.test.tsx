@@ -481,6 +481,30 @@ describe("AccountsListSection", () => {
     expect(onSaveAccountType).toHaveBeenCalledWith("acc-1", "wallet");
   });
 
+  it("disables account type changes until the active save completes", async () => {
+    let resolveSave: (() => void) | undefined;
+    onSaveAccountType.mockImplementationOnce(
+      () => new Promise<undefined>((resolve) => {
+        resolveSave = () => resolve(undefined);
+      }),
+    );
+    render();
+
+    await click("accounts-card-acc-1-toggle");
+    await setSelectValue("settings-account-type-acc-1", "wallet");
+
+    const select = container.querySelector(
+      '[data-testid="settings-account-type-acc-1"]',
+    ) as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+    expect(onSaveAccountType).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveSave?.();
+    });
+    expect(select.disabled).toBe(false);
+  });
+
   it("preserves local account controls and shows an inline error when account updates fail", async () => {
     onSaveAccountType.mockRejectedValueOnce(new Error("boom"));
 

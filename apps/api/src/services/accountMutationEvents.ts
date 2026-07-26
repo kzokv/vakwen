@@ -13,11 +13,13 @@ import type {
   AccountMutationPersistenceResult,
   Persistence,
 } from "../persistence/types.js";
+import type { FastifyBaseLogger } from "fastify";
 import { resolveReportingCurrency } from "./userPreferences.js";
 
 type AccountEventDeps = {
   persistence: Pick<Persistence, "getUserPreferences" | "listSharesForOwner">;
   eventBus: Pick<EventBus, "publishEvent">;
+  log?: Pick<FastifyBaseLogger, "warn">;
 };
 
 type MutationEventName = "account_created" | "account_updated";
@@ -121,27 +123,34 @@ export async function publishAccountMutationEventToOwnerAndActiveGrantees(
   eventName: MutationEventName,
   payload: AccountMutationPersistenceResult,
 ): Promise<void> {
-  const targets = await loadActiveTargets(deps.persistence, ownerUserId);
-  await Promise.all(
-    targets.map(async (targetUserId) => {
-      const eventPayload: MutationEventPayload = {
-        type: eventName,
-        accountId: payload.account.id,
-        account: payload.account,
-        feeProfile: payload.feeProfile,
-        capabilities: payload.capabilities,
-        reportingCurrency: await buildAccountMutationReportingCurrencyForContext(
-          deps.persistence,
-          payload,
-          targetUserId,
-        ),
-        ...(payload.changedFields && payload.changedFields.length > 0
-          ? { changedFields: payload.changedFields }
-          : {}),
-      };
-      await deps.eventBus.publishEvent(targetUserId, eventName, eventPayload);
-    }),
-  );
+  try {
+    const targets = await loadActiveTargets(deps.persistence, ownerUserId);
+    await Promise.all(
+      targets.map(async (targetUserId) => {
+        const eventPayload: MutationEventPayload = {
+          type: eventName,
+          accountId: payload.account.id,
+          account: payload.account,
+          feeProfile: payload.feeProfile,
+          capabilities: payload.capabilities,
+          reportingCurrency: await buildAccountMutationReportingCurrencyForContext(
+            deps.persistence,
+            payload,
+            targetUserId,
+          ),
+          ...(payload.changedFields && payload.changedFields.length > 0
+            ? { changedFields: payload.changedFields }
+            : {}),
+        };
+        await deps.eventBus.publishEvent(targetUserId, eventName, eventPayload);
+      }),
+    );
+  } catch (error) {
+    deps.log?.warn(
+      { err: error, ownerUserId, accountId: payload.account.id, eventName },
+      "account_mutation_event_fanout_failed",
+    );
+  }
 }
 
 export async function publishLifecycleEventToOwnerAndActiveGrantees(
@@ -150,45 +159,52 @@ export async function publishLifecycleEventToOwnerAndActiveGrantees(
   eventName: LifecycleEventName,
   payload: AccountLifecyclePersistenceResult,
 ): Promise<void> {
-  const targets = await loadActiveTargets(deps.persistence, ownerUserId);
-  await Promise.all(
-    targets.map(async (targetUserId) => {
-      const reportingCurrency = await buildLifecycleReportingCurrencyForContext(
-        deps.persistence,
-        payload,
-        targetUserId,
-        targetUserId === ownerUserId,
-      );
-      let eventPayload: LifecycleEventPayload;
-      if (eventName === "account_soft_deleted") {
-        eventPayload = {
-          type: eventName,
-          accountId: payload.account.id,
-          deletedAt: payload.deletedAt!,
-          account: payload.account,
-          capabilities: payload.capabilities,
-          reportingCurrency,
-        };
-      } else if (eventName === "account_restored") {
-        eventPayload = {
-          type: eventName,
-          accountId: payload.account.id,
-          finalName: payload.finalName!,
-          account: payload.account,
-          capabilities: payload.capabilities,
-          reportingCurrency,
-        };
-      } else {
-        eventPayload = {
-          type: eventName,
-          accountId: payload.account.id,
-          deletedAt: payload.deletedAt,
-          account: payload.account,
-          capabilities: payload.capabilities,
-          reportingCurrency,
-        };
-      }
-      await deps.eventBus.publishEvent(targetUserId, eventName, eventPayload);
-    }),
-  );
+  try {
+    const targets = await loadActiveTargets(deps.persistence, ownerUserId);
+    await Promise.all(
+      targets.map(async (targetUserId) => {
+        const reportingCurrency = await buildLifecycleReportingCurrencyForContext(
+          deps.persistence,
+          payload,
+          targetUserId,
+          targetUserId === ownerUserId,
+        );
+        let eventPayload: LifecycleEventPayload;
+        if (eventName === "account_soft_deleted") {
+          eventPayload = {
+            type: eventName,
+            accountId: payload.account.id,
+            deletedAt: payload.deletedAt!,
+            account: payload.account,
+            capabilities: payload.capabilities,
+            reportingCurrency,
+          };
+        } else if (eventName === "account_restored") {
+          eventPayload = {
+            type: eventName,
+            accountId: payload.account.id,
+            finalName: payload.finalName!,
+            account: payload.account,
+            capabilities: payload.capabilities,
+            reportingCurrency,
+          };
+        } else {
+          eventPayload = {
+            type: eventName,
+            accountId: payload.account.id,
+            deletedAt: payload.deletedAt,
+            account: payload.account,
+            capabilities: payload.capabilities,
+            reportingCurrency,
+          };
+        }
+        await deps.eventBus.publishEvent(targetUserId, eventName, eventPayload);
+      }),
+    );
+  } catch (error) {
+    deps.log?.warn(
+      { err: error, ownerUserId, accountId: payload.account.id, eventName },
+      "account_lifecycle_event_fanout_failed",
+    );
+  }
 }

@@ -220,6 +220,7 @@ export function AccountsListSection({
   const [draftName, setDraftName] = useState("");
   const [renameOverrides, setRenameOverrides] = useState<Record<string, string>>({});
   const [savingAccountId, setSavingAccountId] = useState<string | null>(null);
+  const [savingAccountTypeIds, setSavingAccountTypeIds] = useState<Set<string>>(() => new Set());
   const [renameError, setRenameError] = useState("");
   const [accountErrorById, setAccountErrorById] = useState<Record<string, string>>({});
 
@@ -401,6 +402,7 @@ export function AccountsListSection({
   }
 
   async function saveAccountTypeChange(accountId: string, accountType: AccountType) {
+    setSavingAccountTypeIds((current) => new Set(current).add(accountId));
     setAccountErrorById((current) => ({ ...current, [accountId]: "" }));
     try {
       await onSaveAccountType(accountId, accountType);
@@ -409,6 +411,12 @@ export function AccountsListSection({
         ...current,
         [accountId]: dict.settings.accountsListAccountUpdateError,
       }));
+    } finally {
+      setSavingAccountTypeIds((current) => {
+        const next = new Set(current);
+        next.delete(accountId);
+        return next;
+      });
     }
   }
 
@@ -836,7 +844,7 @@ export function AccountsListSection({
                       }}
                       className={fieldClassName}
                       data-testid={`settings-account-type-${account.id}`}
-                      disabled={!canManage}
+                      disabled={!canManage || savingAccountTypeIds.has(account.id)}
                     >
                       <option value="broker">{dict.settings.accountsListAccountTypeBroker}</option>
                       <option value="bank">{dict.settings.accountsListAccountTypeBank}</option>
