@@ -115,6 +115,24 @@ describe("ReportsPage", () => {
     expect(html).toContain('data-state-tab="daily-review"');
     expect(html).toContain('data-state-scope="TW"');
     expect(html).toContain('data-report-scope="TW"');
-    expect(fetchReport).toHaveBeenCalledWith("daily-review", expect.objectContaining({ scope: "TW" }));
+    expect(fetchReport).toHaveBeenCalledWith("daily-review", expect.objectContaining({
+      scope: "TW",
+      useServerDefaultRange: true,
+    }));
+  });
+
+  it("preserves an explicit daily-review range in the server seed", async () => {
+    await ReportsPage({
+      searchParams: Promise.resolve({
+        tab: "daily-review",
+        scope: "TW",
+        range: "5Y",
+      }),
+    });
+
+    expect(fetchReport).toHaveBeenCalledWith("daily-review", expect.objectContaining({
+      range: "5Y",
+    }));
+    expect(vi.mocked(fetchReport).mock.calls[0]?.[1]).not.toHaveProperty("useServerDefaultRange");
   });
 });

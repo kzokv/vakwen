@@ -17,7 +17,11 @@ interface ReportsPageProps {
 
 export default async function ReportsPage({ searchParams }: ReportsPageProps) {
   const rawSearchParams = await searchParams;
-  const initialState = parseReportRouteState(rawSearchParams);
+  const parsedInitialState = parseReportRouteState(rawSearchParams);
+  const initialState = parsedInitialState.tab === "daily-review"
+    && rawSearchParams.range === undefined
+    ? { ...parsedInitialState, useServerDefaultRange: true }
+    : parsedInitialState;
   const [session, profile, sidebarOpen, settings, initialReport] = await Promise.all([
     requireSession(),
     getJson<ProfileWithImpersonationDto>("/profile", { contextScope: "session" }),
