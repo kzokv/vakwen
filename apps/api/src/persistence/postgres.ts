@@ -20046,6 +20046,13 @@ export class PostgresPersistence implements Persistence {
         ],
       );
       await ensureFeeProfileTaxRules(client, feeProfile);
+      await client.query(
+        `UPDATE users
+            SET portfolio_initialized = true,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [input.userId],
+      );
       if (!hadActiveAccounts) {
         await setStoredReportingCurrencyPreferenceTx(client, input.userId, input.defaultCurrency);
       }

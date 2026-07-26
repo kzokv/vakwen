@@ -145,6 +145,50 @@ describePostgres("bounded account mutations (postgres integration)", () => {
     });
   });
 
+  it("createAccount marks an explicit first account as initialized before later reads", async () => {
+    await persistence!.hardPurgeAccount(
+      seededAccountId,
+      userId,
+      {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "POST /accounts/:id/purge" },
+      },
+      { mustBeSoftDeleted: false },
+    );
+    await pool.query(
+      `UPDATE users SET portfolio_initialized = false WHERE id = $1`,
+      [userId],
+    );
+
+    const created = await persistence!.createAccount({
+      userId,
+      name: "Explicit Recovery USD",
+      defaultCurrency: "USD",
+      accountType: "wallet",
+      auditInput: {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "POST /accounts" },
+      },
+    });
+
+    const reloaded = await persistence!.loadStore(userId);
+    expect(reloaded.accounts).toEqual([
+      expect.objectContaining({
+        id: created.account.id,
+        name: "Explicit Recovery USD",
+        defaultCurrency: "USD",
+      }),
+    ]);
+    await expect(pool.query<{ portfolio_initialized: boolean }>(
+      `SELECT portfolio_initialized FROM users WHERE id = $1`,
+      [userId],
+    )).resolves.toMatchObject({
+      rows: [{ portfolio_initialized: true }],
+    });
+  });
+
   it("updateAccount avoids full-store persistence and preserves ownership guards", async () => {
     const created = await persistence!.createAccount({
       userId,
