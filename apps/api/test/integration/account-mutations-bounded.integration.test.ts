@@ -526,4 +526,26 @@ describePostgres("bounded account mutations (postgres integration)", () => {
       reportingCurrency: "USD",
     });
   });
+
+  it("does not reseed the bootstrap account after the final account is hard-purged", async () => {
+    const purged = await persistence!.hardPurgeAccount(
+      seededAccountId,
+      userId,
+      {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "POST /accounts/:id/purge" },
+      },
+      { mustBeSoftDeleted: false },
+    );
+
+    expect(purged.capabilities).toEqual({
+      configuredMarkets: [],
+      configuredCurrencies: [],
+    });
+
+    const reloaded = await persistence!.loadStore(userId);
+    expect(reloaded.accounts).toEqual([]);
+    await expect(persistence!.listActiveAccounts(userId)).resolves.toEqual([]);
+  });
 });

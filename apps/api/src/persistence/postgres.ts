@@ -1352,9 +1352,13 @@ export class PostgresPersistence implements Persistence {
     const feeProfileId = this.defaultFeeProfileId(userId);
     const accountId = this.defaultAccountId(userId);
 
-    // Quick check: skip all seed work if fee profile already exists (common path)
-    const existing = await this.pool.query(`SELECT 1 FROM fee_profiles WHERE id = $1`, [feeProfileId]);
-    if (existing.rows.length > 0) return;
+    // Common path: once the one-time bootstrap boundary has been crossed,
+    // intentionally empty portfolios must remain empty.
+    const existing = await this.pool.query<{ portfolio_initialized: boolean }>(
+      `SELECT portfolio_initialized FROM users WHERE id = $1`,
+      [userId],
+    );
+    if (existing.rows[0]?.portfolio_initialized) return;
 
     // KZO-183: the seed rows must be inserted in the same transaction
     // so the deferred composite FK (accounts_fee_profile_owner_fk) resolves at
@@ -1373,6 +1377,18 @@ export class PostgresPersistence implements Persistence {
          ON CONFLICT (id) DO NOTHING`,
         [userId, normalizeEmail(`${userId}@placeholder.local`)],
       );
+
+      const initialization = await client.query<{ portfolio_initialized: boolean }>(
+        `SELECT portfolio_initialized
+           FROM users
+          WHERE id = $1
+          FOR UPDATE`,
+        [userId],
+      );
+      if (initialization.rows[0]?.portfolio_initialized) {
+        await client.query("COMMIT");
+        return;
+      }
 
       await client.query(
         `INSERT INTO accounts (id, user_id, name, fee_profile_id, default_currency, account_type)
@@ -1418,6 +1434,14 @@ export class PostgresPersistence implements Persistence {
           commissionChargeMode: "CHARGED_UPFRONT",
         });
       }
+
+      await client.query(
+        `UPDATE users
+            SET portfolio_initialized = true,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [userId],
+      );
 
       await client.query("COMMIT");
     } catch (err) {
