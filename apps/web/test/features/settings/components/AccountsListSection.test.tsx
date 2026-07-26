@@ -471,6 +471,31 @@ describe("AccountsListSection", () => {
     expect(select.value).toBe("fp-2");
   });
 
+  it("restores the authoritative default fee profile and shows an inline error when saving fails", async () => {
+    onSaveAccountProfile.mockRejectedValueOnce(new Error("boom"));
+    render({
+      profiles: [
+        buildProfile({ id: "fp-1", accountId: "acc-1", name: "TW Default" }),
+        buildProfile({ id: "fp-2", accountId: "acc-1", name: "TW Alt" }),
+      ],
+      accountDrafts: [buildBinding({ id: "acc-1", feeProfileId: "fp-1" })],
+    });
+
+    await click("accounts-card-acc-1-toggle");
+    await setSelectValue("settings-account-profile-acc-1", "fp-2");
+
+    const select = container.querySelector('[data-testid="settings-account-profile-acc-1"]') as HTMLSelectElement;
+    await act(async () => {
+      select.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="accounts-card-acc-1-account-error"]')?.textContent)
+      .toBe(dict.settings.accountsListAccountUpdateError);
+    expect(select.value).toBe("fp-1");
+    expect(onUpdateAccountProfile).toHaveBeenNthCalledWith(1, "acc-1", "fp-2");
+    expect(onUpdateAccountProfile).toHaveBeenNthCalledWith(2, "acc-1", "fp-1");
+  });
+
   it("persists account type changes immediately", async () => {
     render();
 

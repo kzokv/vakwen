@@ -12,21 +12,14 @@ import {
 import { resolveErrorMessage } from "../../../lib/utils";
 import { fetchTransactionsPrimaryData } from "../services/portfolioService";
 
-const EMPTY_PORTFOLIO_CAPABILITIES = {
-  configuredMarkets: [],
-  configuredCurrencies: [],
-} as const;
-
 const EMPTY_PRIMARY_DATA: TransactionPrimaryDto = {
   recentTransactions: [],
   accountOptions: [],
-  capabilities: EMPTY_PORTFOLIO_CAPABILITIES,
   portfolioConfig: {
     accounts: [],
     feeProfiles: [],
     feeProfileBindings: [],
     integrityIssue: null,
-    capabilities: EMPTY_PORTFOLIO_CAPABILITIES,
   } as TransactionPrimaryDto["portfolioConfig"],
 };
 

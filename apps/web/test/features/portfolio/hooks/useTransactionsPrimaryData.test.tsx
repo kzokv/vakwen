@@ -148,6 +148,19 @@ describe("useTransactionsPrimaryData", () => {
     expect(result.data.recentTransactions[0]?.id).toBe("cached");
   });
 
+  it("keeps capabilities unknown when the initial primary request fails", async () => {
+    vi.mocked(fetchTransactionsPrimaryData).mockRejectedValue(new Error("primary unavailable"));
+
+    act(() => {
+      root.render(<Harness />);
+    });
+    await act(async () => {});
+
+    expect(result.isBootstrapping).toBe(false);
+    expect(result.errorMessage).toBe("primary unavailable");
+    expect(result.data.capabilities).toBeUndefined();
+  });
+
   it("restores stale cached transactions data before refreshing", async () => {
     vi.useFakeTimers();
     const now = new Date("2026-06-08T12:00:00.000Z");

@@ -389,11 +389,16 @@ export function AccountsListSection({
     }
   }
 
-  async function saveDefaultProfile(accountId: string, feeProfileId: string) {
+  async function saveDefaultProfile(
+    accountId: string,
+    feeProfileId: string,
+    previousFeeProfileId: string,
+  ) {
     setAccountErrorById((current) => ({ ...current, [accountId]: "" }));
     try {
       await onSaveAccountProfile(accountId, feeProfileId);
     } catch {
+      onUpdateAccountProfile(accountId, previousFeeProfileId);
       setAccountErrorById((current) => ({
         ...current,
         [accountId]: dict.settings.accountsListAccountUpdateError,
@@ -817,7 +822,7 @@ export function AccountsListSection({
                       onBlur={(event) => {
                         const selected = event.currentTarget.value;
                         if (selected) {
-                          void saveDefaultProfile(account.id, selected);
+                          void saveDefaultProfile(account.id, selected, account.feeProfileId);
                         }
                       }}
                     >

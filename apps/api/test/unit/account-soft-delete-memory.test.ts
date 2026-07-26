@@ -223,6 +223,31 @@ describe("MemoryPersistence — restoreAccount", () => {
       reportingCurrency: "USD",
     });
   });
+
+  it("persists the fallback reporting currency when restoring the sole non-TWD account", async () => {
+    await p.updateAccount({
+      userId,
+      accountId: "acc-1",
+      defaultCurrency: "USD",
+      auditInput: baseAudit,
+    });
+    await p.softDeleteAccount("acc-1", userId, baseAudit);
+
+    const result = await p.restoreAccount("acc-1", userId, baseAudit);
+
+    expect(result.capabilities).toEqual({
+      configuredMarkets: ["US"],
+      configuredCurrencies: ["USD"],
+    });
+    expect(result.reportingCurrency).toEqual({
+      requested: "USD",
+      effective: "USD",
+      reason: null,
+    });
+    await expect(p.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
+  });
 });
 
 describe("MemoryPersistence — listSoftDeletedAccounts", () => {

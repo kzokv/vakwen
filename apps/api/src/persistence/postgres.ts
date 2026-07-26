@@ -20437,7 +20437,18 @@ export class PostgresPersistence implements Persistence {
         throw routeError(404, "account_not_found", "Account not found.");
       }
       const capabilities = await loadPortfolioCapabilitiesTx(client, userId);
-      const prefs = await loadUserPreferencesTx(client, userId);
+      const prefsBefore = await loadUserPreferencesTx(client, userId);
+      const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
+      const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+      const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
+        ? null
+        : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
+          ? reportingCurrencyBefore
+          : capabilities.configuredCurrencies[0]!;
+      if (reportingCurrencyBefore !== reportingCurrencyAfter) {
+        await setStoredReportingCurrencyPreferenceTx(client, userId, reportingCurrencyAfter);
+      }
+      const prefsAfter = await loadUserPreferencesTx(client, userId);
       const feeConfig = await loadAccountFeeConfigTx(client, accountId);
 
       await this.appendAuditLogTx(client, {
@@ -20453,7 +20464,7 @@ export class PostgresPersistence implements Persistence {
         null,
         finalName,
         capabilities,
-        prefs,
+        prefsAfter,
         feeConfig,
       );
     } catch (error) {

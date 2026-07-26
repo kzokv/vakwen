@@ -373,6 +373,39 @@ describePostgres("bounded account mutations (postgres integration)", () => {
     await expect(persistence!.getUserPreferences(userId)).resolves.toEqual({ locale: "en" });
   });
 
+  it("restoreAccount persists the fallback reporting currency for the sole non-TWD account", async () => {
+    await persistence!.updateAccount({
+      userId,
+      accountId: seededAccountId,
+      defaultCurrency: "USD",
+      auditInput: {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "PATCH /accounts/:id" },
+      },
+    });
+    await persistence!.softDeleteAccount(seededAccountId, userId, {
+      actorUserId: userId,
+      ipAddress: "127.0.0.1",
+      metadata: { routeKey: "DELETE /accounts/:id" },
+    });
+
+    const restored = await persistence!.restoreAccount(seededAccountId, userId, {
+      actorUserId: userId,
+      ipAddress: "127.0.0.1",
+      metadata: { routeKey: "POST /accounts/:id/restore" },
+    });
+
+    expect(restored.reportingCurrency).toEqual({
+      requested: "USD",
+      effective: "USD",
+      reason: null,
+    });
+    await expect(persistence!.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
+  });
+
   it("serializes concurrent final-account deletions before deriving reporting fallback", async () => {
     const usdAccount = await persistence!.createAccount({
       userId,

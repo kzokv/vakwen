@@ -8633,7 +8633,28 @@ export class MemoryPersistence implements Persistence {
     store.accounts.push(restoredAccount);
     this.softDeletedAccounts.delete(shadowKey);
     const capabilities = deriveCapabilitiesDto(store.accounts);
-    const prefs = await this.getUserPreferences(userId);
+    const prefsBefore = await this.getUserPreferences(userId);
+    const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
+    const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+    const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
+      ? null
+      : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
+        ? reportingCurrencyBefore
+        : capabilities.configuredCurrencies[0]!;
+    if (reportingCurrencyBefore !== reportingCurrencyAfter) {
+      const nextPrefs = { ...prefsBefore };
+      if (reportingCurrencyAfter === null) {
+        delete nextPrefs.reportingCurrency;
+      } else {
+        nextPrefs.reportingCurrency = reportingCurrencyAfter;
+      }
+      if (Object.keys(nextPrefs).length === 0) {
+        this.userPreferences.delete(userId);
+      } else {
+        this.userPreferences.set(userId, nextPrefs);
+      }
+    }
+    const prefsAfter = await this.getUserPreferences(userId);
     const feeProfiles = store.feeProfiles
       .filter((profile) => profile.accountId === accountId)
       .map(toFeeProfileDto);
@@ -8652,7 +8673,7 @@ export class MemoryPersistence implements Persistence {
       null,
       finalName,
       capabilities,
-      prefs,
+      prefsAfter,
       { feeProfiles, feeProfileBindings },
     );
   }
