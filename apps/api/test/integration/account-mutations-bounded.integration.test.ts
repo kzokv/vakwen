@@ -274,6 +274,40 @@ describePostgres("bounded account mutations (postgres integration)", () => {
     await expect(persistence!.getUserPreferences(userId)).resolves.toEqual({ locale: "en" });
   });
 
+  it("serializes concurrent final-account deletions before deriving reporting fallback", async () => {
+    const usdAccount = await persistence!.createAccount({
+      userId,
+      name: "Concurrent Delete USD",
+      defaultCurrency: "USD",
+      accountType: "broker",
+      auditInput: {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "POST /accounts" },
+      },
+    });
+    await persistence!._setUserPreferences(userId, {
+      reportingCurrency: "TWD",
+      locale: "en",
+    });
+
+    await Promise.all([
+      persistence!.softDeleteAccount(seededAccountId, userId, {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "DELETE /accounts/:id", concurrent: "twd" },
+      }),
+      persistence!.softDeleteAccount(usdAccount.account.id, userId, {
+        actorUserId: userId,
+        ipAddress: "127.0.0.1",
+        metadata: { routeKey: "DELETE /accounts/:id", concurrent: "usd" },
+      }),
+    ]);
+
+    await expect(persistence!.listActiveAccounts(userId)).resolves.toEqual([]);
+    await expect(persistence!.getUserPreferences(userId)).resolves.toEqual({ locale: "en" });
+  });
+
   it("hardPurgeAccount atomically returns capabilities and applies reporting fallback for an active purge", async () => {
     await persistence!._setUserPreferences(userId, { reportingCurrency: "TWD" });
     await persistence!.createAccount({

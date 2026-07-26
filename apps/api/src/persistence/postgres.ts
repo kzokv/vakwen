@@ -20069,6 +20069,13 @@ export class PostgresPersistence implements Persistence {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [input.userId],
+      );
       const accountLookup = await client.query<{
         id: string;
         user_id: string;
@@ -20241,6 +20248,15 @@ export class PostgresPersistence implements Persistence {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      // Serialize capability and reporting-currency changes for this owner.
+      // Lock the owner before account rows to keep mutation lock ordering stable.
+      await client.query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [userId],
+      );
       // Lock row and verify ownership.
       const lookup = await client.query<{
         name: string;
@@ -20331,6 +20347,13 @@ export class PostgresPersistence implements Persistence {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [userId],
+      );
       // Lock + verify soft-deleted state.
       const lookup = await client.query<{ name: string; deleted_at: Date | string | null }>(
         `SELECT name, deleted_at FROM accounts
@@ -20421,6 +20444,13 @@ export class PostgresPersistence implements Persistence {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [userId],
+      );
       // 1. Lock + verify ownership and state.
       const lookup = await client.query<{
         name: string;

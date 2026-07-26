@@ -4559,7 +4559,8 @@ export class MemoryPersistence implements Persistence {
   }
 
   async listActiveAccounts(userId: string): Promise<import("@vakwen/shared-types").AccountDto[]> {
-    return (this.stores.get(userId)?.accounts ?? []).map((account) => ({ ...account }));
+    const store = this.getOrCreateStore(userId);
+    return store.accounts.map((account) => ({ ...account }));
   }
 
   async getCashLedgerEnrichment(

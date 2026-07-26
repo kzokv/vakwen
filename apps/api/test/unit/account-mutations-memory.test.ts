@@ -28,6 +28,16 @@ describe("MemoryPersistence account mutations", () => {
     await persistence.close();
   });
 
+  it("listActiveAccounts materializes the seeded default account on the first narrow read", async () => {
+    await expect(persistence.listActiveAccounts(userId)).resolves.toMatchObject([
+      {
+        id: "acc-1",
+        userId,
+        defaultCurrency: "TWD",
+      },
+    ]);
+  });
+
   it("createAccount returns account, seeded fee profile, and canonical capabilities", async () => {
     const result = await persistence.createAccount({
       userId,
