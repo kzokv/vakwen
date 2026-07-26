@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { roundToDecimal, resolveRangeBounds } from "@vakwen/domain";
+import { derivePortfolioCapabilities, roundToDecimal, resolveRangeBounds } from "@vakwen/domain";
 import {
   ACCOUNT_DEFAULT_CURRENCIES,
   MARKET_CODES,
@@ -10,6 +10,7 @@ import {
   type AccountDefaultCurrency,
   type InstrumentType,
   type MarketCode,
+  type PortfolioCapabilitiesDto,
   type UnrealizedPnlAnalysisDto,
   type UnrealizedPnlAnalysisQueryStateDto,
   type UnrealizedPnlGranularity,
@@ -680,6 +681,7 @@ export async function buildUnrealizedPnlAnalysis(
     app.persistence.loadStore(userId),
     app.persistence.getUserPreferences(userId),
   ]);
+  const capabilities: PortfolioCapabilitiesDto = derivePortfolioCapabilities(store.accounts);
   const defaultReportingCurrency = resolveReportingCurrency(prefs);
   const activeAccounts = new Map(store.accounts.map((account) => [account.id, account] as const));
   const earliestTradeDate = [...listTradeEvents(store)]
@@ -994,6 +996,7 @@ export async function buildUnrealizedPnlAnalysis(
   const nonZeroQuantitySnapshotRows = portfolioSnapshotRows.filter((row) => row.quantity !== 0);
 
   return {
+    capabilities,
     query,
     metadata,
     basis: {

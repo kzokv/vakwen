@@ -15,7 +15,7 @@
 import { test } from "../fixtures.js";
 
 test.describe("DELETE /accounts/:id (ui-enhancement soft-delete)", () => {
-  test("happy path: returns 200 with { accountId, deletedAt } and hides the row from GET /accounts", async ({
+  test("happy path: returns 200 with the authoritative lifecycle delta and hides the row from GET /accounts", async ({
     accountsApi,
   }) => {
     // Arrange — create a fresh account so we don't poison the seeded `acc-1`.
@@ -40,6 +40,21 @@ test.describe("DELETE /accounts/:id (ui-enhancement soft-delete)", () => {
         `Expected response.deletedAt to be a non-empty ISO string; got ${String(respBody.deletedAt)}`,
       );
     }
+    await accountsApi.assert.fieldEquals(respBody, "finalName", null);
+    const deletedAccount = respBody.account as Record<string, unknown>;
+    await accountsApi.assert.fieldEquals(deletedAccount, "id", id);
+    await accountsApi.assert.fieldEquals(deletedAccount, "name", "Soft Delete Target");
+    await accountsApi.assert.fieldEquals(deletedAccount, "defaultCurrency", "TWD");
+    await accountsApi.assert.fieldEquals(deletedAccount, "accountType", "broker");
+    await accountsApi.assert.mxAssertDeepEqual(respBody.capabilities, {
+      configuredMarkets: ["TW"],
+      configuredCurrencies: ["TWD"],
+    });
+    await accountsApi.assert.mxAssertDeepEqual(respBody.reportingCurrency, {
+      requested: null,
+      effective: "TWD",
+      reason: null,
+    });
 
     // Assert — GET /accounts no longer surfaces the soft-deleted row
     const listResponse = await accountsApi.actions.listAccounts();
@@ -70,6 +85,9 @@ test.describe("DELETE /accounts/:id (ui-enhancement soft-delete)", () => {
     await accountsApi.assert.statusIs(second, 200);
     const secondBody = (await accountsApi.arrange.body(second)) as Record<string, unknown>;
     await accountsApi.assert.fieldEquals(secondBody, "deletedAt", firstDeletedAt);
+    const deletedAccount = secondBody.account as Record<string, unknown>;
+    await accountsApi.assert.fieldEquals(deletedAccount, "id", id);
+    await accountsApi.assert.fieldEquals(deletedAccount, "name", "Idempotent Soft Delete");
   });
 
   test("unknown account id returns 404 with body.error='account_not_found'", async ({

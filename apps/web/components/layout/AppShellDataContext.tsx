@@ -4,10 +4,13 @@ import { createContext, useContext, type ReactNode } from "react";
 import type {
   AccountDto,
   AccountDefaultCurrency,
+  AccountLifecycleMutationResponseDto,
+  AccountMutationResponseDto,
   AccountType,
   FeeProfileBindingDto,
   FeeProfileDto,
   LocaleCode,
+  PortfolioCapabilitiesDto,
   RouteCachePolicyDto,
   ShareCapability,
 } from "@vakwen/shared-types";
@@ -39,8 +42,17 @@ export interface AppShellData {
   sharedContextPermissions: SharedContextPermissions;
   canUseGlobalQuickActions: boolean;
   openQuickActions: () => void;
+  portfolioCapabilities: PortfolioCapabilitiesDto | null;
   reportingCurrency: AccountDefaultCurrency;
-  saveReportingCurrency: (currency: AccountDefaultCurrency) => Promise<void>;
+  saveReportingCurrency: (
+    currency: AccountDefaultCurrency,
+    options?: { refreshRouter?: boolean },
+  ) => Promise<void>;
+  applyAccountMutationResponse: (response: AccountMutationResponseDto) => void;
+  applyAccountLifecycleMutationResponse?: (
+    response: AccountLifecycleMutationResponseDto,
+    operation: "soft_delete" | "restore" | "hard_purge",
+  ) => void;
   isReportingCurrencySaving: boolean;
   reportingCurrencyError: string;
   transactionSubmission: ReturnType<typeof useTransactionSubmission>;

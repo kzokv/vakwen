@@ -220,6 +220,10 @@ export function buildPreviewUnrealizedPnlAnalysis(
   const deepLink = `/analysis/unrealized-pnl${stateToQuerySuffix(state)}`;
 
   return {
+    capabilities: {
+      configuredMarkets: ["TW", "US", "AU"],
+      configuredCurrencies: ["TWD", "USD", "AUD"],
+    },
     query: {
       range: state.range,
       from: state.range === "CUSTOM" ? state.from : null,

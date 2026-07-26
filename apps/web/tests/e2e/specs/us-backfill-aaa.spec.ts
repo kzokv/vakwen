@@ -92,23 +92,12 @@ test("[transactions]: AAPL US trade against USD account → posted, recent table
   await transactions.assert.recentTransactionTickerIsVisible("AAPL");
 });
 
-test("[transactions]: US chip on AAPL without USD account asks user to create a compatible account", async ({
-  settings,
+test("[transactions]: TWD-only account set → US market chip is hidden", async ({
   transactions,
 }) => {
-  // ── Arrange: seed AAPL US; default user only has TWD account ────────────
-  await settings.arrange.seedInstruments([AAPL_US]);
-
-  // ── Act ──────────────────────────────────────────────────────────────────
+  // ── Act ─────────────────────────────────────────────────────────────────
   await transactions.actions.navigateToTransactions();
-  await transactions.actions.selectTransactionType("BUY");
-  await transactions.actions.selectMarketChip("US");
-  await transactions.actions.typeInTickerSearch("AAPL");
-  await transactions.actions.selectTickerOption("AAPL", "US");
 
-  // ── Assert: chip derives USD but blocks submit until a compatible account exists.
-  await transactions.assert.priceCurrencyIs("USD");
-  await transactions.assert.noAccountErrorContains(/USD/);
-  await transactions.assert.createAccountLinkHrefContains(/accountsPrefillCurrency=USD/);
-  await transactions.assert.submitButtonIsDisabled();
+  // ── Assert: US is not offered until a USD account enables that market.
+  await transactions.assert.marketChipIsAbsent("US");
 });

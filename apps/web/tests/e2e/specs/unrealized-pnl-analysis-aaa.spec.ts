@@ -99,7 +99,7 @@ test("[analysis-unrealized-pnl-A]: open analysis, select ticker lines, and scrub
   await appShell.assert.mxAssertTruthy(Boolean(new URL(page.url()).searchParams.get("focus")), "focus date URL state");
 });
 
-test("[analysis-unrealized-pnl-B]: open reports summary deep-link → analysis route state is preserved", async ({
+test("[analysis-unrealized-pnl-B]: stale US reports deep-link → configured TW analysis state is preserved", async ({
   appShell,
   page,
 }) => {
@@ -111,7 +111,7 @@ test("[analysis-unrealized-pnl-B]: open reports summary deep-link → analysis r
   await basisStrip.waitFor({ state: "visible" });
   await basisStrip.getByText("Valuation basis").waitFor({ state: "visible" });
   await basisStrip.getByText("Reports stay on the current-valuation path.").waitFor({ state: "visible" });
-  await page.getByTestId("reports-basis-market-US").waitFor({ state: "visible" });
+  await page.getByTestId("reports-basis-market-TW").waitFor({ state: "visible" });
   await page.getByTestId("reports-basis-fx").getByText("FX", { exact: true }).waitFor({ state: "visible" });
 
   const link = page.getByTestId("reports-summary-unrealized-pnl-analysis-link");
@@ -121,7 +121,7 @@ test("[analysis-unrealized-pnl-B]: open reports summary deep-link → analysis r
   await appShell.assert.mxAssertTruthy(Boolean(href?.startsWith("/analysis/unrealized-pnl")), "reports summary analysis link target");
   const target = new URL(href ?? "/analysis/unrealized-pnl", TestEnv.appBaseUrl);
   await appShell.assert.mxAssertEqual(target.searchParams.get("range"), "1M", "reports range maps into analysis state");
-  await appShell.assert.mxAssertEqual(target.searchParams.get("markets"), "US", "reports scope maps into analysis state");
+  await appShell.assert.mxAssertEqual(target.searchParams.get("markets"), "TW", "normalized reports scope maps into analysis state");
 
   await link.click();
   await page.getByRole("heading", { name: "Unrealized P&L Analysis" }).waitFor({ state: "visible" });

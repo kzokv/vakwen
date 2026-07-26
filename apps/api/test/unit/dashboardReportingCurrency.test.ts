@@ -1058,7 +1058,24 @@ describe("buildOverviewMarketValues", () => {
 
     expect(buildOverviewMarketValues(rows, "TWD")).toEqual([
       { marketCode: "TW", value: 3_500, reportingCurrency: "TWD" },
+      { marketCode: "US", value: null, reportingCurrency: "TWD" },
     ]);
+  });
+
+  it("keeps held markets with unavailable valuation without inventing configured-empty cards", () => {
+    const heldMarket = makeHoldingGroup({
+      ticker: "AAPL",
+      marketCode: "US",
+      currency: "USD",
+      reportingCurrency: "TWD",
+      reportingMarketValueAmount: null,
+      fxStatus: "missing",
+    });
+
+    expect(buildOverviewMarketValues([heldMarket], "TWD")).toEqual([
+      { marketCode: "US", value: null, reportingCurrency: "TWD" },
+    ]);
+    expect(buildOverviewMarketValues([], "TWD")).toEqual([]);
   });
 });
 

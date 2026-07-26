@@ -12,6 +12,7 @@ import type {
 import { MARKET_CODES, currencyFor, marketCodeFor } from "@vakwen/shared-types";
 import type { AppDictionary } from "../../lib/i18n";
 import { cn, formatCurrencyAmount, formatDateLabel, formatNumber } from "../../lib/utils";
+import { SingleCapabilityContext } from "../../features/portfolio-capabilities/components/SingleCapabilityContext";
 import { TooltipInfo } from "../ui/TooltipInfo";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -47,6 +48,7 @@ export interface TransactionAccountOption {
 interface AddTransactionCardProps {
   value: TransactionInput;
   accountOptions: TransactionAccountOption[];
+  availableMarkets?: readonly MarketCode[];
   pending: boolean;
   onChange: (next: TransactionInput) => void;
   onUnitPriceEdited?: () => void;
@@ -166,6 +168,7 @@ function chipLabel(dict: AppDictionary, chip: MarketCode): string {
 export function AddTransactionCard({
   value,
   accountOptions,
+  availableMarkets,
   pending,
   onChange,
   onUnitPriceEdited,
@@ -184,6 +187,13 @@ export function AddTransactionCard({
   sellAvailabilityTransportError = "",
 }: AddTransactionCardProps) {
   const accountSelectId = useId();
+  const constrainedMarkets = useMemo(() => {
+    if (!availableMarkets || availableMarkets.length === 0) {
+      return [...MARKET_CHIPS];
+    }
+
+    return MARKET_CHIPS.filter((market) => availableMarkets.includes(market));
+  }, [availableMarkets]);
 
   function setField<K extends keyof TransactionInput>(key: K, nextValue: TransactionInput[K]) {
     onChange({ ...value, [key]: nextValue });
@@ -197,12 +207,12 @@ export function AddTransactionCard({
   // any) so it survives reconciliation effects.
   const [explicitChip, setExplicitChip] = useState<MarketCode | undefined>(undefined);
   const defaultChip = useMemo(
-    () => deriveDefaultMarketChip(accountOptions),
-    [accountOptions],
+    () => constrainedMarkets[0] ?? deriveDefaultMarketChip(accountOptions),
+    [accountOptions, constrainedMarkets],
   );
-  const activeChip: MarketCode = explicitChip !== undefined
+  const activeChip: MarketCode = explicitChip !== undefined && constrainedMarkets.includes(explicitChip)
     ? explicitChip
-    : (value.marketCode ?? defaultChip);
+    : (value.marketCode && constrainedMarkets.includes(value.marketCode) ? value.marketCode : defaultChip);
 
   // ui-enhancement: chip is always a concrete `MarketCode` (ALL chip
   // removed from this surface). Derived trade currency follows it directly.
@@ -389,25 +399,33 @@ export function AddTransactionCard({
         <legend className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
           {dict.transactions.marketTerm}
         </legend>
-        <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={dict.transactions.marketTerm}>
-          {MARKET_CHIPS.map((chip) => {
-            const active = activeChip === chip;
-            return (
-              <button
-                key={chip}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                disabled={instrumentReadOnly}
-                onClick={() => handleChipChange(chip)}
-                className={chipPillClassName(active, instrumentReadOnly)}
-                data-testid={`tx-market-chip-${chip}`}
-              >
-                {chipLabel(dict, chip)}
-              </button>
-            );
-          })}
-        </div>
+        {constrainedMarkets.length === 1 ? (
+          <SingleCapabilityContext
+            label={dict.transactions.marketTerm}
+            value={chipLabel(dict, constrainedMarkets[0] ?? defaultChip)}
+            testId="tx-market-context-single"
+          />
+        ) : (
+          <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={dict.transactions.marketTerm}>
+            {constrainedMarkets.map((chip) => {
+              const active = activeChip === chip;
+              return (
+                <button
+                  key={chip}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  disabled={instrumentReadOnly}
+                  onClick={() => handleChipChange(chip)}
+                  className={chipPillClassName(active, instrumentReadOnly)}
+                  data-testid={`tx-market-chip-${chip}`}
+                >
+                  {chipLabel(dict, chip)}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </fieldset>
 
       <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">

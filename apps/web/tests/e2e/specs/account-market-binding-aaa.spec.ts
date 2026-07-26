@@ -3,8 +3,7 @@
  *
  * Covers F4 scope items:
  *   AMB-1  Create account with "United States" currency card → market badge shown.
- *   AMB-2  BUY trade against TW-only account set with US ticker (MSFT) → blocked
- *          in the form with the KZO-169 no-compatible-account state.
+ *   AMB-2  TW-only account set → US market is absent from the transaction form.
  *   AMB-3  BUY trade against US account with US ticker (MSFT) → succeeds.
  *
  * Ticker hygiene (e2e-shared-memory-bars-ticker-hygiene.md):
@@ -55,37 +54,15 @@ test("[settings drawer]: create account with United States currency card → mar
 
 // ─── AMB-2 ────────────────────────────────────────────────────────────────────
 
-test("[transactions]: US chip with no USD account asks user to create a compatible account", async ({
-  settings,
+test("[transactions]: TW-only account set → US market chip is hidden", async ({
   transactions,
 }) => {
-  // ── Arrange: seed MSFT as a US-market instrument ──────────────────────────
-  await settings.arrange.seedInstruments([
-    {
-      ticker: "MSFT",
-      name: "Microsoft Corporation",
-      instrumentType: "STOCK",
-      marketCode: "US",
-      barsBackfillStatus: "none",
-    },
-  ]);
-
-  // ── Act ───────────────────────────────────────────────────────────────────
+  // ── Act ─────────────────────────────────────────────────────────────────
   await transactions.actions.navigateToTransactions();
-  await transactions.actions.selectFirstAccount();
-  await transactions.assert.selectedAccountOptionContains(/Main/i);
 
-  await transactions.actions.selectTransactionType("BUY");
-  await transactions.actions.selectMarketChip("US");
-  await transactions.actions.typeInTickerSearch("MSFT");
-  await transactions.actions.selectTickerOption("MSFT", "US");
-
-  // ── Assert: form-side chip → derived priceCurrency is USD, but no matching
-  //    account exists so the form blocks submission and offers account create.
-  await transactions.assert.priceCurrencyIs("USD");
-  await transactions.assert.noAccountErrorContains(/USD/);
-  await transactions.assert.createAccountLinkHrefContains(/accountsPrefillCurrency=USD/);
-  await transactions.assert.submitButtonIsDisabled();
+  // ── Assert: account-derived capabilities expose TW as a static single
+  //    market context. An unconfigured US market cannot be selected.
+  await transactions.assert.marketChipIsAbsent("US");
 });
 
 // ─── AMB-3 ────────────────────────────────────────────────────────────────────

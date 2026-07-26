@@ -22,6 +22,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import type { AccountMutationResponseDto } from "@vakwen/shared-types";
 import { AccountCreateForm } from "../../../../features/settings/components/AccountCreateForm";
 import { ApiError } from "../../../../lib/api";
 import { getDictionary } from "../../../../lib/i18n";
@@ -32,8 +33,8 @@ beforeAll(() => {
 
 const dict = getDictionary("en");
 
-function buildAccountDto(overrides: Record<string, unknown> = {}) {
-  return {
+function buildAccountDto(overrides: Record<string, unknown> = {}): AccountMutationResponseDto {
+  const account = {
     id: "new-account-id",
     name: "USD Brokerage",
     userId: "user-1",
@@ -41,6 +42,36 @@ function buildAccountDto(overrides: Record<string, unknown> = {}) {
     defaultCurrency: "USD" as const,
     accountType: "bank" as const,
     ...overrides,
+  };
+  return {
+    ...account,
+    account,
+    feeProfile: {
+      id: "fp-default",
+      accountId: account.id,
+      name: "USD Default",
+      boardCommissionRate: 1.425,
+      commissionDiscountPercent: 0,
+      minimumCommissionAmount: 20,
+      commissionCurrency: account.defaultCurrency,
+      commissionRoundingMode: "FLOOR",
+      taxRoundingMode: "FLOOR",
+      stockSellTaxRateBps: 30,
+      stockDayTradeTaxRateBps: 15,
+      etfSellTaxRateBps: 10,
+      bondEtfSellTaxRateBps: 0,
+      commissionChargeMode: "CHARGED_UPFRONT",
+    },
+    capabilities: {
+      configuredMarkets: ["TW", "US"],
+      configuredCurrencies: ["TWD", "USD"],
+    },
+    reportingCurrency: {
+      requested: account.defaultCurrency,
+      effective: account.defaultCurrency,
+      reason: null,
+    },
+    changedFields: ["name", "accountType"],
   };
 }
 
@@ -61,7 +92,7 @@ describe("AccountCreateForm", () => {
 
   // ── Render shape ───────────────────────────────────────────────────────────
 
-  it("renders the 4 base sections (name, type pills, market cards, callout) with no fee-profile picker", () => {
+  it("starts on the market step, shows all supported markets, and keeps the fee-profile picker removed", () => {
     const onCreate = vi.fn();
     const onAccountsRefresh = vi.fn();
 
@@ -78,12 +109,8 @@ describe("AccountCreateForm", () => {
     const formShell = container.querySelector('[data-testid="account-create-form"]') as HTMLElement;
     expect(formShell).toBeTruthy();
     expect(formShell.className).not.toContain(["glass", "inset"].join("-"));
-    expect(container.querySelector('[data-testid="account-create-name-input"]')).toBeTruthy();
-
-    // Type pills (3) — broker, bank, wallet.
-    expect(container.querySelector('[data-testid="account-create-type-broker"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="account-create-type-bank"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="account-create-type-wallet"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="account-create-name-input"]')).toBeNull();
+    expect(container.querySelector('[data-testid="account-create-type-broker"]')).toBeNull();
 
     // Market cards (5) — TWD, USD, AUD, KRW, JPY; labels read country names per E3.
     const tw = container.querySelector('[data-testid="account-create-currency-TWD"]');
@@ -102,17 +129,74 @@ describe("AccountCreateForm", () => {
     expect(kr!.textContent).toContain(dict.settings.accountCreateMarketKorea);
     expect(jp!.textContent).toContain(dict.settings.accountCreateMarketJapan);
 
-    // Currency-lock callout.
-    const callout = container.querySelector('[data-testid="account-create-currency-lock"]');
-    expect(callout).toBeTruthy();
-    expect(callout!.textContent).toContain(dict.settings.accountCreateCurrencyLockBody);
-
-    // Submit + preview present.
-    expect(container.querySelector('[data-testid="account-create-submit"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="account-create-continue"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="account-create-preview-chip"]')).toBeTruthy();
 
     // KZO-183: fee-profile picker removed.
     expect(container.querySelector('[data-testid="account-create-fee-profile-select"]')).toBeNull();
+  });
+
+  it("uses a market -> details -> review flow for first-account onboarding", async () => {
+    act(() =>
+      root.render(
+        <AccountCreateForm
+          onCreate={vi.fn()}
+          onAccountsRefresh={vi.fn()}
+          dict={dict}
+          isFirstAccount
+        />,
+      ),
+    );
+
+    expect(container.textContent).toContain(dict.settings.accountCreateStepMarket);
+    expect(container.textContent).toContain(dict.settings.accountCreateStepDetails);
+    expect(container.textContent).toContain(dict.settings.accountCreateStepReview);
+    expect(container.querySelector('[data-testid="account-create-step-market"]')).not.toBeNull();
+
+    const continueFromMarket = container.querySelector('[data-testid="account-create-continue"]') as HTMLButtonElement;
+    await act(async () => continueFromMarket.click());
+    expect(container.querySelector('[data-testid="account-create-step-details"]')).not.toBeNull();
+
+    const nameInput = container.querySelector(
+      '[data-testid="account-create-name-input"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(nameInput, "First account");
+      nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const continueFromDetails = container.querySelector('[data-testid="account-create-continue"]') as HTMLButtonElement;
+    await act(async () => continueFromDetails.click());
+
+    expect(container.querySelector('[data-testid="account-create-step-review"]')).not.toBeNull();
+    expect(container.textContent).toContain("First account");
+    expect(container.textContent).toContain(dict.settings.accountCreateDefaultProfileReview);
+  });
+
+  it("labels already-enabled markets without blocking another account in the same market", async () => {
+    act(() =>
+      root.render(
+        <AccountCreateForm
+          onCreate={vi.fn()}
+          onAccountsRefresh={vi.fn()}
+          dict={dict}
+          existingAccounts={[
+            buildAccountDto({ id: "acc-us", defaultCurrency: "USD", name: "Existing US" }).account,
+          ] as never}
+        />,
+      ),
+    );
+
+    const usdCard = container.querySelector('[data-testid="account-create-currency-USD"]') as HTMLButtonElement;
+    await act(async () => usdCard.click());
+
+    expect(container.querySelector('[data-testid="account-create-enabled-market-note"]')?.textContent)
+      .toContain(dict.settings.accountCreateAlreadyEnabled);
+    expect(container.querySelector('[data-testid="account-create-continue"]')).not.toBeNull();
   });
 
   // ── Live-preview chip updates ──────────────────────────────────────────────
@@ -132,7 +216,11 @@ describe("AccountCreateForm", () => {
     // Empty initial state → placeholder text.
     expect(chip.textContent).toContain(dict.settings.accountCreateNamePlaceholder);
 
-    // Type into name input.
+    const usdCard = container.querySelector('[data-testid="account-create-currency-USD"]') as HTMLButtonElement;
+    await act(async () => usdCard.click());
+    const continueFromMarket = container.querySelector('[data-testid="account-create-continue"]') as HTMLButtonElement;
+    await act(async () => continueFromMarket.click());
+
     const nameInput = container.querySelector(
       '[data-testid="account-create-name-input"]',
     ) as HTMLInputElement;
@@ -148,10 +236,6 @@ describe("AccountCreateForm", () => {
     // Click Bank type pill.
     const bankPill = container.querySelector('[data-testid="account-create-type-bank"]') as HTMLButtonElement;
     await act(async () => bankPill.click());
-
-    // Click USD market card.
-    const usdCard = container.querySelector('[data-testid="account-create-currency-USD"]') as HTMLButtonElement;
-    await act(async () => usdCard.click());
 
     // Chip should now read "USD Brokerage (USD · Bank)" (formatAccountOption shape).
     expect(chip.textContent).toContain("USD Brokerage");
@@ -172,10 +256,8 @@ describe("AccountCreateForm", () => {
       ),
     );
 
-    const submit = container.querySelector(
-      '[data-testid="account-create-submit"]',
-    ) as HTMLButtonElement;
-    expect(submit.disabled).toBe(true);
+    const continueFromMarket = container.querySelector('[data-testid="account-create-continue"]') as HTMLButtonElement;
+    await act(async () => continueFromMarket.click());
 
     // Whitespace-only stays disabled.
     const nameInput = container.querySelector(
@@ -190,14 +272,18 @@ describe("AccountCreateForm", () => {
       nameInput.dispatchEvent(new Event("input", { bubbles: true }));
     };
 
+    const continueFromDetails = container.querySelector(
+      '[data-testid="account-create-continue"]',
+    ) as HTMLButtonElement;
+
     await act(async () => setNameValue("   "));
-    expect(submit.disabled).toBe(true);
+    expect(continueFromDetails.disabled).toBe(true);
 
     await act(async () => setNameValue("Real Account"));
-    expect(submit.disabled).toBe(false);
+    expect(continueFromDetails.disabled).toBe(false);
 
     await act(async () => setNameValue(""));
-    expect(submit.disabled).toBe(true);
+    expect(continueFromDetails.disabled).toBe(true);
   });
 
   // ── Happy-path submit calls onCreate + onAccountsRefresh + resets ─────────
@@ -216,7 +302,11 @@ describe("AccountCreateForm", () => {
       ),
     );
 
-    // Fill name + type + currency.
+    const usdCard = container.querySelector('[data-testid="account-create-currency-USD"]') as HTMLButtonElement;
+    await act(async () => usdCard.click());
+    const continueFromMarket = container.querySelector('[data-testid="account-create-continue"]') as HTMLButtonElement;
+    await act(async () => continueFromMarket.click());
+
     const nameInput = container.querySelector(
       '[data-testid="account-create-name-input"]',
     ) as HTMLInputElement;
@@ -230,8 +320,8 @@ describe("AccountCreateForm", () => {
     });
     const bankPill = container.querySelector('[data-testid="account-create-type-bank"]') as HTMLButtonElement;
     await act(async () => bankPill.click());
-    const usdCard = container.querySelector('[data-testid="account-create-currency-USD"]') as HTMLButtonElement;
-    await act(async () => usdCard.click());
+    const continueFromDetails = container.querySelector('[data-testid="account-create-continue"]') as HTMLButtonElement;
+    await act(async () => continueFromDetails.click());
 
     // Submit.
     const submit = container.querySelector(
@@ -250,8 +340,9 @@ describe("AccountCreateForm", () => {
     // onAccountsRefresh fired after onCreate resolved.
     expect(onAccountsRefresh).toHaveBeenCalledTimes(1);
 
-    // Form reset → name input empty again.
-    expect(nameInput.value).toBe("");
+    expect(container.querySelector('[data-testid="account-create-success"]')?.textContent)
+      .toContain("USD Brokerage");
+    expect(container.querySelector('[data-testid="account-create-name-input"]')).toBeNull();
   });
 
   // ── Inline error rendering ────────────────────────────────────────────────
@@ -272,7 +363,9 @@ describe("AccountCreateForm", () => {
       ),
     );
 
-    // Fill + submit with a duplicate name.
+    const continueFromMarket = container.querySelector('[data-testid="account-create-continue"]') as HTMLButtonElement;
+    await act(async () => continueFromMarket.click());
+
     const nameInput = container.querySelector(
       '[data-testid="account-create-name-input"]',
     ) as HTMLInputElement;
@@ -284,9 +377,11 @@ describe("AccountCreateForm", () => {
       setter?.call(nameInput, "Main");
       nameInput.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    const submit = container.querySelector(
-      '[data-testid="account-create-submit"]',
+    const continueFromDetails = container.querySelector(
+      '[data-testid="account-create-continue"]',
     ) as HTMLButtonElement;
+    await act(async () => continueFromDetails.click());
+    const submit = container.querySelector('[data-testid="account-create-submit"]') as HTMLButtonElement;
     await act(async () => submit.click());
 
     const errorEl = container.querySelector('[data-testid="account-create-error"]');
@@ -312,7 +407,9 @@ describe("AccountCreateForm", () => {
       ),
     );
 
-    // Fill + submit.
+    const continueFromMarket = container.querySelector('[data-testid="account-create-continue"]') as HTMLButtonElement;
+    await act(async () => continueFromMarket.click());
+
     const nameInput = container.querySelector(
       '[data-testid="account-create-name-input"]',
     ) as HTMLInputElement;
@@ -324,9 +421,11 @@ describe("AccountCreateForm", () => {
       setter?.call(nameInput, "Some Name");
       nameInput.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    const submit = container.querySelector(
-      '[data-testid="account-create-submit"]',
+    const continueFromDetails = container.querySelector(
+      '[data-testid="account-create-continue"]',
     ) as HTMLButtonElement;
+    await act(async () => continueFromDetails.click());
+    const submit = container.querySelector('[data-testid="account-create-submit"]') as HTMLButtonElement;
     await act(async () => submit.click());
 
     const errorEl = container.querySelector('[data-testid="account-create-error"]');

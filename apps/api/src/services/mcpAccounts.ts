@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { roundToDecimal } from "@vakwen/domain";
 import type {
   AccountDefaultCurrency,
@@ -7,14 +6,15 @@ import type {
   ChatGptAccountManagerWidgetDto,
   McpAccountDisplayDto,
 } from "@vakwen/shared-types";
-import { routeError } from "../lib/routeError.js";
 import type { McpDraftServiceDeps } from "../mcp/types.js";
-import { isUniqueViolation } from "../persistence/postgres.js";
 import type { Store } from "../types/store.js";
 import { resolveUniqueActiveAccount } from "./mcpAccountHelpers.js";
-import { createDefaultFeeProfile } from "./store.js";
 import { syncAccountingPolicy } from "./accountingStore.js";
 import { connectorGroupForScope } from "./mcpConnectorLifecycle.js";
+import {
+  publishAccountMutationEventToOwnerAndActiveGrantees,
+  publishLifecycleEventToOwnerAndActiveGrantees,
+} from "./accountMutationEvents.js";
 
 interface AccountMutationAudit {
   actorUserId: string;
@@ -211,71 +211,57 @@ export async function createAccount(
   deps: McpDraftServiceDeps,
   input: { name: string; defaultCurrency: AccountDefaultCurrency; accountType: AccountType },
 ) {
-  const { store } = await loadAccountStore(deps);
+  const contextUserId = deps.requestContext.resolvedContext.portfolioContextUserId;
   const name = input.name.trim();
-  if (store.accounts.some((account) => account.name === name)) {
-    throw routeError(409, "account_name_in_use", "An account with that name already exists.");
-  }
-  const accountId = randomUUID();
-  const seededProfile = createDefaultFeeProfile(accountId, input.defaultCurrency);
-  const account: AccountDto = {
-    id: accountId,
-    userId: store.userId,
+  const result = await deps.app.persistence.createAccount({
+    userId: contextUserId,
     name,
-    feeProfileId: seededProfile.id,
     defaultCurrency: input.defaultCurrency,
     accountType: input.accountType,
-  };
-  store.feeProfiles.push(seededProfile);
-  store.accounts.push(account);
-  try {
-    await deps.app.persistence.saveStore(store);
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      throw routeError(409, "account_name_in_use", "An account with that name already exists.");
-    }
-    throw error;
-  }
+    auditInput: auditForMutation(deps),
+  });
   await appendDelegatedAccountWriteAudit(deps, {
     mutation: "account_created",
     toolName: ACCOUNT_MANAGER_TOOLS.createAccount,
-    accountId: account.id,
+    accountId: result.account.id,
   });
-  return { account };
+  await publishAccountMutationEventToOwnerAndActiveGrantees(
+    deps.app,
+    contextUserId,
+    "account_created",
+    result,
+  );
+  return { account: result.account };
 }
 
 export async function updateAccount(
   deps: McpDraftServiceDeps,
   input: { accountId?: string | null; accountName?: string | null; name?: string; feeProfileId?: string; accountType?: AccountType },
 ) {
-  const { store } = await loadAccountStore(deps);
-  const account = resolveUniqueActiveAccount(store.accounts, input);
-  if (input.name !== undefined) {
-    const name = input.name.trim();
-    if (store.accounts.some((item) => item.id !== account.id && item.name === name)) {
-      throw routeError(409, "account_name_in_use", "An account with that name already exists.");
-    }
-    account.name = name;
-  }
-  if (input.feeProfileId !== undefined) {
-    const profile = store.feeProfiles.find((item) => item.id === input.feeProfileId);
-    if (!profile) throw routeError(404, "fee_profile_not_found", `Fee profile ${input.feeProfileId} was not found.`);
-    if (profile.accountId !== account.id) {
-      throw routeError(400, "invalid_fee_profile", `Fee profile ${input.feeProfileId} is not owned by account ${account.id}.`);
-    }
-    account.feeProfileId = input.feeProfileId;
-  }
-  if (input.accountType !== undefined) {
-    account.accountType = input.accountType;
-  }
-  await deps.app.persistence.saveStore(store);
+  const contextUserId = deps.requestContext.resolvedContext.portfolioContextUserId;
+  const accounts = await deps.app.persistence.listActiveAccounts(contextUserId);
+  const account = resolveUniqueActiveAccount(accounts, input);
+  const result = await deps.app.persistence.updateAccount({
+    userId: contextUserId,
+    accountId: account.id,
+    ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+    ...(input.feeProfileId !== undefined ? { feeProfileId: input.feeProfileId } : {}),
+    ...(input.accountType !== undefined ? { accountType: input.accountType } : {}),
+    auditInput: auditForMutation(deps),
+  });
   await appendDelegatedAccountWriteAudit(deps, {
     mutation: "account_updated",
     toolName: ACCOUNT_MANAGER_TOOLS.updateAccount,
-    accountId: account.id,
+    accountId: result.account.id,
     changedFields: Object.keys(input).filter((key) => input[key as keyof typeof input] !== undefined),
   });
-  return { account };
+  await publishAccountMutationEventToOwnerAndActiveGrantees(
+    deps.app,
+    contextUserId,
+    "account_updated",
+    result,
+  );
+  return { account: result.account };
 }
 
 function auditForMutation(deps: McpDraftServiceDeps): AccountMutationAudit {
@@ -304,13 +290,9 @@ export async function softDeleteAccount(
   const contextUserId = deps.requestContext.resolvedContext.portfolioContextUserId;
   const { store } = await loadAccountStore(deps);
   const account = resolveUniqueActiveAccount(store.accounts, input);
-  const { deletedAt } = await deps.app.persistence.softDeleteAccount(account.id, contextUserId, auditForMutation(deps));
-  await deps.app.eventBus.publishEvent(contextUserId, "account_soft_deleted", {
-    type: "account_soft_deleted" as const,
-    accountId: account.id,
-    deletedAt,
-  });
-  return { accountId: account.id, accountName: account.name, deletedAt };
+  const deleted = await deps.app.persistence.softDeleteAccount(account.id, contextUserId, auditForMutation(deps));
+  await publishLifecycleEventToOwnerAndActiveGrantees(deps.app, contextUserId, "account_soft_deleted", deleted);
+  return { accountId: account.id, accountName: account.name, deletedAt: deleted.deletedAt };
 }
 
 export async function restoreAccount(
@@ -318,11 +300,7 @@ export async function restoreAccount(
   input: { accountId: string },
 ) {
   const contextUserId = deps.requestContext.resolvedContext.portfolioContextUserId;
-  const { finalName } = await deps.app.persistence.restoreAccount(input.accountId, contextUserId, auditForMutation(deps));
-  await deps.app.eventBus.publishEvent(contextUserId, "account_restored", {
-    type: "account_restored" as const,
-    accountId: input.accountId,
-    finalName,
-  });
-  return { accountId: input.accountId, finalName };
+  const restored = await deps.app.persistence.restoreAccount(input.accountId, contextUserId, auditForMutation(deps));
+  await publishLifecycleEventToOwnerAndActiveGrantees(deps.app, contextUserId, "account_restored", restored);
+  return { accountId: input.accountId, finalName: restored.finalName };
 }

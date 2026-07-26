@@ -195,6 +195,10 @@ describe("report routes", () => {
     });
     expect(dailyReview.statusCode).toBe(200);
     expect(dailyReview.json()).toEqual(expect.objectContaining({
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      },
       query: expect.objectContaining({
         scope: "TW",
         reportingCurrency: "TWD",
@@ -271,6 +275,10 @@ describe("report routes", () => {
     });
     expect(portfolioReport.statusCode).toBe(200);
     expect(portfolioReport.json()).toEqual(expect.objectContaining({
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      },
       query: expect.objectContaining({
         scope: "all",
         range: "1Y",
@@ -333,6 +341,10 @@ describe("report routes", () => {
     });
     expect(marketReport.statusCode).toBe(200);
     expect(marketReport.json()).toEqual(expect.objectContaining({
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      },
       query: expect.objectContaining({
         scope: "TW",
         reportingCurrency: "TWD",

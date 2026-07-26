@@ -34,6 +34,8 @@ import type { TimelineMode } from "../../lib/timelineAxis";
 import { hydrateDashboardMarketStates, shouldPollForOpenMarket, type DashboardMarketStateLike } from "../../features/price-state/priceState";
 import { buildUnrealizedPnlRoutePath } from "../../features/analysis/unrealizedPnlRouteState";
 import { buildDashboardReportsHealthHref } from "../../features/reports/reportHealthDeepLinks";
+import { ZeroAccountSetupGate } from "../../features/portfolio-capabilities/components/ZeroAccountSetupGate";
+import { getPortfolioCapabilityOptionSets } from "../../features/portfolio-capabilities/portfolioCapabilities";
 import {
   Card as ShadcnCard,
   CardContent,
@@ -71,9 +73,11 @@ export function DashboardClient({
     isSharedContext,
     canUseGlobalQuickActions,
     openQuickActions,
+    portfolioCapabilities,
     reportingCurrency,
     recomputeAction,
     openRecomputeConfirm,
+    sharedContextPermissions,
     contextRefreshSignal,
   } = useAppShellData();
   const cacheKey = buildRouteDtoCacheKey("dashboard-primary", getRouteDtoContextScope(sessionUserId), locale);
@@ -208,6 +212,16 @@ export function DashboardClient({
   const refreshPricesStatus = formatRefreshPricesPending(dict, dashboard.refreshPending ?? null);
   const dashboardHealthHref = buildDashboardReportsHealthHref();
   const dashboardFxHealthHref = buildDashboardReportsHealthHref(["missing_fx"]);
+  const canManageAccounts = !isSharedContext || sharedContextPermissions.canManageAccounts;
+  const dashboardCapabilities = dashboard.capabilities
+    ?? initialPrimaryData?.capabilities
+    ?? (dashboard.isBootstrapping ? portfolioCapabilities : null);
+  const configuredDashboardMarkets = useMemo(
+    () => dashboardCapabilities
+      ? getPortfolioCapabilityOptionSets(dashboardCapabilities).configuredMarkets
+      : [],
+    [dashboardCapabilities],
+  );
 
   useEffect(() => {
     if (!shouldPollDashboardPrices) return;
@@ -223,6 +237,16 @@ export function DashboardClient({
         <div className="mb-5 h-2 w-full rounded skeleton-line" aria-hidden="true" />
         <DashboardLoading locale={locale} loadingCopy={getRouteLoadingLabels(locale).dashboard} />
       </>
+    );
+  }
+
+  if (dashboardCapabilities && configuredDashboardMarkets.length === 0) {
+    return (
+      <ZeroAccountSetupGate
+        dict={dict}
+        canManageAccounts={canManageAccounts}
+        returnTo="/dashboard"
+      />
     );
   }
 

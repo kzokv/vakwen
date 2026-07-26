@@ -1,4 +1,5 @@
 import type { Response } from "@playwright/test";
+import { TestEnv } from "@vakwen/config/test";
 import { Step } from "@vakwen/test-framework/decorators";
 import { AppBaseActions } from "../../bases/index.js";
 import type { SettingsDrawerPage } from "../../pages/settings/SettingsDrawerPage.js";
@@ -7,6 +8,7 @@ export class SettingsActions extends AppBaseActions {
   declare protected readonly _instance: SettingsDrawerPage;
 
   private static readonly saveOutcomeTimeoutMs = 2_000;
+  private accountCreateName = "";
 
   private get el() {
     return this._instance.elements;
@@ -170,8 +172,26 @@ export class SettingsActions extends AppBaseActions {
   // --- KZO-179: Account Create form (Accounts tab) ---
 
   @Step()
+  async openAccountCreateFlow(): Promise<void> {
+    // Existing-account pages briefly render the first-account form while the
+    // shell config is loading. Wait for that transitional frame to settle so
+    // callers do not advance a wizard that React is about to replace.
+    await this.el.accountCreate.portfolioConfigLoading
+      .waitFor({ state: "hidden", timeout: 10_000 })
+      .catch(() => undefined);
+    if (await this.el.accountCreate.form.isVisible().catch(() => false)) return;
+    await this.uiActions.click.perform(this.el.accountCreate.trigger);
+    await this.el.accountCreate.form.waitFor({ state: "visible" });
+  }
+
+  @Step()
   async fillAccountCreateName(value: string): Promise<void> {
+    await this.openAccountCreateFlow();
+    if (await this.el.accountCreate.nameInput.count() === 0) {
+      await this.uiActions.click.perform(this.el.accountCreate.continueButton);
+    }
     await this.uiActions.fill.perform(this.el.accountCreate.nameInput, value);
+    this.accountCreateName = value.trim();
   }
 
   @Step()
@@ -181,7 +201,12 @@ export class SettingsActions extends AppBaseActions {
 
   @Step()
   async selectAccountCreateCurrency(currency: "TWD" | "USD" | "AUD" | "KRW" | "JPY"): Promise<void> {
+    await this.openAccountCreateFlow();
+    if (await this.el.accountCreate.currencyCard(currency).count() === 0) {
+      await this.uiActions.click.perform(this.el.accountCreate.backButton);
+    }
     await this.uiActions.click.perform(this.el.accountCreate.currencyCard(currency));
+    await this.uiActions.click.perform(this.el.accountCreate.continueButton);
   }
 
   // KZO-183: per-account "Add override" button. Each account card hosts
@@ -266,16 +291,53 @@ export class SettingsActions extends AppBaseActions {
   }
 
   @Step()
-  async submitAccountCreate(): Promise<Response> {
-    const responsePromise = this.mxWaitForResponse(
-      (response) =>
-        response.request().method() === "POST"
-        && response.url().endsWith("/accounts")
-        && response.ok(),
-      { timeout: 10_000 },
+  async submitAccountCreate(): Promise<{ json: () => Promise<unknown> }> {
+    const createdAccountLabel = this.el.testId("account-name-label", "Account Name Label")
+      .filter({ hasText: this.accountCreateName });
+
+    if (await this.el.accountCreate.submit.count() === 0) {
+      await this.uiActions.click.perform(this.el.accountCreate.continueButton);
+    }
+
+    // Depending on the wizard entry path, Continue either reveals a distinct
+    // review submit button or submits the already-reviewed form directly.
+    // Wait for either stable outcome before deciding whether another submit
+    // is necessary.
+    await this.el.accountCreate.submit.or(createdAccountLabel)
+      .waitFor({ state: "visible", timeout: 10_000 });
+    if (await createdAccountLabel.isVisible().catch(() => false)) {
+      // The final Continue already created the account.
+    } else {
+      // The successful mutation resets the wizard and replaces the review
+      // submit button. Resolve and submit it in one browser task so Playwright
+      // cannot retry a locator after the successful mutation unmounts the
+      // drawer and replaces its button.
+      await this.page.evaluate(() => {
+        const button = document.querySelector('[data-testid="account-create-submit"]');
+        if (button instanceof HTMLButtonElement && button.form) {
+          button.form.requestSubmit(button);
+        }
+      });
+      await createdAccountLabel.waitFor({ state: "visible", timeout: 10_000 });
+    }
+
+    /* eslint-disable aaa/no-page-access -- this helper must recover the authoritative account created after the wizard unmounts */
+    const identityCookies = await this.page.context().cookies(TestEnv.appBaseUrl);
+    const userId = identityCookies.find((cookie) => cookie.name === "tw_e2e_user")?.value;
+    const accountsResponse = await this.page.request.get(
+      new URL("/accounts", TestEnv.apiBaseUrl).href,
+      userId ? { headers: { "x-user-id": userId } } : undefined,
     );
-    await this.uiActions.click.perform(this.el.accountCreate.submit);
-    return await responsePromise;
+    /* eslint-enable aaa/no-page-access */
+    if (!accountsResponse.ok()) {
+      throw new Error(`Account list failed after creation: ${accountsResponse.status()}`);
+    }
+    const accounts = await accountsResponse.json() as Array<Record<string, unknown>>;
+    const created = accounts.find((account) => account.name === this.accountCreateName);
+    if (!created) {
+      throw new Error(`Created account was not returned by the account list: ${this.accountCreateName}`);
+    }
+    return { json: async () => created };
   }
 
   // --- Monitored Symbols ---

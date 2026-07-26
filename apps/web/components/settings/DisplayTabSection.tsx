@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import { HslColorPicker } from "react-colorful";
 import type {
@@ -12,7 +13,6 @@ import type {
 } from "@vakwen/shared-types";
 import {
   ACCENT_PRESETS,
-  ACCOUNT_DEFAULT_CURRENCIES,
   DEFAULT_PRICE_COLOR_CONVENTION,
   DEFAULT_THEME_ACCENT,
   PRICE_COLOR_CONVENTIONS,
@@ -31,6 +31,11 @@ import {
   hslToHex,
 } from "../../lib/theme";
 import { cn } from "../../lib/utils";
+import { CapabilityNormalizationNotice } from "../../features/portfolio-capabilities/components/CapabilityNormalizationNotice";
+import { SingleCapabilityContext } from "../../features/portfolio-capabilities/components/SingleCapabilityContext";
+import { ZeroAccountSetupGate } from "../../features/portfolio-capabilities/components/ZeroAccountSetupGate";
+import { useReportingCurrencyCapability } from "../../features/portfolio-capabilities/useReportingCurrencyCapability";
+import { useAppShellData } from "../layout/AppShellDataContext";
 import { Button } from "../ui/Button";
 import { CustomizeRangesPopover } from "./CustomizeRangesPopover";
 
@@ -60,11 +65,8 @@ const PRESET_PREVIEW: Record<AccentPreset, string> = {
 
 export type ReorderablePage = "dashboard" | "transactions" | "portfolio";
 
-const REPORTING_CURRENCY_OPTIONS: AccountDefaultCurrency[] = [...ACCOUNT_DEFAULT_CURRENCIES];
-
 interface UserPreferencesResponse {
   preferences?: {
-    reportingCurrency?: AccountDefaultCurrency | null;
     themeAccent?: unknown;
     density?: unknown;
     priceColorConvention?: unknown;
@@ -96,16 +98,13 @@ export function DisplayTabSection({
   onPageLayoutReset,
   onReportingCurrencySaved,
 }: DisplayTabSectionProps): JSX.Element {
+  const pathname = usePathname() ?? "/settings/display";
+  const shellData = useAppShellData();
   const [resetting, setResetting] = useState<ReorderablePage | "all" | null>(null);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
   const [resetError, setResetError] = useState<string | null>(null);
 
-  // KZO-180 — reporting currency state. Defaults to "TWD" until the GET
-  // /user-preferences hydration lands; mirrors SortableCardGrid's pattern.
-  const [reportingCurrency, setReportingCurrency] = useState<AccountDefaultCurrency>("TWD");
-  const [currencySaving, setCurrencySaving] = useState(false);
   const [currencySavedFlash, setCurrencySavedFlash] = useState(false);
-  const [currencyError, setCurrencyError] = useState<string | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [priceColorConvention, setPriceColorConvention] = useState<PriceColorConvention>(DEFAULT_PRICE_COLOR_CONVENTION);
   const [priceColorSaving, setPriceColorSaving] = useState(false);
@@ -124,6 +123,17 @@ export function DisplayTabSection({
     l: 60,
   });
   const { resolvedTheme } = useTheme();
+  const canManageAccounts = !shellData.isSharedContext || shellData.sharedContextPermissions.canManageAccounts;
+  const {
+    configuredCurrencies,
+    effectiveReportingCurrency,
+    normalization,
+  } = useReportingCurrencyCapability({
+    capabilities: shellData.portfolioCapabilities,
+    reportingCurrency: shellData.reportingCurrency,
+    isSharedContext: shellData.isSharedContext,
+    onNormalizeReportingCurrency: shellData.saveReportingCurrency,
+  });
 
   // Initial hydration from GET /user-preferences (once per mount).
   useEffect(() => {
@@ -131,10 +141,6 @@ export function DisplayTabSection({
     void getJson<UserPreferencesResponse>("/user-preferences", { contextScope: "session" })
       .then((res) => {
         if (cancelled) return;
-        const saved = res?.preferences?.reportingCurrency;
-        if (saved && (ACCOUNT_DEFAULT_CURRENCIES as readonly string[]).includes(saved)) {
-          setReportingCurrency(saved);
-        }
         // Phase 2C — hydrate accent + density from the same response.
         const savedAccent = themeAccentSchema.safeParse(res?.preferences?.themeAccent);
         if (savedAccent.success) {
@@ -203,14 +209,9 @@ export function DisplayTabSection({
 
   const handleReportingCurrencyChange = useCallback(
     async (next: AccountDefaultCurrency): Promise<void> => {
-      // Optimistic update — flip state first, roll back on failure.
-      const previous = reportingCurrency;
-      setReportingCurrency(next);
-      setCurrencySaving(true);
-      setCurrencyError(null);
       setCurrencySavedFlash(false);
       try {
-        await patchJson("/user-preferences", { reportingCurrency: next }, { contextScope: "session" });
+        await shellData.saveReportingCurrency(next);
         setCurrencySavedFlash(true);
         if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
         flashTimerRef.current = setTimeout(
@@ -218,20 +219,13 @@ export function DisplayTabSection({
           SAVED_FLASH_MS,
         );
         onReportingCurrencySaved?.();
-      } catch (err) {
-        // Roll back the optimistic UI on failure.
-        setReportingCurrency(previous);
-        if (err instanceof ApiError) setCurrencyError(err.message);
-        else if (err instanceof Error) setCurrencyError(err.message);
-        else setCurrencyError(dict.settings.resetLayoutError);
-      } finally {
-        setCurrencySaving(false);
+      } catch {
+        // AppShell owns the persisted error state shown by this section.
       }
     },
     [
-      reportingCurrency,
+      shellData,
       onReportingCurrencySaved,
-      dict.settings.resetLayoutError,
     ],
   );
 
@@ -537,46 +531,66 @@ export function DisplayTabSection({
           </p>
         </div>
 
-        {/* KZO-180 — currency codes render untranslated per the KZO-167 D9
-            convention; the codes are inline string literals,
-            not function values, in line with `nextjs-i18n-serialization.md`. */}
-        <div className="flex items-center gap-3">
-          <select
-            data-testid="reporting-currency-select"
-            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            value={reportingCurrency}
-            disabled={currencySaving}
-            onChange={(event) => {
-              const next = event.target.value;
-              if ((ACCOUNT_DEFAULT_CURRENCIES as readonly string[]).includes(next)) {
-                void handleReportingCurrencyChange(next as AccountDefaultCurrency);
-              }
-            }}
-          >
-            {REPORTING_CURRENCY_OPTIONS.map((code) => (
-              <option key={code} value={code}>
-                {code}
-              </option>
-            ))}
-          </select>
-          {currencySavedFlash ? (
-            <span
-              className="text-xs text-emerald-700"
-              role="status"
-              data-testid="reporting-currency-saved"
+        {shellData.portfolioCapabilities && configuredCurrencies.length === 0 ? (
+          <ZeroAccountSetupGate
+            dict={dict}
+            canManageAccounts={canManageAccounts}
+            returnTo={pathname}
+          />
+        ) : configuredCurrencies.length === 1 ? (
+          <SingleCapabilityContext
+            label={dict.settings.displayReportingCurrencyTitle}
+            value={effectiveReportingCurrency ?? shellData.reportingCurrency}
+            description={dict.settings.displayReportingCurrencyDescription}
+            testId="display-reporting-currency-single"
+          />
+        ) : (
+          <div className="flex items-center gap-3">
+            <select
+              data-testid="reporting-currency-select"
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              value={effectiveReportingCurrency ?? shellData.reportingCurrency}
+              disabled={shellData.isReportingCurrencySaving}
+              onChange={(event) => {
+                const next = event.target.value;
+                if (configuredCurrencies.includes(next as AccountDefaultCurrency)) {
+                  void handleReportingCurrencyChange(next as AccountDefaultCurrency);
+                }
+              }}
             >
-              {dict.settings.displayReportingCurrencySaved}
-            </span>
-          ) : null}
-        </div>
+              {configuredCurrencies.map((code) => (
+                <option key={code} value={code}>
+                  {code}
+                </option>
+              ))}
+            </select>
+            {currencySavedFlash ? (
+              <span
+                className="text-xs text-emerald-700"
+                role="status"
+                data-testid="reporting-currency-saved"
+              >
+                {dict.settings.displayReportingCurrencySaved}
+              </span>
+            ) : null}
+          </div>
+        )}
 
-        {currencyError ? (
+        {normalization ? (
+          <CapabilityNormalizationNotice
+            dict={dict}
+            kind="reportingCurrency"
+            normalization={normalization}
+          />
+        ) : null}
+
+        {shellData.reportingCurrencyError ? (
           <p
             className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700"
             role="alert"
             data-testid="reporting-currency-error"
           >
-            {currencyError}
+            {shellData.reportingCurrencyError}
           </p>
         ) : null}
       </section>

@@ -210,12 +210,11 @@ test.describe("sharing delegated capabilities", () => {
     await appShell.assert.appIsReady();
 
     await appShell.actions.openSettingsSection("accounts");
-    const accountCreateForm = page.getByTestId("account-create-form");
-    await accountCreateForm.waitFor({ state: "visible" });
+    await page.getByTestId("accounts-shared-readonly-note").waitFor({ state: "visible" });
     await appShell.assert.mxAssertEqual(
-      await page.getByTestId("account-create-submit").isDisabled(),
-      true,
-      "account create form is read-only without account:manage",
+      await page.getByTestId("account-create-form").count(),
+      0,
+      "account create flow is hidden without account:manage",
     );
     await appShell.assert.mxAssertEqual(
       await page.getByTestId(`account-delete-btn-${account.id}`).isDisabled(),
@@ -228,12 +227,23 @@ test.describe("sharing delegated capabilities", () => {
     await appShell.assert.appIsReady();
 
     await appShell.actions.openSettingsSection("accounts");
+    await settings.actions.openAccountCreateFlow();
     await settings.assert.accountCreateFormIsVisible();
     await settings.actions.fillAccountCreateName("Delegated Created Account");
+    await page.evaluate(() => {
+      const button = document.querySelector('[data-testid="account-create-continue"]');
+      if (!(button instanceof HTMLButtonElement)) {
+        throw new Error("Account create review control is unavailable");
+      }
+      button.click();
+    });
+    await page.getByTestId("account-create-submit").waitFor({ state: "visible" });
     await appShell.assert.mxAssertTruthy(
       await page.getByTestId("account-create-submit").isEnabled(),
       "account create submit is enabled with account:manage",
     );
+    await page.keyboard.press("Escape");
+    await page.getByTestId("ui-drawer").waitFor({ state: "hidden" });
     await settings.assert.accountDeleteButtonIsVisible(account.id);
 
     await settings.actions.clickAccountDeleteButton(account.id);

@@ -279,6 +279,52 @@ describe("buildPortfolioReport", () => {
     ]);
   });
 
+  it("embeds canonical deduped report capabilities from the viewed owner's active accounts", async () => {
+    const store = await app.persistence.loadStore(userId);
+    const defaultFeeProfile = store.feeProfiles[0];
+    if (!defaultFeeProfile) throw new Error("expected seeded default fee profile");
+
+    store.accounts.push(
+      {
+        id: "acc-us-1",
+        userId,
+        name: "US Broker",
+        defaultCurrency: "USD",
+        accountType: "broker",
+        feeProfileId: "fee-us-1",
+      },
+      {
+        id: "acc-au-1",
+        userId,
+        name: "AU Broker",
+        defaultCurrency: "AUD",
+        accountType: "broker",
+        feeProfileId: "fee-au-1",
+      },
+      {
+        id: "acc-us-2",
+        userId,
+        name: "US Wallet",
+        defaultCurrency: "USD",
+        accountType: "wallet",
+        feeProfileId: "fee-us-2",
+      },
+    );
+    store.feeProfiles.push(
+      { ...defaultFeeProfile, id: "fee-us-1", accountId: "acc-us-1", commissionCurrency: "USD", name: "US Fee" },
+      { ...defaultFeeProfile, id: "fee-au-1", accountId: "acc-au-1", commissionCurrency: "AUD", name: "AU Fee" },
+      { ...defaultFeeProfile, id: "fee-us-2", accountId: "acc-us-2", commissionCurrency: "USD", name: "US Wallet Fee" },
+    );
+    await app.persistence.saveStore(store);
+
+    const report = await buildPortfolioReport(app, userId, { scope: "all", currencyMode: "specified", currency: "TWD" });
+
+    expect(report.capabilities).toEqual({
+      configuredMarkets: ["TW", "US", "AU"],
+      configuredCurrencies: ["TWD", "USD", "AUD"],
+    });
+  });
+
   it("discloses report valuation basis for holiday rollback markets", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-05T12:00:00.000Z"));

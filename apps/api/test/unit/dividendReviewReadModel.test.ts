@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildApp, type AppInstance } from "../../src/app.js";
+import { signSessionCookie, type GoogleOAuthConfig } from "../../src/auth/googleOAuth.js";
 import { ReadPathTiming } from "../../src/services/readPathTiming.js";
 import type { DividendEvent, DividendLedgerEntry } from "../../src/types/store.js";
 import { dividendReviewFilterParity } from "../helpers/dividendReviewFilterParity.js";
@@ -17,11 +18,30 @@ const SORT_COLUMNS = [
   "reconciliationStatus",
 ] as const;
 
+const SESSION_COOKIE_NAME = "g_auth_session";
+const testOAuthConfig: GoogleOAuthConfig = {
+  clientId: "test-client-id",
+  clientSecret: "test-client-secret",
+  redirectUri: "http://localhost:4000/auth/google/callback",
+  sessionSecret: "test-session-secret-that-is-long-enough-32chars!!",
+};
+
 describe("dividend review read-model routes", () => {
   let app: AppInstance;
+  let ownerHeaders: { cookie: string };
 
   beforeEach(async () => {
-    app = await buildApp({ persistenceBackend: "memory" });
+    app = await buildApp({ persistenceBackend: "memory", oauthConfig: testOAuthConfig });
+    await (app.persistence as typeof app.persistence & { ensureDevBypassUser(): Promise<void> }).ensureDevBypassUser();
+    const authUser = await app.persistence.getAuthUserById("user-1");
+    if (!authUser) throw new Error("expected dev bypass auth user");
+    ownerHeaders = {
+      cookie: `${SESSION_COOKIE_NAME}=${signSessionCookie(
+        "user-1",
+        testOAuthConfig.sessionSecret,
+        authUser.sessionVersion,
+      )}`,
+    };
   });
 
   afterEach(async () => {
@@ -69,6 +89,7 @@ describe("dividend review read-model routes", () => {
         const response = await app.inject({
           method: "GET",
           url: `/portfolio/dividends/review/primary?sortBy=${sortBy}&sortOrder=asc&page=1&limit=${limit}&sourceComposition=pending`,
+          headers: ownerHeaders,
         });
 
         expect(response.statusCode, `${sortBy}/${limit}: ${response.body}`).toBe(200);
@@ -88,6 +109,7 @@ describe("dividend review read-model routes", () => {
       const response = await app.inject({
         method: "GET",
         url: `/portfolio/dividends/review/primary?${query}`,
+        headers: ownerHeaders,
       });
 
       expect(response.statusCode, `${query}: ${response.body}`).toBe(400);
@@ -107,6 +129,7 @@ describe("dividend review read-model routes", () => {
         "&stockStatus=matched",
         "&limit=10",
       ].join(""),
+      headers: ownerHeaders,
     });
 
     expect(response.statusCode).toBe(200);
@@ -121,6 +144,7 @@ describe("dividend review read-model routes", () => {
     const response = await app.inject({
       method: "GET",
       url: `/portfolio/dividends/review/primary?${tooManyAccountIds.toString()}`,
+      headers: ownerHeaders,
     });
 
     expect(response.statusCode).toBe(400);
@@ -178,6 +202,7 @@ describe("dividend review read-model routes", () => {
     const response = await app.inject({
       method: "GET",
       url: "/portfolio/dividends/review/primary?sourceComposition=pending&limit=10",
+      headers: ownerHeaders,
     });
 
     expect(response.statusCode).toBe(200);
@@ -230,8 +255,18 @@ describe("dividend review read-model routes", () => {
       },
     );
 
-    const response = await app.inject({ method: "GET", url: "/portfolio/dividends/review/primary?limit=10" });
+    const response = await app.inject({
+      method: "GET",
+      url: "/portfolio/dividends/review/primary?limit=10",
+      headers: ownerHeaders,
+    });
     expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      },
+    });
     const rows = response.json().reviewRows as Array<{ id: string; eligibleQuantity: number }>;
     expect(rows.find((row) => row.id === `expected:${account.id}:memory-event-lot`)).toMatchObject({ eligibleQuantity: 1 });
     expect(rows.find((row) => row.id === `expected:${account.id}:memory-event-order`)).toMatchObject({ eligibleQuantity: 3 });
@@ -374,6 +409,7 @@ describe("dividend review read-model routes", () => {
         + dividendReviewFilterParity.cashStatuses.map((status) => `&cashStatus=${status}`).join("")
         + dividendReviewFilterParity.stockStatuses.map((status) => `&stockStatus=${status}`).join("")
         + "&limit=10",
+      headers: ownerHeaders,
     });
 
     expect(response.statusCode).toBe(200);
@@ -429,6 +465,7 @@ describe("dividend review read-model routes", () => {
     const response = await app.inject({
       method: "GET",
       url: "/portfolio/dividends/review/enrichment?ticker=2330",
+      headers: ownerHeaders,
     });
 
     expect(response.statusCode).toBe(200);
@@ -479,24 +516,58 @@ describe("dividend review read-model routes", () => {
       sourceCompositionStatus: "provided",
     });
 
-    const primary = await app.inject({ method: "GET", url: "/portfolio/dividends/review/primary" });
-    const enrichment = await app.inject({ method: "GET", url: "/portfolio/dividends/review/enrichment" });
-    const detail = await app.inject({ method: "GET", url: "/portfolio/dividends/postings/tenant-ledger" });
-    const otherTenant = await app.inject({
+    const primary = await app.inject({
       method: "GET",
       url: "/portfolio/dividends/review/primary",
-      headers: { "x-user-id": "user-2" },
+      headers: ownerHeaders,
     });
-    const otherTenantDetail = await app.inject({
+    const enrichment = await app.inject({
+      method: "GET",
+      url: "/portfolio/dividends/review/enrichment",
+      headers: ownerHeaders,
+    });
+    const detail = await app.inject({
       method: "GET",
       url: "/portfolio/dividends/postings/tenant-ledger",
-      headers: { "x-user-id": "user-2" },
+      headers: ownerHeaders,
     });
+    const { userId: otherTenantUserId } = await app.persistence.resolveOrCreateUser(
+      "google",
+      "dividend-review-other-tenant",
+      { email: "dividend-review-other-tenant@example.com", name: "Dividend Review Other Tenant" },
+    );
     const { userId: viewerUserId } = await app.persistence.resolveOrCreateUser(
       "google",
       "dividend-review-context-viewer",
       { email: "dividend-review-viewer@example.com", name: "Dividend Review Viewer" },
     );
+    const otherTenantAuthUser = await app.persistence.getAuthUserById(otherTenantUserId);
+    const viewerAuthUser = await app.persistence.getAuthUserById(viewerUserId);
+    if (!otherTenantAuthUser || !viewerAuthUser) throw new Error("expected test auth users");
+    const otherTenantHeaders = {
+      cookie: `${SESSION_COOKIE_NAME}=${signSessionCookie(
+        otherTenantUserId,
+        testOAuthConfig.sessionSecret,
+        otherTenantAuthUser.sessionVersion,
+      )}`,
+    };
+    const viewerHeaders = {
+      cookie: `${SESSION_COOKIE_NAME}=${signSessionCookie(
+        viewerUserId,
+        testOAuthConfig.sessionSecret,
+        viewerAuthUser.sessionVersion,
+      )}`,
+    };
+    const isolatedTenant = await app.inject({
+      method: "GET",
+      url: "/portfolio/dividends/review/primary",
+      headers: otherTenantHeaders,
+    });
+    const isolatedTenantDetail = await app.inject({
+      method: "GET",
+      url: "/portfolio/dividends/postings/tenant-ledger",
+      headers: otherTenantHeaders,
+    });
     await app.persistence.createShareGrant({
       ownerUserId: "user-1",
       granteeUserId: viewerUserId,
@@ -505,7 +576,7 @@ describe("dividend review read-model routes", () => {
     const sharedContextDetail = await app.inject({
       method: "GET",
       url: "/portfolio/dividends/postings/tenant-ledger",
-      headers: { "x-user-id": viewerUserId, "x-context-user-id": "user-1" },
+      headers: { ...viewerHeaders, "x-context-user-id": "user-1" },
     });
 
     expect(primary.headers["server-timing"]).toContain("review_primary_db;dur=");
@@ -515,14 +586,14 @@ describe("dividend review read-model routes", () => {
     expect(enrichment.headers["server-timing"]).toContain("review_enrichment_db;dur=");
     expect(enrichment.headers["server-timing"]).toContain("review_enrichment_aggregate;dur=");
     expect(enrichment.headers["server-timing"]).toContain("total;dur=");
-    expect(otherTenant.statusCode).toBe(200);
-    expect(otherTenant.json().reviewRows).toEqual([]);
-    expect(otherTenant.json().total).toBe(0);
+    expect(isolatedTenant.statusCode).toBe(200);
+    expect(isolatedTenant.json().reviewRows).toEqual([]);
+    expect(isolatedTenant.json().total).toBe(0);
     expect(detail.statusCode).toBe(200);
     expect(detail.json()).toMatchObject({ id: "tenant-ledger", rowKind: "ledger", ticker: "2330" });
     expect(detail.json()).toHaveProperty("deductions");
     expect(detail.json()).toHaveProperty("sourceLines");
-    expect(otherTenantDetail.statusCode).toBe(404);
+    expect(isolatedTenantDetail.statusCode).toBe(404);
     expect(sharedContextDetail.statusCode).toBe(200);
     expect(sharedContextDetail.json()).toMatchObject({ id: "tenant-ledger", accountId: account.id });
   });

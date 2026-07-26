@@ -227,6 +227,53 @@ describe("AddTransactionCard — chip + account-filter render contract", () => {
     expect(html).not.toContain('data-testid="tx-no-account-error"');
   });
 
+  it("limits rendered market chips to the configured market subset", () => {
+    const html = renderToStaticMarkup(
+      <AddTransactionCard
+        value={valueWith({ marketCode: "TW" })}
+        accountOptions={[TWD_ACCOUNT, USD_ACCOUNT, AUD_ACCOUNT]}
+        availableMarkets={["TW", "US"]}
+        pending={false}
+        onChange={() => undefined}
+        onSubmit={async () => undefined}
+        dict={dict}
+        locale="en"
+        framed={false}
+        priceHint={null}
+        showPriceUnavailableHint={false}
+        feeEstimate={null}
+      />,
+    );
+
+    expect(html).toContain('data-testid="tx-market-chip-TW"');
+    expect(html).toContain('data-testid="tx-market-chip-US"');
+    expect(html).not.toContain('data-testid="tx-market-chip-AU"');
+    expect(html).not.toContain('data-testid="tx-market-chip-KR"');
+    expect(html).not.toContain('data-testid="tx-market-chip-JP"');
+  });
+
+  it("renders a static market context when only one configured market exists", () => {
+    const html = renderToStaticMarkup(
+      <AddTransactionCard
+        value={valueWith({ marketCode: "TW" })}
+        accountOptions={[TWD_ACCOUNT]}
+        availableMarkets={["TW"]}
+        pending={false}
+        onChange={() => undefined}
+        onSubmit={async () => undefined}
+        dict={dict}
+        locale="en"
+        framed={false}
+        priceHint={null}
+        showPriceUnavailableHint={false}
+        feeEstimate={null}
+      />,
+    );
+
+    expect(html).toContain('data-testid="tx-market-context-single"');
+    expect(html).not.toContain('data-testid="tx-market-chip-TW"');
+  });
+
   it("renders gross trade value plus BUY cash-out using manual fee overrides ahead of estimates", () => {
     const html = renderToStaticMarkup(
       <AddTransactionCard

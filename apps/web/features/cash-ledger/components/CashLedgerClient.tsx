@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { MoreHorizontal, Pencil, Plus, RotateCcw } from "lucide-react";
 import type { LocaleCode } from "@vakwen/shared-types";
@@ -32,6 +33,9 @@ import {
 } from "../../../components/fx-transfer/RecordFxTransferDialog";
 import type { FxTransferFormValue } from "../../../components/fx-transfer/AddFxTransferCard";
 import { ConfirmDialog } from "../../../components/admin/ConfirmDialog";
+import { useOptionalAppShellData } from "../../../components/layout/AppShellDataContext";
+import { ZeroAccountSetupGate } from "../../portfolio-capabilities/components/ZeroAccountSetupGate";
+import { buildAccountsSetupHref } from "../../portfolio-capabilities/portfolioCapabilities";
 
 interface CashLedgerClientProps {
   initialData: CashLedgerListResponse | null;
@@ -131,6 +135,7 @@ export function CashLedgerClient({
   dict,
   locale,
 }: CashLedgerClientProps) {
+  const shellData = useOptionalAppShellData();
   const [entries, setEntries] = useState<EnrichedCashLedgerEntry[]>(initialData?.entries ?? []);
   const [summary, setSummary] = useState<CashLedgerSummary[]>(initialData?.summary ?? []);
   const [total, setTotal] = useState(initialData?.total ?? 0);
@@ -461,6 +466,23 @@ export function CashLedgerClient({
     );
   }
 
+  const configuredCurrencyCount =
+    shellData?.portfolioCapabilities?.configuredCurrencies.length ?? null;
+  if (shellData && !shellData.isPortfolioConfigLoading && configuredCurrencyCount === 0) {
+    return (
+      <ZeroAccountSetupGate
+        dict={dict}
+        canManageAccounts={
+          !shellData.isSharedContext
+          || shellData.sharedContextPermissions.canManageAccounts
+        }
+        returnTo="/cash-ledger"
+      />
+    );
+  }
+  const canCreateFxTransfer =
+    configuredCurrencyCount === null || configuredCurrencyCount >= 2;
+
   return (
     <div className="grid gap-4" data-testid="cash-ledger-page">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -468,10 +490,32 @@ export function CashLedgerClient({
           <h1 className="text-2xl font-semibold text-slate-950 sm:text-3xl">{d.pageTitle}</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{d.pageDescription}</p>
         </div>
-        <Button onClick={openCreateFxDialog} data-testid="new-fx-transfer-button" className="self-start lg:self-auto">
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          {d.fxFormTitleCreate}
-        </Button>
+        {canCreateFxTransfer ? (
+          <Button onClick={openCreateFxDialog} data-testid="new-fx-transfer-button" className="self-start lg:self-auto">
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            {d.fxFormTitleCreate}
+          </Button>
+        ) : (
+          <div
+            className="max-w-md rounded-2xl border border-dashed border-border bg-muted/20 px-4 py-3"
+            data-testid="fx-transfer-enablement"
+          >
+            <p className="text-sm font-semibold text-foreground">{d.fxEnablementTitle}</p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              {d.fxEnablementDescription}
+            </p>
+            {(
+              !shellData?.isSharedContext
+              || shellData.sharedContextPermissions.canManageAccounts
+            ) ? (
+              <Button asChild size="sm" variant="outline" className="mt-3">
+                <Link href={buildAccountsSetupHref("/cash-ledger")}>
+                  {d.fxEnablementAction}
+                </Link>
+              </Button>
+            ) : null}
+          </div>
+        )}
       </div>
 
       {/* Summary bar */}

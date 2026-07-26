@@ -5,8 +5,10 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   ACCOUNT_DEFAULT_CURRENCIES,
   type AccountDefaultCurrency,
+  type AccountLifecycleMutationResponseDto,
+  type AccountMutationResponseDto,
   type LocaleCode,
-  type ShellPortfolioConfigDto,
+  type PortfolioCapabilitiesDto,
   type SnapshotsGeneratedEvent,
   type UserSettings,
 } from "@vakwen/shared-types";
@@ -43,6 +45,7 @@ import { useShellInstrumentIndex } from "./useShellInstrumentIndex";
 import { useShellPortfolioConfig } from "./useShellPortfolioConfig";
 import { useSnapshotGeneration } from "./useSnapshotGeneration";
 import { deriveSharedContextPermissions } from "../../features/sharing/capabilities";
+import type { ShellPortfolioConfigDto } from "../../features/settings/services/shellPortfolioConfigService";
 
 type AppSection = "dashboard" | "analysis" | "reports" | "portfolio" | "transactions" | "dividends" | "cash-ledger";
 
@@ -119,6 +122,9 @@ export function AppShell({
   const [reportingCurrency, setReportingCurrency] = useState<AccountDefaultCurrency>("TWD");
   const [isReportingCurrencySaving, setIsReportingCurrencySaving] = useState(false);
   const [reportingCurrencyError, setReportingCurrencyError] = useState("");
+  const [portfolioCapabilities, setPortfolioCapabilities] = useState<PortfolioCapabilitiesDto | null>(
+    initialPortfolioConfig?.capabilities ?? null,
+  );
 
   const portfolioConfig = useShellPortfolioConfig({
     initialTransaction: DEFAULT_TRANSACTION,
@@ -136,7 +142,9 @@ export function AppShell({
   const dict = useMemo(() => getDictionary(locale), [locale]);
 
   const sharedContext = useSharedContext({
-    refreshDashboard: portfolioConfig.refresh,
+    refreshDashboard: async () => {
+      await portfolioConfig.refresh();
+    },
     refreshProfile: profileData.refresh,
     dict,
   });
@@ -195,6 +203,10 @@ export function AppShell({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    setPortfolioCapabilities(portfolioConfig.capabilities ?? null);
+  }, [portfolioConfig.capabilities]);
 
   const refreshAfterTransaction = useCallback(async () => {
     clearRouteDtoCacheByPrefix(getRouteDtoCachePrefix());
@@ -271,7 +283,10 @@ export function AppShell({
     bumpContextRefreshSignal();
   }, [bumpContextRefreshSignal]);
 
-  const saveReportingCurrency = useCallback(async (next: AccountDefaultCurrency) => {
+  const saveReportingCurrency = useCallback(async (
+    next: AccountDefaultCurrency,
+    options?: { refreshRouter?: boolean },
+  ) => {
     if (isReportingCurrencySaving || next === reportingCurrency) return;
 
     const previous = reportingCurrency;
@@ -282,7 +297,9 @@ export function AppShell({
     try {
       await patchJson("/user-preferences", { reportingCurrency: next }, { contextScope: "session" });
       handleReportingCurrencySaved();
-      router.refresh();
+      if (options?.refreshRouter !== false) {
+        router.refresh();
+      }
     } catch (error) {
       setReportingCurrency(previous);
       setReportingCurrencyError(error instanceof Error ? error.message : String(error));
@@ -291,6 +308,57 @@ export function AppShell({
       setIsReportingCurrencySaving(false);
     }
   }, [handleReportingCurrencySaved, isReportingCurrencySaving, reportingCurrency, router]);
+
+  const applyAccountMutationResponse = useCallback((response: AccountMutationResponseDto) => {
+    portfolioConfig.applyAccountMutation(response);
+    setPortfolioCapabilities(response.capabilities);
+    if (response.reportingCurrency.effective) {
+      setReportingCurrency(response.reportingCurrency.effective);
+      setReportingCurrencyError("");
+    }
+  }, [portfolioConfig]);
+
+  const applyAccountLifecycleMutationResponse = useCallback((
+    response: AccountLifecycleMutationResponseDto,
+    operation: "soft_delete" | "restore" | "hard_purge",
+  ) => {
+    portfolioConfig.applyAccountLifecycleMutation(response, operation);
+    setPortfolioCapabilities(response.capabilities);
+    if (response.reportingCurrency.effective) {
+      setReportingCurrency(response.reportingCurrency.effective);
+      setReportingCurrencyError("");
+    }
+  }, [portfolioConfig]);
+
+  useEventStream({
+    eventTypes: [
+      "account_created",
+      "account_updated",
+      "account_soft_deleted",
+      "account_restored",
+      "account_hard_purged",
+    ],
+    onEvent: () => {
+      clearPortfolioContextRouteCaches();
+      bumpContextRefreshSignal();
+      void (async () => {
+        const nextConfig = await portfolioConfig.refresh();
+        setPortfolioCapabilities(nextConfig.capabilities ?? null);
+        const preferenceResponse = await getJson<{
+          preferences: { reportingCurrency?: AccountDefaultCurrency };
+        }>("/user-preferences", { contextScope: "session" });
+        const requested = preferenceResponse.preferences.reportingCurrency ?? null;
+        const effective = requested
+          && nextConfig.capabilities?.configuredCurrencies.includes(requested)
+          ? requested
+          : nextConfig.capabilities?.configuredCurrencies[0] ?? null;
+        if (effective) {
+          setReportingCurrency(effective);
+          setReportingCurrencyError("");
+        }
+      })().catch(() => undefined);
+    },
+  });
 
   const previousSessionUserIdRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
@@ -341,8 +409,11 @@ export function AppShell({
     sharedContextPermissions,
     canUseGlobalQuickActions,
     openQuickActions: () => setQuickActionsOpen(true),
+    portfolioCapabilities,
     reportingCurrency,
     saveReportingCurrency,
+    applyAccountMutationResponse,
+    applyAccountLifecycleMutationResponse,
     isReportingCurrencySaving,
     reportingCurrencyError,
     transactionSubmission,
@@ -353,7 +424,9 @@ export function AppShell({
     accounts: portfolioConfig.accounts,
     feeProfiles: portfolioConfig.feeProfiles,
     feeProfileBindings: portfolioConfig.feeProfileBindings,
-    refreshPortfolioConfig: portfolioConfig.refresh,
+    refreshPortfolioConfig: async () => {
+      await portfolioConfig.refresh();
+    },
     isPortfolioConfigLoading: portfolioConfig.isLoading,
     integrityIssue: portfolioConfig.integrityIssue,
     showIntegrityDialog: portfolioConfig.showIntegrityDialog,
@@ -509,6 +582,9 @@ export function AppShell({
               hidden={!canUseGlobalQuickActions}
               open={quickActionsOpen}
               onOpenChange={setQuickActionsOpen}
+              portfolioCapabilities={portfolioCapabilities}
+              isSharedContext={isSharedContext}
+              canManageAccounts={!isSharedContext || sharedContextPermissions.canManageAccounts}
               reportingCurrency={reportingCurrency}
               onReportingCurrencyChange={saveReportingCurrency}
               isReportingCurrencySaving={isReportingCurrencySaving}

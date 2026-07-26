@@ -1,8 +1,23 @@
 import { getJson } from "../../../lib/api";
-import type { ShellPortfolioConfigDto } from "@vakwen/shared-types";
+import type {
+  PortfolioCapabilitiesDto,
+  ShellPortfolioConfigDto as SharedShellPortfolioConfigDto,
+} from "@vakwen/shared-types";
 
-export type { ShellPortfolioConfigDto };
+export interface ShellPortfolioConfigDto extends SharedShellPortfolioConfigDto {
+  capabilities?: PortfolioCapabilitiesDto;
+}
 
 export async function fetchShellPortfolioConfig(): Promise<ShellPortfolioConfigDto> {
-  return getJson<ShellPortfolioConfigDto>("/settings/fee-config");
+  const response = await getJson<SharedShellPortfolioConfigDto & {
+    capabilities?: PortfolioCapabilitiesDto | null;
+  }>("/settings/fee-config");
+
+  return {
+    ...response,
+    capabilities: response.capabilities ?? {
+      configuredMarkets: [],
+      configuredCurrencies: [],
+    },
+  };
 }

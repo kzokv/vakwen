@@ -27,11 +27,14 @@ import {
   calculateDividendStockEntitlement,
   calculateSellFees,
   classifyInstrument,
+  derivePortfolioCapabilities,
   resolveRangeBounds,
   roundToDecimal,
   type FeeProfile,
 } from "@vakwen/domain";
 import type {
+  AccountLifecycleMutationResponseDto,
+  AccountMutationResponseDto,
   AccountDefaultCurrency,
   AiConnectorAccessKind,
   AiConnectorToolBlockerCode,
@@ -195,8 +198,11 @@ import {
   buildUnrealizedPnlAnalysis,
   unrealizedPnlAnalysisRouteQuerySchema,
 } from "../services/unrealizedPnlAnalysis.js";
-import { createDefaultFeeProfile, createStore, setStoreInstruments } from "../services/store.js";
-import { isUniqueViolation } from "../persistence/postgres.js";
+import {
+  publishAccountMutationEventToOwnerAndActiveGrantees,
+  publishLifecycleEventToOwnerAndActiveGrantees,
+} from "../services/accountMutationEvents.js";
+import { createStore, setStoreInstruments } from "../services/store.js";
 import { ensureInstrumentDefinition, isInstrumentQuoteable, listTransactionInstruments, upsertInstrumentDefinitions } from "../services/instrumentRegistry.js";
 import {
   BACKFILL_QUEUE,
@@ -265,7 +271,7 @@ import {
   buildTickerDividendUpcomingPage,
   resolveTickerReadScope,
 } from "../services/tickerDetails.js";
-import type { AccountDto, AnonymousShareTokenDto, AnonymousShareTokenStatus } from "@vakwen/shared-types";
+import type { AnonymousShareTokenDto, AnonymousShareTokenStatus } from "@vakwen/shared-types";
 import type { DailyBar, InstrumentType, MarketCode } from "@vakwen/domain";
 
 export const userScopedIdSchema = z
@@ -1814,6 +1820,92 @@ async function buildPortfolioAuditInput(
   };
 }
 
+async function buildAccountMutationResponse(
+  app: FastifyInstance,
+  sessionUserId: string,
+  payload: {
+    account: AccountMutationResponseDto["account"];
+    feeProfile: AccountMutationResponseDto["feeProfile"];
+    capabilities: AccountMutationResponseDto["capabilities"];
+    changedFields?: string[];
+  },
+): Promise<AccountMutationResponseDto> {
+  const prefs = await app.persistence.getUserPreferences(sessionUserId);
+  const requested = resolveReportingCurrency(prefs);
+  const configuredCurrencies = payload.capabilities.configuredCurrencies;
+  const effective = configuredCurrencies.includes(requested)
+    ? requested
+    : configuredCurrencies[0] ?? null;
+  const reason =
+    effective === requested
+      ? null
+      : configuredCurrencies.length === 0
+        ? "no_configured_currencies"
+        : "unconfigured_currency";
+
+  return {
+    ...payload.account,
+    account: payload.account,
+    feeProfile: payload.feeProfile,
+    capabilities: payload.capabilities,
+    reportingCurrency: {
+      requested,
+      effective,
+      reason,
+    },
+    ...(payload.changedFields && payload.changedFields.length > 0
+      ? { changedFields: payload.changedFields }
+      : {}),
+  };
+}
+
+async function buildLifecycleReportingCurrencyForContext(
+  app: FastifyInstance,
+  payload: import("../persistence/types.js").AccountLifecyclePersistenceResult,
+  sessionUserId: string,
+  useAuthoritativeOwnerPreference: boolean,
+): Promise<AccountLifecycleMutationResponseDto["reportingCurrency"]> {
+  if (useAuthoritativeOwnerPreference) {
+    return payload.reportingCurrency;
+  }
+  const prefs = await app.persistence.getUserPreferences(sessionUserId);
+  const requested = resolveReportingCurrency(prefs);
+  const effective = payload.capabilities.configuredCurrencies.includes(requested)
+    ? requested
+    : payload.capabilities.configuredCurrencies[0] ?? null;
+  return {
+    requested,
+    effective,
+    reason:
+      effective === requested
+        ? null
+        : payload.capabilities.configuredCurrencies.length === 0
+          ? "no_configured_currencies"
+          : "unconfigured_currency",
+  };
+}
+
+async function buildAccountLifecycleResponse(
+  app: FastifyInstance,
+  payload: import("../persistence/types.js").AccountLifecyclePersistenceResult,
+  sessionUserId: string,
+  useAuthoritativeOwnerPreference: boolean,
+): Promise<AccountLifecycleMutationResponseDto> {
+  return {
+    accountId: payload.account.id,
+    account: payload.account,
+    deletedAt: payload.deletedAt,
+    finalName: payload.finalName,
+    capabilities: payload.capabilities,
+    reportingCurrency: await buildLifecycleReportingCurrencyForContext(
+      app,
+      payload,
+      sessionUserId,
+      useAuthoritativeOwnerPreference,
+    ),
+  };
+}
+
 function requireWebDraftCapability(context: McpResolvedContext, capability: ShareCapability): void {
   if (!context.shareId) return;
   if (!context.shareCapabilities.includes(capability)) {
@@ -2981,11 +3073,13 @@ function mapPortfolioInstrumentOptions(store: Store): InstrumentOptionDto[] {
 }
 
 function buildShellPortfolioConfig(store: Store): ShellPortfolioConfigDto {
+  const capabilities = derivePortfolioCapabilities(store.accounts);
   return {
     accounts: store.accounts,
     feeProfiles: store.feeProfiles,
     feeProfileBindings: store.feeProfileBindings,
     integrityIssue: getStoreIntegrityIssue(store),
+    capabilities,
   };
 }
 
@@ -3141,6 +3235,7 @@ async function buildDashboardPrimaryOverview(
   reportingCurrency: AccountDefaultCurrency,
   persistence: Pick<Persistence, "getInstrument">,
 ): Promise<DashboardOverviewDto> {
+  const capabilities = derivePortfolioCapabilities(store.accounts);
   const holdings = await attachInstrumentNamesToPrimaryHoldings(
     store,
     persistence,
@@ -3159,6 +3254,7 @@ async function buildDashboardPrimaryOverview(
   const integrityIssue = getStoreIntegrityIssue(store);
 
   return {
+    capabilities,
     settings: withTickerPriceFreshnessSettings(store.settings),
     summary: {
       asOf: new Date().toISOString(),
@@ -4887,66 +4983,31 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return store.accounts;
   });
 
-  // KZO-179 / KZO-183 — multi-account creation with auto-seeded default
-  // fee profile. Per KZO-183 scope item 18 + decision D4:
-  //   - Body NO LONGER accepts `feeProfileId`. Fee profiles are now
-  //     account-scoped, so the only safe creation path is to seed a fresh
-  //     default profile owned by the new account.
-  //   - The auto-seeded profile uses `randomUUID()` (NOT a deterministic id).
-  //     Both rows are pushed in the same saveStore call so the composite-FK
-  //     ownership invariant holds at write time.
-  //   - Name uniqueness via explicit 409 pre-check (KZO-179 D3) + TOCTOU
-  //     safety net via `isUniqueViolation` after saveStore.
-  //   - Bare AccountDto response — flat (no envelope), mirrors POST /fee-profiles.
   app.post("/accounts", async (req) => {
     const body = z
       .object({
         name: z.string().trim().min(1).max(80),
-        // Enum values match migration 040's CHECK constraints.
         defaultCurrency: accountDefaultCurrencySchema,
         accountType: z.enum(["broker", "bank", "wallet"]),
       })
       .parse(req.body);
-
-    const { store } = await loadUserStore(app, req);
-
-    // Pre-check (clean 409 UX before TOCTOU safety net). The unique index
-    // ux_accounts_user_id_name is the actual enforcement; this just delivers
-    // a cleaner error before saveStore runs.
-    if (store.accounts.some((account) => account.name === body.name)) {
-      throw routeError(409, "account_name_in_use", "An account with that name already exists.");
-    }
-
-    // Auto-seed a default fee profile owned by the new account.
-    const newAccountId = randomUUID();
-    const seededProfile = createDefaultFeeProfile(newAccountId, body.defaultCurrency);
-
-    const account: AccountDto = {
-      id: newAccountId,
-      userId: store.userId,
+    const identity = resolveUserId(req, app.oauthConfig?.sessionSecret);
+    const userId = identity.contextUserId;
+    const sessionUserId = requireSessionUserId(req);
+    const result = await app.persistence.createAccount({
+      userId,
       name: body.name,
-      feeProfileId: seededProfile.id,
       defaultCurrency: body.defaultCurrency,
       accountType: body.accountType,
-    };
-    store.feeProfiles.push(seededProfile);
-    store.accounts.push(account);
-
-    try {
-      await app.persistence.saveStore(store);
-    } catch (error) {
-      if (isUniqueViolation(error)) {
-        throw routeError(409, "account_name_in_use", "An account with that name already exists.");
-      }
-      throw error;
-    }
+      auditInput: await buildPortfolioAuditInput(req, "POST /accounts"),
+    });
     await appendDelegatedWriteAudit(app, req, {
       mutation: "account_created",
       routeKey: "POST /accounts",
-      accountId: account.id,
+      accountId: result.account.id,
     });
-
-    return account;
+    await publishAccountMutationEventToOwnerAndActiveGrantees(app, userId, "account_created", result);
+    return buildAccountMutationResponse(app, sessionUserId, result);
   });
 
   app.patch("/accounts/:id", async (req) => {
@@ -4970,82 +5031,22 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       )
       .parse(req.body);
 
-    const { userId, store } = await loadUserStore(app, req);
-
-    const account = store.accounts.find((item) => item.id === params.id);
-    if (!account) throw routeError(404, "account_not_found", `Account ${params.id} was not found.`);
-
-    if (body.feeProfileId !== undefined) {
-      const profile = requireProfile(store, body.feeProfileId);
-      if (profile.accountId !== account.id) {
-        throw routeError(
-          400,
-          "invalid_fee_profile",
-          `Fee profile ${body.feeProfileId} is not owned by account ${account.id}.`,
-        );
-      }
-      account.feeProfileId = body.feeProfileId;
-    }
-    if (body.name) account.name = body.name;
-
-    // KZO-167 D7 — defaultCurrency lockdown. Once an account has any cash
-    // ledger entry OR any trade event, mutating defaultCurrency would
-    // invalidate the existing entries against the (now-stricter) currency
-    // guard in cashLedgerService.ts. Reject with 409 currency_change_blocked
-    // and steer the operator toward "open a new account" instead.
-    if (body.defaultCurrency !== undefined && body.defaultCurrency !== account.defaultCurrency) {
-      const hasCashEntries = store.accounting.facts.cashLedgerEntries.some(
-        (entry) => entry.accountId === account.id,
-      );
-      const hasTradeEvents = store.accounting.facts.tradeEvents.some(
-        (event) => event.accountId === account.id,
-      );
-      if (hasCashEntries || hasTradeEvents) {
-        throw routeError(
-          409,
-          "currency_change_blocked",
-          "Cannot change default currency: account has existing cash entries or trade events. Open a new account or contact support.",
-        );
-      }
-      const previousMarketCode = marketCodeFor(account.defaultCurrency);
-      const nextMarketCode = marketCodeFor(body.defaultCurrency);
-      if (previousMarketCode !== nextMarketCode) {
-        const currentSettings = await app.persistence.getAccountMarketDividendSettings(userId, account.id, previousMarketCode);
-        if (currentSettings.fallbackParValue !== null) {
-          await app.persistence.patchAccountMarketDividendSettings(userId, {
-            accountId: account.id,
-            marketCode: previousMarketCode,
-            fallbackParValue: null,
-            expectedVersion: currentSettings.version,
-            auditInput: {
-              actorUserId: userId,
-              ipAddress: req.ip,
-              metadata: {
-                routeKey: "PATCH /accounts/:id",
-                mutation: "account_currency_change_cleared_dividend_fallback",
-                previousMarketCode,
-                nextMarketCode,
-              },
-            },
-          });
-        }
-      }
-      account.defaultCurrency = body.defaultCurrency;
-    }
-    if (body.accountType !== undefined) {
-      // KZO-167 D4 — accountType is metadata-only in this ticket. No
-      // behavioral gating; downstream tickets (KZO-168 / KZO-170 / KZO-171)
-      // will introduce semantics for bank/wallet types.
-      account.accountType = body.accountType;
-    }
-    await app.persistence.saveStore(store);
+    const { userId } = resolveUserId(req, app.oauthConfig?.sessionSecret);
+    const sessionUserId = requireSessionUserId(req);
+    const result = await app.persistence.updateAccount({
+      userId,
+      accountId: params.id,
+      ...body,
+      auditInput: await buildPortfolioAuditInput(req, "PATCH /accounts/:id"),
+    });
     await appendDelegatedWriteAudit(app, req, {
       mutation: "account_updated",
       routeKey: "PATCH /accounts/:id",
-      accountId: account.id,
-      changedFields: Object.keys(body),
+      accountId: result.account.id,
+      changedFields: result.changedFields ?? Object.keys(body),
     });
-    return account;
+    await publishAccountMutationEventToOwnerAndActiveGrantees(app, userId, "account_updated", result);
+    return buildAccountMutationResponse(app, sessionUserId, result);
   });
 
   app.get("/accounts/:id/dividend-settings/:marketCode", async (req) => {
@@ -5083,19 +5084,23 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // `app_config.account_hard_purge_days`).
   app.delete("/accounts/:id", async (req, reply) => {
     const params = z.object({ id: userScopedIdSchema }).parse(req.params);
-    const { userId } = resolveUserId(req, app.oauthConfig?.sessionSecret);
+    const identity = resolveUserId(req, app.oauthConfig?.sessionSecret);
+    const userId = identity.contextUserId;
     const sessionUserId = requireSessionUserId(req);
-    const { deletedAt } = await app.persistence.softDeleteAccount(params.id, userId, {
+    const result = await app.persistence.softDeleteAccount(params.id, userId, {
       actorUserId: sessionUserId,
       ipAddress: req.ip,
       metadata: await buildDelegatedAuditMetadata(req),
     });
-    await app.eventBus.publishEvent(userId, "account_soft_deleted", {
-      type: "account_soft_deleted" as const,
-      accountId: params.id,
-      deletedAt,
-    });
-    return reply.code(200).send({ accountId: params.id, deletedAt });
+    const useAuthoritativeOwnerPreference = identity.sessionUserId === identity.contextUserId;
+    const response = await buildAccountLifecycleResponse(
+      app,
+      result,
+      identity.sessionUserId,
+      useAuthoritativeOwnerPreference,
+    );
+    await publishLifecycleEventToOwnerAndActiveGrantees(app, userId, "account_soft_deleted", result);
+    return reply.code(200).send(response);
   });
 
   // POST /accounts/:id/restore — restore a soft-deleted account. On
@@ -5104,19 +5109,23 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // the route returns the resolved final name.
   app.post("/accounts/:id/restore", async (req) => {
     const params = z.object({ id: userScopedIdSchema }).parse(req.params);
-    const { userId } = resolveUserId(req, app.oauthConfig?.sessionSecret);
+    const identity = resolveUserId(req, app.oauthConfig?.sessionSecret);
+    const userId = identity.contextUserId;
     const sessionUserId = requireSessionUserId(req);
-    const { finalName } = await app.persistence.restoreAccount(params.id, userId, {
+    const result = await app.persistence.restoreAccount(params.id, userId, {
       actorUserId: sessionUserId,
       ipAddress: req.ip,
       metadata: await buildDelegatedAuditMetadata(req),
     });
-    await app.eventBus.publishEvent(userId, "account_restored", {
-      type: "account_restored" as const,
-      accountId: params.id,
-      finalName,
-    });
-    return { accountId: params.id, finalName };
+    const useAuthoritativeOwnerPreference = identity.sessionUserId === identity.contextUserId;
+    const response = await buildAccountLifecycleResponse(
+      app,
+      result,
+      identity.sessionUserId,
+      useAuthoritativeOwnerPreference,
+    );
+    await publishLifecycleEventToOwnerAndActiveGrantees(app, userId, "account_restored", result);
+    return response;
   });
 
   // POST /accounts/:id/purge — typed-name confirmation hard-purge. Accepts
@@ -5125,7 +5134,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.post("/accounts/:id/purge", async (req) => {
     const params = z.object({ id: userScopedIdSchema }).parse(req.params);
     const body = z.object({ confirmationName: z.string().min(1).max(80) }).parse(req.body);
-    const { userId } = resolveUserId(req, app.oauthConfig?.sessionSecret);
+    const identity = resolveUserId(req, app.oauthConfig?.sessionSecret);
+    const userId = identity.contextUserId;
     const sessionUserId = requireSessionUserId(req);
 
     const account = await app.persistence.getAccountIncludingDeleted(params.id, userId);
@@ -5141,7 +5151,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     // applies to active accounts too (skip-wait shortcut per Mockup C).
     // `mustBeSoftDeleted: false` is INTENTIONAL — not a bug. The cron path
     // separately calls hardPurgeAccount with `mustBeSoftDeleted: true`.
-    await app.persistence.hardPurgeAccount(
+    const result = await app.persistence.hardPurgeAccount(
       params.id,
       userId,
       {
@@ -5151,11 +5161,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       },
       { mustBeSoftDeleted: false },
     );
-    await app.eventBus.publishEvent(userId, "account_hard_purged", {
-      type: "account_hard_purged" as const,
-      accountId: params.id,
-    });
-    return { accountId: params.id };
+    const response = await buildAccountLifecycleResponse(
+      app,
+      result,
+      identity.sessionUserId,
+      identity.sessionUserId === identity.contextUserId,
+    );
+    await publishLifecycleEventToOwnerAndActiveGrantees(app, userId, "account_hard_purged", result);
+    return response;
   });
 
   // GET /accounts/deleted — list soft-deleted accounts for "Recently deleted".
@@ -6524,9 +6537,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         timing.measure("map_account_options", "app", () => Promise.resolve(buildTransactionAccountOptions(store))),
         timing.measure("map_portfolio_config", "app", () => Promise.resolve(buildShellPortfolioConfig(store))),
       ]);
+      const capabilities = portfolioConfig.capabilities;
       return {
         recentTransactions,
         accountOptions,
+        capabilities,
         portfolioConfig,
       };
     });
@@ -7470,7 +7485,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const { ticker, accountId, cashStatus, stockStatus, ...reviewQuery } = query;
     return withReadPathTiming(req, reply, "/portfolio/dividends/review/primary", async (timing) => {
       const { contextUserId: userId } = resolveUserId(req, app.oauthConfig?.sessionSecret);
-      const [primary, metadata] = await Promise.all([
+      const [store, primary, metadata] = await Promise.all([
+        timing.measure("load_store", "db", () => app.persistence.loadStore(userId)),
         app.persistence.listDividendReviewPrimary(userId, {
           ...reviewQuery,
           accountIds: accountId,
@@ -7485,9 +7501,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
             toPaymentDate: query.toPaymentDate,
           })),
       ]);
+      const capabilities = derivePortfolioCapabilities(store.accounts);
       timing.record("review_primary_db", "db", primary.phaseTimings?.dbMs ?? 0);
       timing.record("review_primary_hydration", "app", primary.phaseTimings?.hydrationMs ?? 0);
       return {
+        capabilities,
         reviewRows: primary.rows,
         total: primary.total,
         years: metadata.years,

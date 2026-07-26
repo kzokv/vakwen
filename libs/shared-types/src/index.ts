@@ -502,6 +502,7 @@ export interface DividendReviewTickerOptionDto {
 }
 
 export interface DividendReviewPrimaryDto {
+  capabilities?: PortfolioCapabilitiesDto;
   reviewRows: DividendReviewRowSummaryDto[];
   total: number;
   years: number[];
@@ -987,6 +988,40 @@ export interface AccountDto {
   accountType: AccountType;
 }
 
+export interface PortfolioCapabilitiesDto {
+  configuredMarkets: readonly MarketCode[];
+  configuredCurrencies: readonly AccountDefaultCurrency[];
+}
+
+export type PortfolioSelectionNormalizationReason =
+  | "unconfigured_market"
+  | "unconfigured_currency"
+  | "no_configured_markets"
+  | "no_configured_currencies";
+
+export interface PortfolioSelectionNormalizationResult<TSelection extends string> {
+  requested: TSelection | null;
+  effective: TSelection | null;
+  reason: PortfolioSelectionNormalizationReason | null;
+}
+
+export interface AccountMutationResponseDto extends AccountDto {
+  account: AccountDto;
+  feeProfile: FeeProfileDto;
+  capabilities: PortfolioCapabilitiesDto;
+  reportingCurrency: PortfolioSelectionNormalizationResult<AccountDefaultCurrency>;
+  changedFields?: string[];
+}
+
+export interface AccountLifecycleMutationResponseDto {
+  accountId: string;
+  account: AccountDto;
+  deletedAt: string | null;
+  finalName: string | null;
+  capabilities: PortfolioCapabilitiesDto;
+  reportingCurrency: PortfolioSelectionNormalizationResult<AccountDefaultCurrency>;
+}
+
 // KZO-183: closed-set market code derived from an account's defaultCurrency.
 // Currency ↔ market is a 1:1 mapping (TWD↔TW, USD↔US, AUD↔AU, KRW↔KR, JPY↔JP). Both helpers
 // throw on any unsupported input.
@@ -1081,7 +1116,7 @@ export interface FxConversionRateDto {
 
 export interface DashboardOverviewMarketValueDto {
   marketCode: MarketCode;
-  value: number;
+  value: number | null;
   reportingCurrency: AccountDefaultCurrency;
 }
 
@@ -1222,6 +1257,7 @@ export interface InstrumentOptionDto {
 }
 
 export interface DashboardOverviewDto {
+  capabilities?: PortfolioCapabilitiesDto;
   settings: UserSettings;
   summary: DashboardOverviewSummaryDto;
   marketStates: DashboardMarketStateDto[];
@@ -1250,6 +1286,7 @@ export interface ShellPortfolioConfigDto {
   feeProfiles: FeeProfileDto[];
   feeProfileBindings: FeeProfileBindingDto[];
   integrityIssue: IntegrityIssueDto | null;
+  capabilities?: PortfolioCapabilitiesDto;
 }
 
 // KZO-159 (158A): `DashboardPerformanceRange` widened from the closed
@@ -2003,6 +2040,7 @@ export interface DailyReviewSuggestionDto {
 }
 
 export interface DailyReviewReportDto {
+  capabilities?: PortfolioCapabilitiesDto;
   query: ReportQueryStateDto;
   summary: ReportSummaryTotalsDto;
   fxStatus: ReportFxStatusDto;
@@ -2037,6 +2075,7 @@ export interface ReportTickerAllocationRowDto {
 }
 
 export interface PortfolioReportDto {
+  capabilities?: PortfolioCapabilitiesDto;
   query: ReportQueryStateDto;
   summary: ReportSummaryTotalsDto;
   fxStatus: ReportFxStatusDto;
@@ -2061,6 +2100,7 @@ export interface PortfolioReportDto {
 }
 
 export interface MarketReportDto {
+  capabilities?: PortfolioCapabilitiesDto;
   query: ReportQueryStateDto;
   summary: ReportSummaryTotalsDto;
   fxStatus: ReportFxStatusDto;
@@ -2293,6 +2333,7 @@ export interface UnrealizedPnlAnalysisDiagnosticsDto {
 }
 
 export interface UnrealizedPnlAnalysisDto {
+  capabilities?: PortfolioCapabilitiesDto;
   query: UnrealizedPnlAnalysisQueryStateDto;
   metadata: UnrealizedPnlAnalysisMetadataDto;
   basis?: UnrealizedPnlAnalysisBasisDto;
@@ -2450,6 +2491,7 @@ export interface TransactionAccountOptionDto {
 export interface TransactionPrimaryDto {
   recentTransactions: TransactionHistoryItemDto[];
   accountOptions: TransactionAccountOptionDto[];
+  capabilities?: PortfolioCapabilitiesDto;
   portfolioConfig: ShellPortfolioConfigDto;
 }
 

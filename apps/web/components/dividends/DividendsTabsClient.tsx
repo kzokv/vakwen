@@ -39,6 +39,8 @@ import {
   fetchDividendCalendarSnapshot,
 } from "../../features/dividends/services/dividendService";
 import type { DividendCalendarSnapshot } from "../../features/dividends/types";
+import { useOptionalAppShellData } from "../layout/AppShellDataContext";
+import { ZeroAccountSetupGate } from "../../features/portfolio-capabilities/components/ZeroAccountSetupGate";
 
 interface DividendsTabsClientProps {
   initialTab: DividendsTabValue;
@@ -104,6 +106,7 @@ export function DividendsTabsClient({
   initialReviewQuery = searchParamsToReviewQuery(new URLSearchParams()),
   initialYears,
 }: DividendsTabsClientProps) {
+  const shellData = useOptionalAppShellData();
   const [activeTab, setActiveTab] = useState<DividendsTabValue>(initialTab);
   const [reviewQuery, setReviewQuery] = useState(initialReviewQuery);
   const [calendarMonth, setCalendarMonth] = useState(initialCalendarMonth);
@@ -185,6 +188,23 @@ export function DividendsTabsClient({
       cancelled = true;
     };
   }, [activeTab, calendarMonth, calendarSnapshot]);
+
+  if (
+    shellData
+    && !shellData.isPortfolioConfigLoading
+    && shellData.portfolioCapabilities?.configuredCurrencies.length === 0
+  ) {
+    return (
+      <ZeroAccountSetupGate
+        dict={dict}
+        canManageAccounts={
+          !shellData.isSharedContext
+          || shellData.sharedContextPermissions.canManageAccounts
+        }
+        returnTo="/dividends"
+      />
+    );
+  }
 
   return (
     <Tabs

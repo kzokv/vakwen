@@ -95,6 +95,51 @@ export async function seedUser(options: {
   });
 }
 
+export async function softDeleteAllActiveAccountsForUser(userId: string): Promise<void> {
+  await withFreshContext(async (ctx) => {
+    const accountsResponse = await ctx.get(new URL("/accounts", TestEnv.apiBaseUrl).href, {
+      headers: { "x-user-id": userId },
+    });
+    if (!accountsResponse.ok()) {
+      throw new Error(
+        `list accounts for zero-state seed failed: ${accountsResponse.status()} ${await accountsResponse.text()}`,
+      );
+    }
+    const accounts = await accountsResponse.json() as Array<{ id: string }>;
+    for (const account of accounts) {
+      const response = await ctx.delete(
+        new URL(`/accounts/${account.id}`, TestEnv.apiBaseUrl).href,
+        { headers: { "x-user-id": userId } },
+      );
+      if (!response.ok()) {
+        throw new Error(
+          `zero-state account delete failed: ${response.status()} ${await response.text()}`,
+        );
+      }
+    }
+  });
+}
+
+export async function seedUserPreferencesForUser(
+  userId: string,
+  preferences: Record<string, unknown>,
+): Promise<void> {
+  await withFreshContext(async (ctx) => {
+    const response = await ctx.post(
+      new URL("/__e2e/seed-user-preferences", TestEnv.apiBaseUrl).href,
+      {
+        headers: { "x-user-id": userId },
+        data: { preferences },
+      },
+    );
+    if (!response.ok()) {
+      throw new Error(
+        `seed user preferences failed: ${response.status()} ${await response.text()}`,
+      );
+    }
+  });
+}
+
 /**
  * Seed an active share from the default dev_bypass admin (user-1) to the given
  * grantee. Throws if the grantee email is not a known user. Uses a fresh

@@ -36,6 +36,7 @@ describe("TransactionHistoryBrowser", () => {
       root.render(
         <TransactionHistoryBrowser
           accountOptions={[{ id: "acc-1", name: "Main", feeProfileName: "Default", defaultCurrency: "USD" }]}
+          availableMarkets={["TW", "US"]}
           data={{
             items: [],
             total: 12,
@@ -77,5 +78,88 @@ describe("TransactionHistoryBrowser", () => {
       .not.toContain("Type: SELL");
     expect(document.querySelector("[data-testid='transaction-history-subtotals']")?.textContent)
       .toContain("USD");
+  });
+
+  it("limits market options to configured markets only", () => {
+    act(() => {
+      root.render(
+        <TransactionHistoryBrowser
+          accountOptions={[]}
+          availableMarkets={["TW", "US"]}
+          data={{
+            items: [],
+            total: 0,
+            limit: 50,
+            offset: 0,
+            aggregates: { realizedPnlByCurrency: [] },
+          }}
+          dict={getDictionary("en")}
+          errorMessage=""
+          isLoading={false}
+          locale="en"
+          onChange={vi.fn()}
+          onSort={vi.fn()}
+          state={{
+            type: "ALL",
+            pnl: "any",
+            marketCode: "ALL",
+            accountId: "ALL",
+            ticker: "",
+            from: "",
+            to: "",
+            limit: 50,
+            offset: 0,
+            sortBy: "tradeDate",
+            sortOrder: "desc",
+            returnTo: null,
+          }}
+        />,
+      );
+    });
+
+    const select = document.querySelector("[data-testid='transaction-history-market-filter']") as HTMLSelectElement | null;
+    expect(select).not.toBeNull();
+    expect(Array.from(select!.options).map((option) => option.value)).toEqual(["ALL", "TW", "US"]);
+  });
+
+  it("renders static market context when exactly one configured market exists", () => {
+    act(() => {
+      root.render(
+        <TransactionHistoryBrowser
+          accountOptions={[]}
+          availableMarkets={["TW"]}
+          data={{
+            items: [],
+            total: 0,
+            limit: 50,
+            offset: 0,
+            aggregates: { realizedPnlByCurrency: [] },
+          }}
+          dict={getDictionary("en")}
+          errorMessage=""
+          isLoading={false}
+          locale="en"
+          onChange={vi.fn()}
+          onSort={vi.fn()}
+          state={{
+            type: "ALL",
+            pnl: "any",
+            marketCode: "ALL",
+            accountId: "ALL",
+            ticker: "",
+            from: "",
+            to: "",
+            limit: 50,
+            offset: 0,
+            sortBy: "tradeDate",
+            sortOrder: "desc",
+            returnTo: null,
+          }}
+        />,
+      );
+    });
+
+    expect(document.querySelector("[data-testid='transaction-history-market-context-single']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='transaction-history-market-filter']")).toBeNull();
   });
 });

@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import {
-  ACCOUNT_DEFAULT_CURRENCIES,
   type AccountDefaultCurrency,
+  type PortfolioCapabilitiesDto,
 } from "@vakwen/shared-types";
 import {
   CircleDollarSign,
@@ -12,7 +12,12 @@ import {
   ReceiptText,
   RefreshCw,
 } from "lucide-react";
+import { usePathname } from "next/navigation";
 import type { AppDictionary } from "../../lib/i18n";
+import { CapabilityNormalizationNotice } from "../../features/portfolio-capabilities/components/CapabilityNormalizationNotice";
+import { SingleCapabilityContext } from "../../features/portfolio-capabilities/components/SingleCapabilityContext";
+import { ZeroAccountSetupGate } from "../../features/portfolio-capabilities/components/ZeroAccountSetupGate";
+import { useReportingCurrencyCapability } from "../../features/portfolio-capabilities/useReportingCurrencyCapability";
 import { Button } from "../ui/Button";
 import {
   Select,
@@ -36,8 +41,14 @@ interface FloatingQuickActionsProps {
   hidden: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  portfolioCapabilities: PortfolioCapabilitiesDto | null;
+  isSharedContext: boolean;
+  canManageAccounts: boolean;
   reportingCurrency: AccountDefaultCurrency;
-  onReportingCurrencyChange: (currency: AccountDefaultCurrency) => Promise<void>;
+  onReportingCurrencyChange: (
+    currency: AccountDefaultCurrency,
+    options?: { refreshRouter?: boolean },
+  ) => Promise<void>;
   isReportingCurrencySaving: boolean;
   reportingCurrencyError: string;
   onAddTransaction: () => void;
@@ -53,6 +64,9 @@ export function FloatingQuickActions({
   hidden,
   open,
   onOpenChange,
+  portfolioCapabilities,
+  isSharedContext,
+  canManageAccounts,
   reportingCurrency,
   onReportingCurrencyChange,
   isReportingCurrencySaving,
@@ -66,14 +80,25 @@ export function FloatingQuickActions({
   dict,
 }: FloatingQuickActionsProps) {
   const isMobile = useIsMobile();
+  const pathname = usePathname() ?? "/";
   const [currencySaved, setCurrencySaved] = useState(false);
+  const {
+    configuredCurrencies,
+    effectiveReportingCurrency,
+    normalization,
+  } = useReportingCurrencyCapability({
+    capabilities: portfolioCapabilities,
+    reportingCurrency,
+    isSharedContext,
+    onNormalizeReportingCurrency: onReportingCurrencyChange,
+  });
 
   if (hidden) return null;
 
   const close = () => onOpenChange(false);
 
   const handleCurrencyChange = async (value: string): Promise<void> => {
-    if (!(ACCOUNT_DEFAULT_CURRENCIES as readonly string[]).includes(value)) return;
+    if (!configuredCurrencies.includes(value as AccountDefaultCurrency)) return;
     setCurrencySaved(false);
     try {
       await onReportingCurrencyChange(value as AccountDefaultCurrency);
@@ -109,24 +134,45 @@ export function FloatingQuickActions({
             <CircleDollarSign data-icon="inline-start" aria-hidden="true" />
             {dict.commandPalette.actionChangeReportingCurrency}
           </div>
-          <Select
-            value={reportingCurrency}
-            onValueChange={(value) => { void handleCurrencyChange(value); }}
-            disabled={isReportingCurrencySaving}
-          >
-            <SelectTrigger data-testid="floating-action-reporting-currency">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {ACCOUNT_DEFAULT_CURRENCIES.map((currency) => (
-                  <SelectItem key={currency} value={currency}>
-                    {currency}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+          {portfolioCapabilities && configuredCurrencies.length === 0 ? (
+            <ZeroAccountSetupGate
+              dict={dict}
+              canManageAccounts={canManageAccounts}
+              returnTo={pathname}
+            />
+          ) : configuredCurrencies.length === 1 ? (
+            <SingleCapabilityContext
+              label={dict.commandPalette.actionChangeReportingCurrency}
+              value={effectiveReportingCurrency ?? reportingCurrency}
+              testId="floating-action-reporting-currency-single"
+            />
+          ) : (
+            <Select
+              value={effectiveReportingCurrency ?? reportingCurrency}
+              onValueChange={(value) => { void handleCurrencyChange(value); }}
+              disabled={isReportingCurrencySaving}
+            >
+              <SelectTrigger data-testid="floating-action-reporting-currency">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {configuredCurrencies.map((currency) => (
+                    <SelectItem key={currency} value={currency}>
+                      {currency}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          )}
+          {normalization ? (
+            <CapabilityNormalizationNotice
+              dict={dict}
+              kind="reportingCurrency"
+              normalization={normalization}
+            />
+          ) : null}
           {currencySaved ? (
             <p className="text-xs text-muted-foreground">
               {dict.commandPalette.actionReportingCurrencySaved}

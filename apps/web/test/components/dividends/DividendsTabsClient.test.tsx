@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { getDictionary } from "../../../lib/i18n";
+import { AppShellDataProvider } from "../../../components/layout/AppShellDataContext";
 
 vi.mock("../../../features/dividends/services/dividendService", () => ({
   fetchDividendCalendarSnapshot: vi.fn(),
@@ -15,6 +16,10 @@ vi.mock("../../../components/dividends/DividendCalendarClient", () => ({
 
 vi.mock("../../../components/dividends/DividendReviewClient", () => ({
   DividendReviewClient: () => <div data-testid="mock-dividend-review-client" />,
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
 }));
 
 import {
@@ -106,6 +111,41 @@ describe("DividendsTabsClient", () => {
     expect(fetchDividendCalendarSnapshotMock).not.toHaveBeenCalled();
     expect(fetchDividendLedgerReviewMock).not.toHaveBeenCalled();
     expect(fetchDividendLedgerYearsMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the shared-safe zero-account gate instead of dividend tabs", async () => {
+    act(() => {
+      root.render(
+        <AppShellDataProvider
+          value={{
+            portfolioCapabilities: {
+              configuredMarkets: [],
+              configuredCurrencies: [],
+            },
+            isPortfolioConfigLoading: false,
+            sharedContextPermissions: { canManageAccounts: false },
+          } as never}
+        >
+          <DividendsTabsClient
+            initialTab="calendar"
+            calendarLabel={dict.dividends.tabs.calendar}
+            ledgerLabel={dict.dividends.tabs.review}
+            dict={dict}
+            locale="en"
+            accounts={[]}
+            initialCalendarMonth="2026-07"
+            initialCalendarSnapshot={{ events: [], ledgerEntries: [] } as never}
+            initialReviewData={null}
+            initialYears={[]}
+          />
+        </AppShellDataProvider>,
+      );
+    });
+
+    expect(
+      container.querySelector('[data-testid="portfolio-capabilities-zero-account-gate"]'),
+    ).not.toBeNull();
+    expect(container.querySelector('[data-testid="dividends-tabs"]')).toBeNull();
   });
 
   it("keeps Review metadata inside the primary DTO without a separate years waterfall", async () => {

@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { CashLedgerClient } from "../../../features/cash-ledger/components/CashLedgerClient";
+import { AppShellDataProvider } from "../../../components/layout/AppShellDataContext";
 import { getDictionary } from "../../../lib/i18n";
 import type {
   CashLedgerListResponse,
@@ -21,6 +22,10 @@ vi.mock("../../../features/cash-ledger/services/cashLedgerService", () => ({
 
 vi.mock("../../../hooks/useEventStream", () => ({
   useEventStream: () => undefined,
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
 }));
 
 import {
@@ -123,6 +128,35 @@ describe("CashLedgerClient pagination", () => {
 
     const pagination = container.querySelector('[data-testid="pagination"]');
     expect(pagination).toBeNull();
+  });
+
+  it("shows FX enablement instead of the transfer action for a single configured currency", async () => {
+    await act(async () => {
+      root.render(
+        <AppShellDataProvider
+          value={{
+            portfolioCapabilities: {
+              configuredMarkets: ["TW"],
+              configuredCurrencies: ["TWD"],
+            },
+            isPortfolioConfigLoading: false,
+            sharedContextPermissions: { canManageAccounts: true },
+          } as never}
+        >
+          <CashLedgerClient
+            initialData={buildResponse(0, 0)}
+            initialAccounts={[]}
+            initialAccountMetaReady
+            dict={dict}
+            locale="en"
+          />
+        </AppShellDataProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="fx-transfer-enablement"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="new-fx-transfer-button"]')).toBeNull();
   });
 
   it("disables prev button on page 1", async () => {

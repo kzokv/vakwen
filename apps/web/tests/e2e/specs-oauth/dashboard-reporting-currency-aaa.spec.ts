@@ -81,6 +81,23 @@ async function seedAsBrowser(
   });
 }
 
+async function createAccountAsBrowser(
+  page: Page,
+  name: string,
+  defaultCurrency: "USD" | "AUD",
+): Promise<void> {
+  const cookieHeader = await getTestUserCookieHeader(page);
+  await withFreshContext(async (ctx) => {
+    const response = await ctx.post(apiPath("/accounts"), {
+      headers: { cookie: cookieHeader },
+      data: { name, defaultCurrency, accountType: "bank" },
+    });
+    if (!response.ok()) {
+      throw new Error(`POST /accounts failed: ${response.status()} ${await response.text()}`);
+    }
+  });
+}
+
 async function getReportingCurrencyFromApi(page: Page): Promise<string | undefined> {
   const cookieHeader = await getTestUserCookieHeader(page);
   return withFreshContext(async (ctx) => {
@@ -103,8 +120,8 @@ async function getReportingCurrencyFromApi(page: Page): Promise<string | undefin
 test.describe.configure({ mode: "serial" });
 
 test.describe("dashboard reporting currency (KZO-180)", () => {
-  // ── E2E-1 — Default → dropdown shows TWD ─────────────────────────────────
-  test("[reporting-currency-A]: seed reportingCurrency=TWD → open settings → Display tab → dropdown initial value is 'TWD'", async ({
+  // ── E2E-1 — Single configured currency → static TWD context ─────────────
+  test("[reporting-currency-A]: TWD-only account → Display tab shows static TWD reporting context", async ({
     appShell,
     page,
   }) => {
@@ -113,15 +130,19 @@ test.describe("dashboard reporting currency (KZO-180)", () => {
     await appShell.actions.openSettingsDrawer();
     await appShell.actions.clickSettingsDisplayTab();
 
-    const select = page.getByTestId("reporting-currency-select");
-    await expect.poll(async () => select.isVisible(), {
+    const singleCurrency = page.getByTestId("display-reporting-currency-single");
+    await expect.poll(async () => singleCurrency.isVisible(), {
       timeout: 5_000,
       intervals: [200, 400],
     }).toBe(true);
+    await appShell.assert.mxAssertTruthy(
+      (await singleCurrency.textContent())?.includes("TWD") ?? false,
+      "single reporting-currency context contains TWD",
+    );
     await appShell.assert.mxAssertEqual(
-      await select.inputValue(),
-      "TWD",
-      "reporting-currency-select initial value",
+      await page.getByTestId("reporting-currency-select").count(),
+      0,
+      "reporting-currency select is absent with one configured currency",
     );
   });
 
@@ -131,6 +152,7 @@ test.describe("dashboard reporting currency (KZO-180)", () => {
     page,
   }) => {
     await seedAsBrowser(page, { reportingCurrency: "TWD" });
+    await createAccountAsBrowser(page, "OAuth USD Reporting", "USD");
     await appShell.actions.navigateToRoute("/dashboard");
     await appShell.actions.openSettingsDrawer();
     await appShell.actions.clickSettingsDisplayTab();
@@ -180,6 +202,7 @@ test.describe("dashboard reporting currency (KZO-180)", () => {
     page,
   }) => {
     await seedAsBrowser(page, { reportingCurrency: "AUD" });
+    await createAccountAsBrowser(page, "OAuth AUD Reporting", "AUD");
     await appShell.actions.navigateToRoute("/dashboard");
     await appShell.actions.openSettingsDrawer();
     await appShell.actions.clickSettingsDisplayTab();

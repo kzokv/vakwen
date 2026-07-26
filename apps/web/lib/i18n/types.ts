@@ -1046,6 +1046,20 @@ export interface AppDictionary {
     dismiss: string;
     retry: string;
   };
+  portfolioCapabilities: {
+    zeroAccountGateTitle: string;
+    zeroAccountGateDescription: string;
+    zeroAccountGateReadonly: string;
+    zeroAccountGateAction: string;
+    normalizationNoticeTitle: string;
+    unconfiguredMarket: string;
+    unconfiguredReportScope: string;
+    unconfiguredCurrency: string;
+    noConfiguredMarkets: string;
+    noConfiguredCurrencies: string;
+    dismissNormalizationNotice: string;
+    noneAvailable: string;
+  };
   settings: {
     title: string;
     description: string;
@@ -1101,6 +1115,9 @@ export interface AppDictionary {
       tabAccounts: string;
       tabPortfolioAccounts: string;
     accountCreateTitle: string;
+    accountCreateDescription: string;
+    accountCreateFirstAccountTitle: string;
+    accountCreateFirstAccountDescription: string;
     accountCreateNameLabel: string;
     accountCreateNamePlaceholder: string;
     accountCreateTypeLabel: string;
@@ -1108,7 +1125,13 @@ export interface AppDictionary {
     accountCreateFeeProfileLabel: string;
     accountCreateCurrencyLockBody: string;
     accountCreatePreviewLabel: string;
+    accountCreateStepMarket: string;
+    accountCreateStepDetails: string;
+    accountCreateStepReview: string;
+    accountCreateContinue: string;
+    accountCreateBack: string;
     accountCreateSubmit: string;
+    accountCreateSuccess: string;
     accountCreateNameInUseError: string;
     accountCreateGenericError: string;
     // KZO-183/KR: market labels for AccountCreateForm currency cards. Field
@@ -1124,9 +1147,22 @@ export interface AppDictionary {
     accountCreateMarketAustraliaSubtext: string;
     accountCreateMarketKoreaSubtext: string;
     accountCreateMarketJapanSubtext: string;
+    accountCreateAlreadyEnabled: string;
+    accountCreateAlreadyEnabledBody: string;
+    accountCreateCapabilitiesTitle: string;
+    accountCreateCapabilityTransactions: string;
+    accountCreateCapabilityReports: string;
+    accountCreateCapabilityDividends: string;
+    accountCreateCapabilityReportingCurrency: string;
+    accountCreateDefaultProfileReviewTitle: string;
+    accountCreateDefaultProfileReview: string;
     // KZO-183: per-account expandable cards (Accounts tab body).
     accountsTabSearchLabel: string;
     accountsTabSearchPlaceholder: string;
+    accountsZeroStateTitle: string;
+    accountsZeroStateDescription: string;
+    accountsCreateAdditionalDescription: string;
+    accountsAddAccountTrigger: string;
     accountsListMarketBadgeTW: string;
     accountsListMarketBadgeUS: string;
     accountsListMarketBadgeAU: string;
@@ -1135,10 +1171,12 @@ export interface AppDictionary {
     accountsListAccountTypeBroker: string;
     accountsListAccountTypeBank: string;
     accountsListAccountTypeWallet: string;
+    accountsListAccountTypeLabel: string;
     accountsListExpandLabel: string;
     accountsListCollapseLabel: string;
     accountsListDefaultProfileLabel: string;
     accountsListDefaultProfileHint: string;
+    accountsListAccountUpdateError: string;
     dividendSettingsTitle: string;
     dividendSettingsDescription: string;
     dividendSettingsMarketLabel: string;
@@ -1843,6 +1881,9 @@ export interface AppDictionary {
     fxReverseConfirm: string;
     fxReverseCancel: string;
     fxFormTitleCreate: string;
+    fxEnablementTitle: string;
+    fxEnablementDescription: string;
+    fxEnablementAction: string;
     fxFormTitleEdit: string;
     fxFormSubtitle: string;
     fxFromSection: string;

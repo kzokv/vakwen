@@ -6,6 +6,7 @@ import { dashboardI18n } from "../features/dashboard/i18n";
 import { dividendsI18n } from "../features/dividends/i18n";
 import { notificationsI18n } from "../features/notifications/i18n";
 import { portfolioI18n } from "../features/portfolio/i18n";
+import { portfolioCapabilitiesI18n } from "../features/portfolio-capabilities/i18n";
 import { sharingI18n } from "../features/sharing/i18n";
 import { settingsI18n } from "../features/settings/i18n";
 import { commonI18n } from "./i18n/common";
@@ -25,6 +26,7 @@ export function getDictionary(locale: LocaleCode): AppDictionary {
     ...dashboardI18n[localeKey],
     ...dividendsI18n[localeKey],
     ...notificationsI18n[localeKey],
+    ...portfolioCapabilitiesI18n[localeKey],
     ...settingsBlock,
     // KZO-196 — `gics` lives on `settingsI18n` but the spread above does not
     // re-emit narrowly-typed sibling keys; pinning explicitly keeps the

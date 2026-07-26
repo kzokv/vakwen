@@ -4,6 +4,7 @@ import Link from "next/link";
 import { MARKET_CODES, type LocaleCode, type MarketCode, type TransactionAccountOptionDto, type TransactionHistoryPageDto } from "@vakwen/shared-types";
 import type { AppDictionary } from "../../lib/i18n";
 import { cn, formatCurrencyAmount, formatNumber } from "../../lib/utils";
+import { SingleCapabilityContext } from "../../features/portfolio-capabilities/components/SingleCapabilityContext";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { holdingsFinanceSurfaceClass } from "../holdings/holdingsStyle";
@@ -17,6 +18,7 @@ import {
 
 interface TransactionHistoryBrowserProps {
   accountOptions: TransactionAccountOptionDto[];
+  availableMarkets?: readonly MarketCode[];
   data: TransactionHistoryPageDto;
   dict: AppDictionary;
   errorMessage: string;
@@ -29,6 +31,7 @@ interface TransactionHistoryBrowserProps {
 
 export function TransactionHistoryBrowser({
   accountOptions,
+  availableMarkets,
   data,
   dict,
   errorMessage,
@@ -38,6 +41,9 @@ export function TransactionHistoryBrowser({
   onSort,
   state,
 }: TransactionHistoryBrowserProps) {
+  const supportedMarkets = availableMarkets && availableMarkets.length > 0
+    ? MARKET_CODES.filter((marketCode) => availableMarkets.includes(marketCode))
+    : MARKET_CODES;
   const chips = buildActiveFilterChips(dict, state, accountOptions);
   const pageStart = data.total === 0 ? 0 : state.offset + 1;
   const pageEnd = Math.min(state.offset + data.items.length, data.total);
@@ -96,16 +102,25 @@ export function TransactionHistoryBrowser({
           </label>
           <label className="grid gap-1 text-sm text-muted-foreground">
             <span>{dict.transactions.marketTerm}</span>
-            <select
-              className="rounded-lg border border-border bg-background px-3 py-2 text-foreground"
-              value={state.marketCode}
-              onChange={(event) => onChange({ marketCode: event.target.value as TransactionHistoryRouteState["marketCode"] }, { resetOffset: true })}
-            >
-              <option value="ALL">{dict.transactions.filterAllMarkets}</option>
-              {MARKET_CODES.map((marketCode) => (
-                <option key={marketCode} value={marketCode}>{getMarketFilterLabel(dict, marketCode)}</option>
-              ))}
-            </select>
+            {supportedMarkets.length === 1 ? (
+              <SingleCapabilityContext
+                label={dict.transactions.marketTerm}
+                value={getMarketFilterLabel(dict, supportedMarkets[0] ?? "ALL")}
+                testId="transaction-history-market-context-single"
+              />
+            ) : (
+              <select
+                className="rounded-lg border border-border bg-background px-3 py-2 text-foreground"
+                value={state.marketCode}
+                data-testid="transaction-history-market-filter"
+                onChange={(event) => onChange({ marketCode: event.target.value as TransactionHistoryRouteState["marketCode"] }, { resetOffset: true })}
+              >
+                <option value="ALL">{dict.transactions.filterAllMarkets}</option>
+                {supportedMarkets.map((marketCode) => (
+                  <option key={marketCode} value={marketCode}>{getMarketFilterLabel(dict, marketCode)}</option>
+                ))}
+              </select>
+            )}
           </label>
           <label className="grid gap-1 text-sm text-muted-foreground">
             <span>{dict.transactions.accountTerm}</span>

@@ -14,6 +14,7 @@ import {
 import { DashboardLoading } from "../../components/dashboard/DashboardLoading";
 import { AppShell } from "../../components/layout/AppShell";
 import { getRouteLoadingLabels } from "../../components/layout/i18n";
+import { fetchShellPortfolioConfig } from "../../features/settings/services/shellPortfolioConfigService";
 import { requireSession } from "../../lib/auth";
 import { getJson } from "../../lib/api";
 import { readSidebarStateCookie } from "../../lib/sidebar-cookie";
@@ -48,13 +49,14 @@ function hasExplicitDividendsView(searchParams: Record<string, string | string[]
 }
 
 export default async function DividendsPage({ searchParams }: DividendsPageProps) {
-  const [sp, session, profile, sidebarOpen, settings, cookieStore] = await Promise.all([
+  const [sp, session, profile, sidebarOpen, settings, cookieStore, initialPortfolioConfig] = await Promise.all([
     searchParams,
     requireSession(),
     getJson<ProfileWithImpersonationDto>("/profile", { contextScope: "session" }),
     readSidebarStateCookie(),
     getJson<UserSettings>("/settings", { contextScope: "session" }).catch(() => null),
     cookies(),
+    fetchShellPortfolioConfig().catch(() => null),
   ]);
 
   const locale: LocaleCode = settings?.locale ?? "en";
@@ -96,7 +98,7 @@ export default async function DividendsPage({ searchParams }: DividendsPageProps
         isDemo={session.isDemo}
         localeOverride={locale}
         initialProfile={profile}
-        portfolioConfigMode="lazy"
+        initialPortfolioConfig={initialPortfolioConfig}
         initialSidebarOpen={sidebarOpen}
       >
         <DividendsTabsClient

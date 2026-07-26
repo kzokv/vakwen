@@ -193,6 +193,12 @@ describe("unrealized P&L analysis API/MCP parity", () => {
     });
     expect(apiResponse.statusCode).toBe(200);
     const apiBody = apiResponse.json();
+    expect(apiBody).toMatchObject({
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      },
+    });
 
     const initializeHeaders = {
       accept: "application/json, text/event-stream",

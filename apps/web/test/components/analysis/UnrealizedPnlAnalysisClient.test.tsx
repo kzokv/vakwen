@@ -29,7 +29,10 @@ vi.mock("../../../lib/api", () => ({
   patchJson: patchJsonMock,
 }));
 
-function buildShellData(locale: "en" | "zh-TW" = "en"): AppShellData {
+function buildShellData(
+  locale: "en" | "zh-TW" = "en",
+  overrides: Partial<AppShellData> = {},
+): AppShellData {
   const dict = getDictionary(locale);
   return {
     uiDict: dict,
@@ -52,10 +55,15 @@ function buildShellData(locale: "en" | "zh-TW" = "en"): AppShellData {
     },
     canUseGlobalQuickActions: false,
     openQuickActions: vi.fn(),
+    portfolioCapabilities: {
+      configuredMarkets: ["TW", "US", "AU"],
+      configuredCurrencies: ["TWD", "USD", "AUD"],
+    },
     reportingCurrency: "TWD",
     saveReportingCurrency: vi.fn(async () => undefined),
     isReportingCurrencySaving: false,
     reportingCurrencyError: "",
+    applyAccountMutationResponse: vi.fn(),
     transactionSubmission: {} as never,
     mutations: {} as never,
     recomputeAction: {} as never,
@@ -73,6 +81,7 @@ function buildShellData(locale: "en" | "zh-TW" = "en"): AppShellData {
     isGeneratingSnapshots: false,
     contextRefreshSignal: 0,
     routeCachePolicy: null,
+    ...overrides,
   };
 }
 
@@ -198,6 +207,177 @@ describe("UnrealizedPnlAnalysisClient", () => {
 
     expect(container.querySelector("[data-testid='analysis-selected-detail-basis-tip']")?.textContent)
       .toContain("Snapshot FX as of: -");
+  });
+
+  it("shows the readonly zero-account gate when analysis capabilities resolve zero configured markets in shared context", async () => {
+    const initialData = {
+      ...buildPreviewUnrealizedPnlAnalysis(ANALYSIS_DEFAULT_STATE),
+      capabilities: {
+        configuredMarkets: [],
+        configuredCurrencies: [],
+      } as const,
+    };
+
+    await act(async () => {
+      root!.render(
+        <AppShellDataProvider value={buildShellData("en", {
+          isSharedContext: true,
+          sharedContextPermissions: {
+            canManageAccounts: false,
+            canManageSharing: true,
+            canReadAiDrafts: true,
+            canWriteTransactions: true,
+            canWriteDividends: true,
+            canCreateDrafts: true,
+            canEditDrafts: true,
+            canArchiveDrafts: true,
+            canDeleteDrafts: true,
+            hasAnyDelegatedWrite: true,
+          },
+        })}>
+          <UnrealizedPnlAnalysisClient initialData={initialData} initialState={ANALYSIS_DEFAULT_STATE} />
+        </AppShellDataProvider>,
+      );
+    });
+
+    expect(container.querySelector("[data-testid='portfolio-capabilities-zero-account-gate']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='portfolio-capabilities-zero-account-cta']")).toBeNull();
+    expect(container.querySelector("[data-testid='portfolio-capabilities-zero-account-readonly']")).not.toBeNull();
+  });
+
+  it("renders static market and currency contexts for single-capability analysis responses", async () => {
+    const initialState = { ...ANALYSIS_DEFAULT_STATE, reportingCurrency: "TWD" as const };
+    const initialData = {
+      ...buildPreviewUnrealizedPnlAnalysis(initialState),
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      } as const,
+      availableFilters: {
+        ...buildPreviewUnrealizedPnlAnalysis(initialState).availableFilters,
+        markets: [],
+        reportingCurrencies: [],
+      },
+    };
+
+    await act(async () => {
+      root!.render(
+        <AppShellDataProvider value={buildShellData()}>
+          <UnrealizedPnlAnalysisClient initialData={initialData} initialState={initialState} />
+        </AppShellDataProvider>,
+      );
+    });
+
+    expect(container.querySelector("[data-testid='portfolio-capabilities-single-context-analysis-market']")?.textContent).toContain("TW");
+    expect(container.querySelector("[data-testid='portfolio-capabilities-single-context-analysis-currency']")?.textContent).toContain("TWD");
+    expect(container.querySelector("[data-testid='analysis-currency-select']")).toBeNull();
+  });
+
+  it("keeps capability-derived TW+US and TWD+USD controls operational even when availability lists are empty", async () => {
+    const initialState = { ...ANALYSIS_DEFAULT_STATE, reportingCurrency: "USD" as const };
+    const baseData = buildPreviewUnrealizedPnlAnalysis(initialState, "USD");
+    const initialData = {
+      ...baseData,
+      capabilities: {
+        configuredMarkets: ["TW", "US"],
+        configuredCurrencies: ["TWD", "USD"],
+      } as const,
+      availableFilters: {
+        ...baseData.availableFilters,
+        markets: [],
+        reportingCurrencies: [],
+      },
+    };
+
+    await act(async () => {
+      root!.render(
+        <AppShellDataProvider value={buildShellData()}>
+          <UnrealizedPnlAnalysisClient initialData={initialData} initialState={initialState} />
+        </AppShellDataProvider>,
+      );
+    });
+
+    expect(container.querySelector("[data-testid='portfolio-capabilities-single-context-analysis-market']")).toBeNull();
+    expect(container.querySelector("[data-testid='analysis-currency-select']")).not.toBeNull();
+    expect(container.textContent).toContain("TW");
+    expect(container.textContent).toContain("US");
+  });
+
+  it("normalizes stale analysis markets and shows the market capability notice", async () => {
+    const initialState = { ...ANALYSIS_DEFAULT_STATE, markets: ["KR"] as ["KR"] };
+    const initialData = {
+      ...buildPreviewUnrealizedPnlAnalysis(ANALYSIS_DEFAULT_STATE),
+      capabilities: {
+        configuredMarkets: ["TW", "US"],
+        configuredCurrencies: ["TWD", "USD"],
+      } as const,
+    };
+
+    await act(async () => {
+      root!.render(
+        <AppShellDataProvider value={buildShellData()}>
+          <UnrealizedPnlAnalysisClient initialData={initialData} initialState={initialState} />
+        </AppShellDataProvider>,
+      );
+    });
+
+    expect(replaceMock.mock.calls.at(-1)?.[0]).not.toContain("markets=KR");
+    expect(container.querySelector("[data-testid='portfolio-capabilities-normalization-notice-market']")).not.toBeNull();
+    expect(patchJsonMock).not.toHaveBeenCalled();
+  });
+
+  it("normalizes stale analysis currencies without patching preferences in shared context", async () => {
+    const initialState = { ...ANALYSIS_DEFAULT_STATE, reportingCurrency: "AUD" as const };
+    const initialData = {
+      ...buildPreviewUnrealizedPnlAnalysis(initialState, "AUD"),
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      } as const,
+    };
+
+    await act(async () => {
+      root!.render(
+        <AppShellDataProvider value={buildShellData("en", {
+          isSharedContext: true,
+          portfolioCapabilities: {
+            configuredMarkets: ["TW"],
+            configuredCurrencies: ["TWD"],
+          },
+        })}>
+          <UnrealizedPnlAnalysisClient initialData={initialData} initialState={initialState} />
+        </AppShellDataProvider>,
+      );
+    });
+
+    expect(replaceMock.mock.calls.at(-1)?.[0]).toContain("reportingCurrency=TWD");
+    expect(container.querySelector("[data-testid='portfolio-capabilities-normalization-notice-reportingCurrency']")).not.toBeNull();
+    expect(patchJsonMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root!.render(
+        <AppShellDataProvider value={buildShellData("en", {
+          isSharedContext: true,
+          portfolioCapabilities: {
+            configuredMarkets: ["TW"],
+            configuredCurrencies: ["TWD"],
+          },
+        })}>
+          <UnrealizedPnlAnalysisClient
+            initialData={{
+              ...initialData,
+              query: {
+                ...initialData.query,
+                reportingCurrency: "TWD",
+              },
+            }}
+            initialState={{ ...initialState, reportingCurrency: "TWD" }}
+          />
+        </AppShellDataProvider>,
+      );
+    });
+
+    expect(patchJsonMock).not.toHaveBeenCalled();
   });
 
   it("uses local muted state for manual legend toggles without changing route params", () => {

@@ -5,6 +5,8 @@ import { ChevronDown, ChevronRight, Copy, Pencil, Plus, RotateCcw, Search, Trash
 import type {
   AccountDefaultCurrency,
   AccountDto,
+  AccountLifecycleMutationResponseDto,
+  AccountType,
   LocaleCode,
   MarketCode,
 } from "@vakwen/shared-types";
@@ -53,6 +55,9 @@ interface AccountsListSectionProps {
   feeProfileBindings: SettingsSecurityBindingModel[];
   activeLocale: LocaleCode;
   onUpdateAccountProfile: (accountId: string, feeProfileId: string) => void;
+  onSaveAccountProfile?: (accountId: string, feeProfileId: string) => Promise<void>;
+  onUpdateAccountType?: (accountId: string, accountType: AccountType) => void;
+  onSaveAccountType?: (accountId: string, accountType: AccountType) => Promise<void>;
   onRenameAccount: (accountId: string, name: string) => Promise<void>;
   onAddProfileForAccount: (accountId: string) => void;
   onUpdateProfileField: (
@@ -90,6 +95,10 @@ interface AccountsListSectionProps {
    * existing test fixtures stay compatible.
    */
   onAccountsChanged?: () => void;
+  onLifecycleMutation?: (
+    response: AccountLifecycleMutationResponseDto,
+    operation: "soft_delete" | "restore" | "hard_purge",
+  ) => void;
   /**
    * ui-enhancement (2026-05-14) — admin-tunable grace period (in days)
    * for the soft-delete → hard-purge cron. Threaded from the API's
@@ -103,6 +112,7 @@ interface AccountsListSectionProps {
   canManage?: boolean;
   allowHardPurge?: boolean;
   focusedDividendSettings?: { accountId: string; marketCode: MarketCode } | null;
+  highlightedAccountId?: string | null;
 }
 
 const PROFILE_FIELDS: ReadonlyArray<{
@@ -183,6 +193,9 @@ export function AccountsListSection({
   feeProfileBindings,
   activeLocale,
   onUpdateAccountProfile,
+  onSaveAccountProfile = async () => undefined,
+  onUpdateAccountType = () => undefined,
+  onSaveAccountType = async () => undefined,
   onRenameAccount,
   onAddProfileForAccount,
   onUpdateProfileField,
@@ -194,11 +207,13 @@ export function AccountsListSection({
   onRemoveBinding,
   accountWarnings,
   onAccountsChanged,
+  onLifecycleMutation,
   effectiveAccountHardPurgeDays = 30,
   dict,
   canManage = true,
   allowHardPurge = true,
   focusedDividendSettings = null,
+  highlightedAccountId = null,
 }: AccountsListSectionProps) {
   // Rename UI state.
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
@@ -206,6 +221,7 @@ export function AccountsListSection({
   const [renameOverrides, setRenameOverrides] = useState<Record<string, string>>({});
   const [savingAccountId, setSavingAccountId] = useState<string | null>(null);
   const [renameError, setRenameError] = useState("");
+  const [accountErrorById, setAccountErrorById] = useState<Record<string, string>>({});
 
   // Expand state — keys are accountIds. Search overrides the user-driven
   // expand state (cards with hits force-expand; misses force-collapse).
@@ -266,7 +282,6 @@ export function AccountsListSection({
     ],
     onEvent: () => {
       void refreshSoftDeleted();
-      onAccountsChanged?.();
     },
     enabled: true,
   });
@@ -297,13 +312,26 @@ export function AccountsListSection({
   const matchedAccountIds = useMemo(() => {
     if (search.length === 0) return new Set<string>();
     const matched = new Set<string>();
-    for (const profile of profiles) {
-      if (profile.name.toLowerCase().includes(search)) {
-        matched.add(profile.accountId);
+    for (const account of accounts) {
+      const haystacks = [
+        (accountNames.get(account.id) ?? account.name).toLowerCase(),
+        marketBadgeLabel(account.defaultCurrency, dict).toLowerCase(),
+        account.defaultCurrency.toLowerCase(),
+        accountTypeLabel(account, dict).toLowerCase(),
+      ];
+      if (haystacks.some((value) => value.includes(search))) {
+        matched.add(account.id);
+        continue;
+      }
+      for (const profile of profilesByAccount.get(account.id) ?? []) {
+        if (profile.name.toLowerCase().includes(search)) {
+          matched.add(account.id);
+          break;
+        }
       }
     }
     return matched;
-  }, [profiles, search]);
+  }, [accountNames, accounts, dict, profilesByAccount, search]);
 
   useEffect(() => {
     if (!focusedDividendSettings) return;
@@ -357,6 +385,30 @@ export function AccountsListSection({
       setRenameError(dict.settings.accountRenameError);
     } finally {
       setSavingAccountId(null);
+    }
+  }
+
+  async function saveDefaultProfile(accountId: string, feeProfileId: string) {
+    setAccountErrorById((current) => ({ ...current, [accountId]: "" }));
+    try {
+      await onSaveAccountProfile(accountId, feeProfileId);
+    } catch {
+      setAccountErrorById((current) => ({
+        ...current,
+        [accountId]: dict.settings.accountsListAccountUpdateError,
+      }));
+    }
+  }
+
+  async function saveAccountTypeChange(accountId: string, accountType: AccountType) {
+    setAccountErrorById((current) => ({ ...current, [accountId]: "" }));
+    try {
+      await onSaveAccountType(accountId, accountType);
+    } catch {
+      setAccountErrorById((current) => ({
+        ...current,
+        [accountId]: dict.settings.accountsListAccountUpdateError,
+      }));
     }
   }
 
@@ -455,12 +507,11 @@ export function AccountsListSection({
     setSoftDeleteBusy(true);
     setSoftDeleteError(undefined);
     try {
-      await softDeleteAccount(softDeleteTargetAccount.id);
+      const response = await softDeleteAccount(softDeleteTargetAccount.id);
       setSoftDeleteTargetAccount(null);
-      // SSE will refetch; also kick off an eager refresh + parent
-      // signal so the UI doesn't wait for the round-trip.
       void refreshSoftDeleted();
-      onAccountsChanged?.();
+      if (onLifecycleMutation) onLifecycleMutation(response, "soft_delete");
+      else onAccountsChanged?.();
     } catch {
       setSoftDeleteError(dict.settings.accountsDeleteError);
     } finally {
@@ -484,10 +535,14 @@ export function AccountsListSection({
     setPermanentDeleteBusy(true);
     setPermanentDeleteError(undefined);
     try {
-      await permanentlyDeleteAccount(permanentDeleteTargetAccount.id, typedName);
+      const response = await permanentlyDeleteAccount(
+        permanentDeleteTargetAccount.id,
+        typedName,
+      );
       setPermanentDeleteTargetAccount(null);
       void refreshSoftDeleted();
-      onAccountsChanged?.();
+      if (onLifecycleMutation) onLifecycleMutation(response, "hard_purge");
+      else onAccountsChanged?.();
     } catch {
       setPermanentDeleteError(dict.settings.accountsPurgeError);
     } finally {
@@ -498,9 +553,10 @@ export function AccountsListSection({
   async function handleRestore(accountId: string) {
     setRestoreBusyById((current) => ({ ...current, [accountId]: true }));
     try {
-      await restoreAccount(accountId);
+      const response = await restoreAccount(accountId);
       void refreshSoftDeleted();
-      onAccountsChanged?.();
+      if (onLifecycleMutation) onLifecycleMutation(response, "restore");
+      else onAccountsChanged?.();
     } catch {
       // Inline error per row is out of scope for the initial slice —
       // the SSE refetch will keep the list state truthful; a banner is
@@ -592,6 +648,9 @@ export function AccountsListSection({
           const isEditing = editingAccountId === account.id;
           const isSaving = savingAccountId === account.id;
           const disableRenameSave = draftName.trim().length === 0 || isSaving;
+          const accountTypeValue = (
+            draftAccount as SettingsAccountBindingModel & { accountType?: AccountType } | undefined
+          )?.accountType ?? account.accountType;
 
           // Per-account overrides — `feeProfileBindings` carries flat (idx, accountId,
           // ticker, feeProfileId). We render only those that belong to this account
@@ -604,7 +663,12 @@ export function AccountsListSection({
           return (
             <article
               key={account.id}
-              className="rounded-lg border border-border bg-card"
+              className={[
+                "rounded-lg border bg-card transition-colors",
+                highlightedAccountId === account.id
+                  ? "border-emerald-300 ring-1 ring-emerald-200"
+                  : "border-border",
+              ].join(" ")}
               data-testid={`accounts-card-${account.id}`}
             >
               {/* Header */}
@@ -737,6 +801,12 @@ export function AccountsListSection({
                       className={fieldClassName}
                       data-testid={`settings-account-profile-${account.id}`}
                       disabled={!canManage}
+                      onBlur={(event) => {
+                        const selected = event.currentTarget.value;
+                        if (selected) {
+                          void saveDefaultProfile(account.id, selected);
+                        }
+                      }}
                     >
                       {ownedProfiles.length === 0 ? (
                         <option value="">{dict.settings.accountsListNoProfilesYet}</option>
@@ -751,6 +821,37 @@ export function AccountsListSection({
                       {dict.settings.accountsListDefaultProfileHint}
                     </p>
                   </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-xs text-muted-foreground" htmlFor={`settings-account-type-${account.id}`}>
+                      {dict.settings.accountsListAccountTypeLabel}
+                    </label>
+                    <select
+                      id={`settings-account-type-${account.id}`}
+                      value={accountTypeValue}
+                      onChange={(event) => {
+                        const nextType = event.target.value as AccountType;
+                        onUpdateAccountType(account.id, nextType);
+                        void saveAccountTypeChange(account.id, nextType);
+                      }}
+                      className={fieldClassName}
+                      data-testid={`settings-account-type-${account.id}`}
+                      disabled={!canManage}
+                    >
+                      <option value="broker">{dict.settings.accountsListAccountTypeBroker}</option>
+                      <option value="bank">{dict.settings.accountsListAccountTypeBank}</option>
+                      <option value="wallet">{dict.settings.accountsListAccountTypeWallet}</option>
+                    </select>
+                  </div>
+
+                  {accountErrorById[account.id] ? (
+                    <p
+                      className="text-xs text-rose-500"
+                      data-testid={`accounts-card-${account.id}-account-error`}
+                    >
+                      {accountErrorById[account.id]}
+                    </p>
+                  ) : null}
 
                   {/* Inline fee profiles list. */}
                   <div className="space-y-2">

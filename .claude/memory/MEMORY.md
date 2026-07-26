@@ -138,3 +138,7 @@
 ## Promoted to .claude/rules/ (Dividend page fixes, 2026-07-21)
 - `route-dto-cache-user-context.md` — Context-specific metadata must disappear immediately during owner transitions and only return from an exact-current committed response.
 - `playwright-navigation-patterns.md` — Exact response completion does not prove client commit; match the authoritative endpoint and request identity, then poll the committed URL/DOM outcome.
+
+## Promoted to .claude/rules/ (configured portfolio capabilities, 2026-07-26)
+- `account-capability-authority.md` — Active viewed-owner accounts are the capability authority; initiating mutation responses apply immediately, while buffered lifecycle events invalidate and refetch rather than replaying possibly stale payload state.
+- `bounded-account-mutations.md` — Account create/update remain narrow atomic persistence operations, protected by structural tests and representative PostgreSQL benchmark artifacts rather than CI wall-clock assertions.

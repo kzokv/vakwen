@@ -3,12 +3,21 @@ import {
   allocateSellLots,
   applyBuyToLots,
   calculateDividendCashReconciliation,
+  derivePortfolioCapabilities,
   resolveDividendStockEntitlement,
   roundToDecimal,
   type Lot,
 } from "@vakwen/domain";
-import { currencyFor, marketCodeFor, normalizeInstrumentSector, type MarketCode as SharedMarketCode } from "@vakwen/shared-types";
+import {
+  ACCOUNT_DEFAULT_CURRENCIES,
+  currencyFor,
+  marketCodeFor,
+  normalizeInstrumentSector,
+  type MarketCode as SharedMarketCode,
+} from "@vakwen/shared-types";
 import type {
+  AccountDefaultCurrency,
+  AccountDto,
   AccountMarketDividendSettingsDto,
   AiConnectorAccessResult,
   AiConnectorProvider,
@@ -22,12 +31,15 @@ import type {
   DividendReviewPrimaryQueryDto,
   DividendReviewRowSummaryDto,
   DividendSourceLine,
+  FeeProfileDto,
   InstrumentOptionDto,
+  PortfolioCapabilitiesDto,
+  PortfolioSelectionNormalizationResult,
   ShareCapability,
   TickerFundamentalsDto,
 } from "@vakwen/shared-types";
 import { defaultClientCapabilities, getMcpClientByLegacyProvider } from "../mcp/clientRegistry.js";
-import { createStore, setStoreInstruments, syncInstruments } from "../services/store.js";
+import { createDefaultFeeProfile, createStore, setStoreInstruments, syncInstruments } from "../services/store.js";
 import { createDefaultInstruments, upsertInstrumentDefinitions } from "../services/instrumentRegistry.js";
 import { createEmptyTickerFundamentals, normalizeTickerFundamentals } from "../services/fundamentals/types.js";
 import {
@@ -90,6 +102,7 @@ import type {
   ConsumeInviteResult,
   CreateInviteInput,
   AccountWithLiveBalancesRecord,
+  AccountLifecyclePersistenceResult,
   CashLedgerEnrichmentResult,
   CashLedgerListOptions,
   CashLedgerListResult,
@@ -402,6 +415,83 @@ function mapMemoryUser(user: MemoryUser): AuthUserRecord {
     isDemo: user.isDemo ?? false,
     deactivatedAt: user.deactivatedAt ?? null,
     deletedAt: user.deletedAt ?? null,
+  };
+}
+
+function toFeeProfileDto(profile: import("@vakwen/domain").FeeProfile): FeeProfileDto {
+  return {
+    id: profile.id,
+    accountId: profile.accountId,
+    name: profile.name,
+    boardCommissionRate: profile.boardCommissionRate,
+    commissionDiscountPercent: profile.commissionDiscountPercent,
+    minimumCommissionAmount: profile.minimumCommissionAmount,
+    commissionCurrency: profile.commissionCurrency,
+    commissionRoundingMode: profile.commissionRoundingMode,
+    taxRoundingMode: profile.taxRoundingMode,
+    stockSellTaxRateBps: profile.stockSellTaxRateBps,
+    stockDayTradeTaxRateBps: profile.stockDayTradeTaxRateBps,
+    etfSellTaxRateBps: profile.etfSellTaxRateBps,
+    bondEtfSellTaxRateBps: profile.bondEtfSellTaxRateBps,
+    commissionChargeMode: profile.commissionChargeMode,
+  };
+}
+
+function deriveCapabilitiesDto(
+  accounts: ReadonlyArray<Pick<AccountDto, "defaultCurrency">>,
+): PortfolioCapabilitiesDto {
+  const capabilities = derivePortfolioCapabilities(accounts);
+  return {
+    configuredMarkets: capabilities.configuredMarkets as PortfolioCapabilitiesDto["configuredMarkets"],
+    configuredCurrencies: capabilities.configuredCurrencies as PortfolioCapabilitiesDto["configuredCurrencies"],
+  };
+}
+
+function getStoredReportingCurrencyPreference(
+  prefs: Record<string, unknown>,
+): AccountDefaultCurrency | null {
+  const value = prefs.reportingCurrency;
+  return typeof value === "string" && (ACCOUNT_DEFAULT_CURRENCIES as readonly string[]).includes(value)
+    ? value as AccountDefaultCurrency
+    : null;
+}
+
+function buildReportingCurrencyNormalization(
+  configuredCurrencies: readonly AccountDefaultCurrency[],
+  requested: AccountDefaultCurrency | null,
+): PortfolioSelectionNormalizationResult<AccountDefaultCurrency> {
+  if (configuredCurrencies.length === 0) {
+    return { requested, effective: null, reason: "no_configured_currencies" };
+  }
+  if (requested === null) {
+    return { requested: null, effective: configuredCurrencies[0]!, reason: null };
+  }
+  if (configuredCurrencies.includes(requested)) {
+    return { requested, effective: requested, reason: null };
+  }
+  return {
+    requested,
+    effective: configuredCurrencies[0]!,
+    reason: "unconfigured_currency",
+  };
+}
+
+function buildLifecyclePersistenceResult(
+  account: AccountDto,
+  deletedAt: string | null,
+  finalName: string | null,
+  capabilities: PortfolioCapabilitiesDto,
+  prefs: Record<string, unknown>,
+): AccountLifecyclePersistenceResult {
+  return {
+    account,
+    deletedAt,
+    finalName,
+    capabilities,
+    reportingCurrency: buildReportingCurrencyNormalization(
+      capabilities.configuredCurrencies,
+      getStoredReportingCurrencyPreference(prefs),
+    ),
   };
 }
 
@@ -2710,6 +2800,10 @@ export class MemoryPersistence implements Persistence {
   }
 
   async loadStore(userId: string) {
+    return this.getOrCreateStore(userId);
+  }
+
+  private getOrCreateStore(userId: string): Store {
     const existing = this.stores.get(userId);
     if (existing) return existing;
 
@@ -2722,7 +2816,6 @@ export class MemoryPersistence implements Persistence {
       setStoreInstruments(store, [...userCatalog.values()].map(memoryInstrumentToDef));
     }
 
-    // Surface displayName from identity resolution (if user was bootstrapped via resolveOrCreateUser)
     const memUser = [...this.usersByEmail.values()].find((u) => u.id === userId);
     if (memUser?.displayName) {
       store.settings.displayName = memUser.displayName;
@@ -4458,6 +4551,10 @@ export class MemoryPersistence implements Persistence {
       ...account,
       liveBalance: balancesByAccount.get(account.id) ?? [],
     }));
+  }
+
+  async listActiveAccounts(userId: string): Promise<import("@vakwen/shared-types").AccountDto[]> {
+    return (this.stores.get(userId)?.accounts ?? []).map((account) => ({ ...account }));
   }
 
   async getCashLedgerEnrichment(
@@ -8235,16 +8332,147 @@ export class MemoryPersistence implements Persistence {
 
   // ── ui-enhancement — Account lifecycle ──────────────────────────────────
 
+  async createAccount(
+    input: import("./types.js").CreateAccountInput,
+  ): Promise<import("./types.js").AccountMutationPersistenceResult> {
+    const store = this.getOrCreateStore(input.userId);
+    const name = input.name.trim();
+
+    if (store.accounts.some((account) => account.name === name)) {
+      throw routeError(409, "account_name_in_use", "An account with that name already exists.");
+    }
+
+    const accountId = randomUUID();
+    const feeProfile = createDefaultFeeProfile(accountId, input.defaultCurrency);
+    const account: AccountDto = {
+      id: accountId,
+      userId: input.userId,
+      name,
+      feeProfileId: feeProfile.id,
+      defaultCurrency: input.defaultCurrency,
+      accountType: input.accountType,
+    };
+    store.feeProfiles.push(feeProfile);
+    store.accounts.push(account);
+
+    await this.appendAuditLog({
+      ...input.auditInput,
+      action: "account_created",
+      targetUserId: input.userId,
+      metadata: {
+        ...input.auditInput.metadata,
+        accountId,
+        accountName: account.name,
+        accountType: account.accountType,
+        defaultCurrency: account.defaultCurrency,
+        feeProfileId: feeProfile.id,
+      },
+    });
+
+    return {
+      account,
+      feeProfile: toFeeProfileDto(feeProfile),
+      capabilities: deriveCapabilitiesDto(store.accounts),
+    };
+  }
+
+  async updateAccount(
+    input: import("./types.js").UpdateAccountInput,
+  ): Promise<import("./types.js").AccountMutationPersistenceResult> {
+    const store = this.getOrCreateStore(input.userId);
+    const account = store.accounts.find((item) => item.id === input.accountId);
+    if (!account) {
+      throw routeError(404, "account_not_found", `Account ${input.accountId} was not found.`);
+    }
+
+    const changedFields: string[] = [];
+
+    if (input.feeProfileId !== undefined) {
+      const profile = store.feeProfiles.find((item) => item.id === input.feeProfileId);
+      if (!profile) {
+        throw routeError(404, "fee_profile_not_found", `Fee profile ${input.feeProfileId} was not found.`);
+      }
+      if (profile.accountId !== account.id) {
+        throw routeError(
+          400,
+          "invalid_fee_profile",
+          `Fee profile ${input.feeProfileId} is not owned by account ${account.id}.`,
+        );
+      }
+      account.feeProfileId = input.feeProfileId;
+      changedFields.push("feeProfileId");
+    }
+
+    if (input.name !== undefined) {
+      const name = input.name.trim();
+      if (store.accounts.some((item) => item.id !== account.id && item.name === name)) {
+        throw routeError(409, "account_name_in_use", "An account with that name already exists.");
+      }
+      account.name = name;
+      changedFields.push("name");
+    }
+
+    if (input.defaultCurrency !== undefined && input.defaultCurrency !== account.defaultCurrency) {
+      const hasCashEntries = store.accounting.facts.cashLedgerEntries.some((entry) => entry.accountId === account.id);
+      const hasTradeEvents = store.accounting.facts.tradeEvents.some((event) => event.accountId === account.id);
+      if (hasCashEntries || hasTradeEvents) {
+        throw routeError(
+          409,
+          "currency_change_blocked",
+          "Cannot change default currency: account has existing cash entries or trade events. Open a new account or contact support.",
+        );
+      }
+      account.defaultCurrency = input.defaultCurrency;
+      changedFields.push("defaultCurrency");
+    }
+
+    if (input.accountType !== undefined) {
+      account.accountType = input.accountType;
+      changedFields.push("accountType");
+    }
+
+    const feeProfile = store.feeProfiles.find((item) => item.id === account.feeProfileId);
+    if (!feeProfile) {
+      throw routeError(404, "fee_profile_not_found", `Fee profile ${account.feeProfileId} was not found.`);
+    }
+
+    await this.appendAuditLog({
+      ...input.auditInput,
+      action: "account_updated",
+      targetUserId: input.userId,
+      metadata: {
+        ...input.auditInput.metadata,
+        accountId: account.id,
+        accountName: account.name,
+        accountType: account.accountType,
+        defaultCurrency: account.defaultCurrency,
+        feeProfileId: account.feeProfileId,
+        changedFields,
+      },
+    });
+
+    return {
+      account,
+      feeProfile: toFeeProfileDto(feeProfile),
+      capabilities: deriveCapabilitiesDto(store.accounts),
+      changedFields,
+    };
+  }
+
   async softDeleteAccount(
     accountId: string,
     userId: string,
     auditInput: Omit<AuditLogInput, "action">,
-  ): Promise<{ deletedAt: string }> {
+  ): Promise<AccountLifecyclePersistenceResult> {
     const shadowKey = `${userId}:${accountId}`;
     const existingShadow = this.softDeletedAccounts.get(shadowKey);
     if (existingShadow) {
       // Idempotent — already soft-deleted.
-      return { deletedAt: existingShadow.deletedAt };
+      const store = this.stores.get(userId);
+      const capabilities = deriveCapabilitiesDto(store?.accounts ?? []);
+      const prefs = await this.getUserPreferences(userId);
+      const { deletedAt, ...accountFields } = existingShadow;
+      return buildLifecyclePersistenceResult(accountFields, deletedAt, null, capabilities, prefs);
     }
     const store = this.stores.get(userId);
     if (!store) {
@@ -8258,6 +8486,30 @@ export class MemoryPersistence implements Persistence {
     const deletedAt = new Date().toISOString();
     this.softDeletedAccounts.set(shadowKey, { ...account, deletedAt });
     store.accounts.splice(idx, 1);
+    const capabilities = deriveCapabilitiesDto(store.accounts);
+    const prefsBefore = await this.getUserPreferences(userId);
+    const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
+    const hasConfiguredRequestedCurrency = reportingCurrencyBefore !== null
+      && capabilities.configuredCurrencies.includes(reportingCurrencyBefore);
+    const reportingCurrencyAfter = reportingCurrencyBefore === null
+      ? null
+      : hasConfiguredRequestedCurrency
+        ? reportingCurrencyBefore
+        : capabilities.configuredCurrencies[0] ?? null;
+    if (reportingCurrencyBefore !== reportingCurrencyAfter) {
+      const nextPrefs = { ...prefsBefore };
+      if (reportingCurrencyAfter === null) {
+        delete nextPrefs.reportingCurrency;
+      } else {
+        nextPrefs.reportingCurrency = reportingCurrencyAfter;
+      }
+      if (Object.keys(nextPrefs).length === 0) {
+        this.userPreferences.delete(userId);
+      } else {
+        this.userPreferences.set(userId, nextPrefs);
+      }
+    }
+    const prefsAfter = await this.getUserPreferences(userId);
 
     await this.appendAuditLog({
       ...auditInput,
@@ -8269,17 +8521,19 @@ export class MemoryPersistence implements Persistence {
         accountName: account.name,
         accountType: account.accountType,
         defaultCurrency: account.defaultCurrency,
+        reportingCurrencyBefore,
+        reportingCurrencyAfter,
       },
     });
 
-    return { deletedAt };
+    return buildLifecyclePersistenceResult(account, deletedAt, null, capabilities, prefsAfter);
   }
 
   async restoreAccount(
     accountId: string,
     userId: string,
     auditInput: Omit<AuditLogInput, "action">,
-  ): Promise<{ accountId: string; finalName: string }> {
+  ): Promise<AccountLifecyclePersistenceResult> {
     const shadowKey = `${userId}:${accountId}`;
     const shadow = this.softDeletedAccounts.get(shadowKey);
     if (!shadow) {
@@ -8312,8 +8566,11 @@ export class MemoryPersistence implements Persistence {
     // Strip deletedAt and adopt the final (possibly renamed) name.
     const { deletedAt: _deletedAt, ...accountFields } = shadow;
     void _deletedAt;
-    store.accounts.push({ ...accountFields, name: finalName });
+    const restoredAccount = { ...accountFields, name: finalName };
+    store.accounts.push(restoredAccount);
     this.softDeletedAccounts.delete(shadowKey);
+    const capabilities = deriveCapabilitiesDto(store.accounts);
+    const prefs = await this.getUserPreferences(userId);
 
     await this.appendAuditLog({
       ...auditInput,
@@ -8322,7 +8579,7 @@ export class MemoryPersistence implements Persistence {
       metadata: { ...auditInput.metadata, accountId, priorName, finalName },
     });
 
-    return { accountId, finalName };
+    return buildLifecyclePersistenceResult(restoredAccount, null, finalName, capabilities, prefs);
   }
 
   async hardPurgeAccount(
@@ -8330,7 +8587,7 @@ export class MemoryPersistence implements Persistence {
     userId: string,
     auditInput: Omit<AuditLogInput, "action">,
     options: { mustBeSoftDeleted?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<AccountLifecyclePersistenceResult> {
     const mustBeSoftDeleted = options.mustBeSoftDeleted ?? true;
     const shadowKey = `${userId}:${accountId}`;
     const shadow = this.softDeletedAccounts.get(shadowKey);
@@ -8418,6 +8675,36 @@ export class MemoryPersistence implements Persistence {
     }
 
     this.softDeletedAccounts.delete(shadowKey);
+
+    const capabilities = deriveCapabilitiesDto(store?.accounts ?? []);
+    const prefsBefore = await this.getUserPreferences(userId);
+    const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
+    const reportingCurrencyAfter = reportingCurrencyBefore === null
+      ? null
+      : capabilities.configuredCurrencies.includes(reportingCurrencyBefore)
+        ? reportingCurrencyBefore
+        : capabilities.configuredCurrencies[0] ?? null;
+    if (reportingCurrencyBefore !== reportingCurrencyAfter) {
+      const nextPrefs = { ...prefsBefore };
+      if (reportingCurrencyAfter === null) {
+        delete nextPrefs.reportingCurrency;
+      } else {
+        nextPrefs.reportingCurrency = reportingCurrencyAfter;
+      }
+      if (Object.keys(nextPrefs).length === 0) {
+        this.userPreferences.delete(userId);
+      } else {
+        this.userPreferences.set(userId, nextPrefs);
+      }
+    }
+    const prefsAfter = await this.getUserPreferences(userId);
+    return buildLifecyclePersistenceResult(
+      account,
+      shadow?.deletedAt ?? null,
+      null,
+      capabilities,
+      prefsAfter,
+    );
   }
 
   async listSoftDeletedAccounts(

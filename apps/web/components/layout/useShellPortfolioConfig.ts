@@ -1,6 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type {
+  AccountLifecycleMutationResponseDto,
+  AccountMutationResponseDto,
+} from "@vakwen/shared-types";
 import type { TransactionInput } from "../portfolio/types";
 import { resolveErrorMessage } from "../../lib/utils";
 import { resolveTransactionDraftAccount } from "../../features/dashboard/types";
@@ -22,7 +26,12 @@ interface UseShellPortfolioConfigResult extends ShellPortfolioConfigDto {
   showIntegrityDialog: boolean;
   setShowIntegrityDialog: (open: boolean) => void;
   ensureLoaded: () => Promise<void>;
-  refresh: () => Promise<void>;
+  refresh: () => Promise<ShellPortfolioConfigDto>;
+  applyAccountMutation: (response: AccountMutationResponseDto) => void;
+  applyAccountLifecycleMutation: (
+    response: AccountLifecycleMutationResponseDto,
+    operation: "soft_delete" | "restore" | "hard_purge",
+  ) => void;
   synchronizeTransactionDraft: (previous: TransactionInput) => TransactionInput;
 }
 
@@ -31,6 +40,10 @@ const EMPTY_CONFIG: ShellPortfolioConfigDto = {
   feeProfiles: [],
   feeProfileBindings: [],
   integrityIssue: null,
+  capabilities: {
+    configuredMarkets: [],
+    configuredCurrencies: [],
+  },
 };
 
 export function useShellPortfolioConfig({
@@ -45,7 +58,7 @@ export function useShellPortfolioConfig({
   const hasLoadedRef = useRef(initialConfig !== null);
   const loadPromiseRef = useRef<Promise<void> | null>(null);
 
-  const fetchConfig = useCallback(async () => {
+  const fetchConfig = useCallback(async (): Promise<ShellPortfolioConfigDto> => {
     setIsLoading(true);
     try {
       const nextConfig = await fetchShellPortfolioConfig();
@@ -53,6 +66,7 @@ export function useShellPortfolioConfig({
       setShowIntegrityDialog(Boolean(nextConfig.integrityIssue));
       setErrorMessage("");
       hasLoadedRef.current = true;
+      return nextConfig;
     } catch (error) {
       setErrorMessage(resolveErrorMessage(error));
       throw error;
@@ -63,15 +77,56 @@ export function useShellPortfolioConfig({
 
   const ensureLoaded = useCallback(async () => {
     if (hasLoadedRef.current) return;
-    loadPromiseRef.current ??= fetchConfig().finally(() => {
-      loadPromiseRef.current = null;
-    });
+    loadPromiseRef.current ??= fetchConfig()
+      .then(() => undefined)
+      .finally(() => {
+        loadPromiseRef.current = null;
+      });
     await loadPromiseRef.current;
   }, [fetchConfig]);
 
   const refresh = useCallback(async () => {
-    await fetchConfig();
+    return fetchConfig();
   }, [fetchConfig]);
+
+  const applyAccountMutation = useCallback((response: AccountMutationResponseDto) => {
+    setConfig((current) => ({
+      ...current,
+      accounts: upsertById(current.accounts, response.account),
+      capabilities: response.capabilities,
+      feeProfiles: upsertById(current.feeProfiles, response.feeProfile),
+    }));
+  }, []);
+
+  const applyAccountLifecycleMutation = useCallback((
+    response: AccountLifecycleMutationResponseDto,
+    operation: "soft_delete" | "restore" | "hard_purge",
+  ) => {
+    setConfig((current) => {
+      const accounts = operation === "restore"
+        ? upsertById(current.accounts, response.account)
+        : current.accounts.filter((account) => account.id !== response.accountId);
+      if (operation !== "hard_purge") {
+        return { ...current, accounts, capabilities: response.capabilities };
+      }
+      const removedProfileIds = new Set(
+        current.feeProfiles
+          .filter((profile) => profile.accountId === response.accountId)
+          .map((profile) => profile.id),
+      );
+      return {
+        ...current,
+        accounts,
+        capabilities: response.capabilities,
+        feeProfiles: current.feeProfiles.filter(
+          (profile) => profile.accountId !== response.accountId,
+        ),
+        feeProfileBindings: current.feeProfileBindings.filter(
+          (binding) => !removedProfileIds.has(binding.feeProfileId),
+        ),
+      };
+    });
+  }, []);
 
   useEffect(() => {
     if (initialConfig !== null) {
@@ -124,6 +179,21 @@ export function useShellPortfolioConfig({
     setShowIntegrityDialog,
     ensureLoaded,
     refresh,
+    applyAccountMutation,
+    applyAccountLifecycleMutation,
     synchronizeTransactionDraft: config.accounts.length > 0 ? synchronizeTransactionDraft : synchronizeInitialDraft,
   };
+}
+
+function upsertById<TItem extends { id: string }>(
+  items: readonly TItem[],
+  nextItem: TItem,
+): TItem[] {
+  const index = items.findIndex((item) => item.id === nextItem.id);
+  if (index === -1) {
+    return [...items, nextItem];
+  }
+  const next = [...items];
+  next[index] = nextItem;
+  return next;
 }

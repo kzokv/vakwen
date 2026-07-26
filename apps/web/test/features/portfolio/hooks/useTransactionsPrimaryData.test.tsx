@@ -37,6 +37,10 @@ let result: ReturnType<typeof useTransactionsPrimaryData>;
 const initialPrimaryData: TransactionPrimaryDto = {
   recentTransactions: [],
   accountOptions: [],
+  capabilities: {
+    configuredMarkets: ["US"],
+    configuredCurrencies: ["USD"],
+  },
   portfolioConfig: {
     accounts: [],
     feeProfiles: [],
