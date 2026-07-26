@@ -8422,6 +8422,20 @@ export class MemoryPersistence implements Persistence {
           "Cannot change default currency: account has existing cash entries or trade events. Open a new account or contact support.",
         );
       }
+      const previousMarketCode = marketCodeFor(account.defaultCurrency);
+      const nextMarketCode = marketCodeFor(input.defaultCurrency);
+      if (previousMarketCode !== nextMarketCode) {
+        const key = `${account.id}:${previousMarketCode}`;
+        const previousSettings = this.accountMarketDividendSettings.get(key);
+        if (previousSettings && previousSettings.fallbackParValue !== null) {
+          this.accountMarketDividendSettings.set(key, {
+            ...previousSettings,
+            fallbackParValue: null,
+            version: previousSettings.version + 1,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
       account.defaultCurrency = input.defaultCurrency;
       changedFields.push("defaultCurrency");
     }

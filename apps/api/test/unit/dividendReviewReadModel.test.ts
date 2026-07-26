@@ -516,6 +516,7 @@ describe("dividend review read-model routes", () => {
       sourceCompositionStatus: "provided",
     });
 
+    const listActiveAccountsSpy = vi.spyOn(app.persistence, "listActiveAccounts");
     const primary = await app.inject({
       method: "GET",
       url: "/portfolio/dividends/review/primary",
@@ -582,7 +583,14 @@ describe("dividend review read-model routes", () => {
     expect(primary.headers["server-timing"]).toContain("review_primary_db;dur=");
     expect(primary.headers["server-timing"]).toContain("review_primary_hydration;dur=");
     expect(primary.headers["server-timing"]).toContain("review_primary_metadata;dur=");
+    expect(primary.headers["server-timing"]).toContain("active_accounts;dur=");
+    expect(primary.headers["server-timing"]).not.toContain("load_store;dur=");
     expect(primary.headers["server-timing"]).toContain("total;dur=");
+    expect(listActiveAccountsSpy).toHaveBeenCalledWith("user-1");
+    expect(primary.json().capabilities).toEqual({
+      configuredMarkets: ["TW"],
+      configuredCurrencies: ["TWD"],
+    });
     expect(enrichment.headers["server-timing"]).toContain("review_enrichment_db;dur=");
     expect(enrichment.headers["server-timing"]).toContain("review_enrichment_aggregate;dur=");
     expect(enrichment.headers["server-timing"]).toContain("total;dur=");

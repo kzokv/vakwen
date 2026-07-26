@@ -107,4 +107,42 @@ describe("MemoryPersistence account mutations", () => {
       auditInput,
     })).rejects.toMatchObject({ statusCode: 409, code: "currency_change_blocked" });
   });
+
+  it("clears the previous market dividend fallback when a history-free account changes currency", async () => {
+    const created = await persistence.createAccount({
+      userId,
+      name: "Currency Change Target",
+      defaultCurrency: "USD",
+      accountType: "broker",
+      auditInput,
+    });
+    const configured = await persistence.patchAccountMarketDividendSettings(userId, {
+      accountId: created.account.id,
+      marketCode: "US",
+      fallbackParValue: "10",
+      auditInput,
+    });
+
+    await persistence.updateAccount({
+      userId,
+      accountId: created.account.id,
+      defaultCurrency: "AUD",
+      auditInput,
+    });
+    await persistence.updateAccount({
+      userId,
+      accountId: created.account.id,
+      defaultCurrency: "USD",
+      auditInput,
+    });
+
+    await expect(persistence.getAccountMarketDividendSettings(
+      userId,
+      created.account.id,
+      "US",
+    )).resolves.toMatchObject({
+      fallbackParValue: null,
+      version: configured.version + 1,
+    });
+  });
 });

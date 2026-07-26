@@ -395,17 +395,6 @@ export function AccountsSettingsClient() {
     setBindings((current) => current.filter((_, idx) => idx !== index));
   }, []);
 
-  if (!initialSettings) {
-    return (
-      <div data-testid="settings-section-accounts" className="text-sm text-muted-foreground">
-        {dict.feedback.loadingSettings}
-      </div>
-    );
-  }
-
-  const hasShellAccountConfig = shellData.accounts.length > 0 || shellData.feeProfiles.length > 0;
-  const hasAccounts = shellData.accounts.length > 0;
-
   const handleAccountsRefresh = useCallback(
     async (response?: AccountMutationResponseDto | undefined) => {
       if (response) {
@@ -416,6 +405,17 @@ export function AccountsSettingsClient() {
     },
     [applyAccountMutation],
   );
+
+  if (!initialSettings) {
+    return (
+      <div data-testid="settings-section-accounts" className="text-sm text-muted-foreground">
+        {dict.feedback.loadingSettings}
+      </div>
+    );
+  }
+
+  const hasShellAccountConfig = shellData.accounts.length > 0 || shellData.feeProfiles.length > 0;
+  const hasAccounts = shellData.accounts.length > 0;
 
   const accountCreateForm = (
     <AccountCreateForm

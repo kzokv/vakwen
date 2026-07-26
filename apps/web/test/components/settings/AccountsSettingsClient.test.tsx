@@ -150,6 +150,49 @@ describe("AccountsSettingsClient", () => {
     expect(container.textContent).toContain(dict.settings.accountsZeroStateTitle);
   });
 
+  it("recovers from missing initial settings without changing hook order", () => {
+    vi.mocked(useAppShellData).mockReturnValue({
+      accounts: [],
+      feeProfiles: [],
+      feeProfileBindings: [],
+      refreshPortfolioConfig: vi.fn(),
+      applyAccountMutationResponse: vi.fn(),
+      isPortfolioConfigLoading: false,
+      isSharedContext: false,
+      sharedContextPermissions: { canManageAccounts: true },
+      uiDict: dict,
+    } as never);
+    vi.mocked(useSettingsRouteContext).mockReturnValue({
+      isDemo: false,
+      locale: "en",
+      profile: null as never,
+      initialSidebarOpen: true,
+      initialSettings: null,
+      setLocale: vi.fn(),
+    });
+
+    act(() => {
+      root.render(<AccountsSettingsClient />);
+    });
+    expect(container.textContent).toContain(dict.feedback.loadingSettings);
+
+    vi.mocked(useSettingsRouteContext).mockReturnValue({
+      isDemo: false,
+      locale: "en",
+      profile: null as never,
+      initialSidebarOpen: true,
+      initialSettings: { locale: "en" } as never,
+      setLocale: vi.fn(),
+    });
+
+    expect(() => {
+      act(() => {
+        root.render(<AccountsSettingsClient />);
+      });
+    }).not.toThrow();
+    expect(container.querySelector('[data-testid="account-create-form"]')).not.toBeNull();
+  });
+
   it("shows the account list first and opens add-account flow on demand when accounts already exist", async () => {
     vi.mocked(useAppShellData).mockReturnValue({
       accounts: [{

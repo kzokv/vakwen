@@ -7485,8 +7485,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const { ticker, accountId, cashStatus, stockStatus, ...reviewQuery } = query;
     return withReadPathTiming(req, reply, "/portfolio/dividends/review/primary", async (timing) => {
       const { contextUserId: userId } = resolveUserId(req, app.oauthConfig?.sessionSecret);
-      const [store, primary, metadata] = await Promise.all([
-        timing.measure("load_store", "db", () => app.persistence.loadStore(userId)),
+      const [accounts, primary, metadata] = await Promise.all([
+        timing.measure("active_accounts", "db", () => app.persistence.listActiveAccounts(userId)),
         app.persistence.listDividendReviewPrimary(userId, {
           ...reviewQuery,
           accountIds: accountId,
@@ -7501,7 +7501,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
             toPaymentDate: query.toPaymentDate,
           })),
       ]);
-      const capabilities = derivePortfolioCapabilities(store.accounts);
+      const capabilities = derivePortfolioCapabilities(accounts);
       timing.record("review_primary_db", "db", primary.phaseTimings?.dbMs ?? 0);
       timing.record("review_primary_hydration", "app", primary.phaseTimings?.hydrationMs ?? 0);
       return {
