@@ -42,8 +42,8 @@ export function useReportingCurrencyCapability({
   const state = useMemo<ReportingCurrencyCapabilityState>(() => {
     if (!capabilities) {
       return {
-        configuredCurrencies: [reportingCurrency],
-        effectiveReportingCurrency: reportingCurrency,
+        configuredCurrencies: [],
+        effectiveReportingCurrency: null,
         normalization: null,
       };
     }

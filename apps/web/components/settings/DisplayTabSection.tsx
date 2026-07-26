@@ -531,7 +531,13 @@ export function DisplayTabSection({
           </p>
         </div>
 
-        {shellData.portfolioCapabilities && configuredCurrencies.length === 0 ? (
+        {!shellData.portfolioCapabilities ? (
+          <div
+            className="h-9 animate-pulse rounded-md bg-muted"
+            data-testid="settings-reporting-currency-loading"
+            aria-busy="true"
+          />
+        ) : configuredCurrencies.length === 0 ? (
           <ZeroAccountSetupGate
             dict={dict}
             canManageAccounts={canManageAccounts}

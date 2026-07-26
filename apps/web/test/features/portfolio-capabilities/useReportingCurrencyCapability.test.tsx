@@ -51,6 +51,30 @@ describe("useReportingCurrencyCapability", () => {
     container.remove();
   });
 
+  it("preserves unknown capabilities as a loading state", async () => {
+    const onNormalizeReportingCurrency = vi.fn(async () => undefined);
+
+    act(() => {
+      root.render(
+        <Harness
+          capabilities={null}
+          reportingCurrency="TWD"
+          isSharedContext={false}
+          onNormalizeReportingCurrency={onNormalizeReportingCurrency}
+        />,
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.configuredCurrencies).toEqual([]);
+    expect(result.effectiveReportingCurrency).toBeNull();
+    expect(result.normalization).toBeNull();
+    expect(onNormalizeReportingCurrency).not.toHaveBeenCalled();
+  });
+
   it("normalizes stale owner preferences without a router refresh", async () => {
     const onNormalizeReportingCurrency = vi.fn(async () => undefined);
 

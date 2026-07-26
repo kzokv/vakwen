@@ -134,7 +134,13 @@ export function FloatingQuickActions({
             <CircleDollarSign data-icon="inline-start" aria-hidden="true" />
             {dict.commandPalette.actionChangeReportingCurrency}
           </div>
-          {portfolioCapabilities && configuredCurrencies.length === 0 ? (
+          {!portfolioCapabilities ? (
+            <div
+              className="h-9 animate-pulse rounded-md bg-muted"
+              data-testid="floating-action-reporting-currency-loading"
+              aria-busy="true"
+            />
+          ) : configuredCurrencies.length === 0 ? (
             <ZeroAccountSetupGate
               dict={dict}
               canManageAccounts={canManageAccounts}

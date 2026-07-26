@@ -112,6 +112,16 @@ describe("FloatingQuickActions", () => {
     expect(document.body.textContent).not.toContain("AUD");
   });
 
+  it("renders a loading state instead of fabricating a single currency while capabilities are unknown", async () => {
+    renderFloatingQuickActions(null);
+
+    await act(async () => {});
+
+    expect(document.querySelector("[data-testid='floating-action-reporting-currency-loading']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-reporting-currency-single']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-reporting-currency']")).toBeNull();
+  });
+
   it("renders the zero-account gate when no configured currencies exist", async () => {
     renderFloatingQuickActions({
       configuredMarkets: [],

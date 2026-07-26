@@ -399,6 +399,15 @@ export function AppShell({
     && (!isSharedContext || sharedContextPermissions.canWriteTransactions);
   const showSharedContextStrip = isSharedContext
     && (!pathname.startsWith("/settings/") || pathname === "/settings/accounts");
+  const handleQuickActionsOpenChange = useCallback((nextOpen: boolean) => {
+    if (!nextOpen) {
+      setQuickActionsOpen(false);
+      return;
+    }
+    void portfolioConfig.ensureLoaded()
+      .then(() => setQuickActionsOpen(true))
+      .catch(() => undefined);
+  }, [portfolioConfig.ensureLoaded]);
 
   const appShellDataValue = useAppShellDataValue({
     uiDict,
@@ -412,7 +421,7 @@ export function AppShell({
     currentSharedCapabilities,
     sharedContextPermissions,
     canUseGlobalQuickActions,
-    openQuickActions: () => setQuickActionsOpen(true),
+    openQuickActions: () => handleQuickActionsOpenChange(true),
     portfolioCapabilities,
     reportingCurrency,
     saveReportingCurrency,
@@ -586,7 +595,7 @@ export function AppShell({
             <FloatingQuickActions
               hidden={!canUseGlobalQuickActions}
               open={quickActionsOpen}
-              onOpenChange={setQuickActionsOpen}
+              onOpenChange={handleQuickActionsOpenChange}
               portfolioCapabilities={portfolioCapabilities}
               isSharedContext={isSharedContext}
               canManageAccounts={!isSharedContext || sharedContextPermissions.canManageAccounts}
