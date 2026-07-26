@@ -94,6 +94,7 @@ superseded_by: null
   - OAuth E2E: 121 passed;
   - OAuth API HTTP tests: 312 passed, 2 skipped.
 - The final account-helper locator cleanup was revalidated with the account-creation and account-market-binding Chromium specs: 4 passed.
+- The lazy-capability loading skeleton was revalidated with the desktop dashboard fit and quick-actions Chromium regression: 1 passed.
 - Final review regressions cover first-call memory-store initialization without crossing the full-store boundary, concurrent final-account deletion with owner-serialized reporting fallback, out-of-order shell refreshes, constrained global transaction markets, safe post-create return navigation, best-effort post-commit account event fanout, serialized account-type selection, and lazy capability loading before currency actions.
 - Durable implementation rules were promoted to `.claude/rules/account-capability-authority.md` and `.claude/rules/bounded-account-mutations.md`.
 

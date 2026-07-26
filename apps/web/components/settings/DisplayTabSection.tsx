@@ -533,7 +533,7 @@ export function DisplayTabSection({
 
         {!shellData.portfolioCapabilities ? (
           <div
-            className="h-9 animate-pulse rounded-md bg-muted"
+            className="h-9 rounded-md bg-muted"
             data-testid="settings-reporting-currency-loading"
             aria-busy="true"
           />
