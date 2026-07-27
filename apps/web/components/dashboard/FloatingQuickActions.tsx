@@ -92,6 +92,11 @@ export function FloatingQuickActions({
     isSharedContext,
     onNormalizeReportingCurrency: onReportingCurrencyChange,
   });
+  const hasConfiguredCapabilities = portfolioCapabilities !== null
+    && (
+      portfolioCapabilities.configuredMarkets.length > 0
+      || configuredCurrencies.length > 0
+    );
 
   if (hidden) return null;
 
@@ -191,51 +196,55 @@ export function FloatingQuickActions({
           ) : null}
         </div>
 
-        <Button
-          variant="default"
-          className="w-full justify-start"
-          onClick={() => {
-            close();
-            onAddTransaction();
-          }}
-          data-testid="floating-action-add-transaction"
-        >
-          <ReceiptText data-icon="inline-start" aria-hidden="true" />
-          {dict.commandPalette.actionAddTransaction}
-        </Button>
-        {showRecomputeAction ? (
-          <Button
-            variant="secondary"
-            className="w-full justify-start"
-            onClick={() => {
-              close();
-              onRecompute();
-            }}
-            data-testid="floating-action-recompute"
-          >
-            <RefreshCw data-icon="inline-start" aria-hidden="true" />
-            {dict.commandPalette.actionRecomputeAll}
-          </Button>
-        ) : null}
-        {showGenerateSnapshotsAction ? (
-          <div className="flex flex-col gap-2">
+        {hasConfiguredCapabilities ? (
+          <>
             <Button
-              variant="secondary"
+              variant="default"
               className="w-full justify-start"
-              disabled={isGeneratingSnapshots}
               onClick={() => {
                 close();
-                void onGenerateSnapshots();
+                onAddTransaction();
               }}
-              data-testid="floating-action-generate-snapshots"
+              data-testid="floating-action-add-transaction"
             >
-              <FileClock data-icon="inline-start" aria-hidden="true" />
-              {dict.commandPalette.actionGenerateSnapshots}
+              <ReceiptText data-icon="inline-start" aria-hidden="true" />
+              {dict.commandPalette.actionAddTransaction}
             </Button>
-            <p className="px-1 text-xs text-muted-foreground" data-testid="floating-action-generate-snapshots-hint">
-              {dict.commandPalette.actionGenerateSnapshotsHint}
-            </p>
-          </div>
+            {showRecomputeAction ? (
+              <Button
+                variant="secondary"
+                className="w-full justify-start"
+                onClick={() => {
+                  close();
+                  onRecompute();
+                }}
+                data-testid="floating-action-recompute"
+              >
+                <RefreshCw data-icon="inline-start" aria-hidden="true" />
+                {dict.commandPalette.actionRecomputeAll}
+              </Button>
+            ) : null}
+            {showGenerateSnapshotsAction ? (
+              <div className="flex flex-col gap-2">
+                <Button
+                  variant="secondary"
+                  className="w-full justify-start"
+                  disabled={isGeneratingSnapshots}
+                  onClick={() => {
+                    close();
+                    void onGenerateSnapshots();
+                  }}
+                  data-testid="floating-action-generate-snapshots"
+                >
+                  <FileClock data-icon="inline-start" aria-hidden="true" />
+                  {dict.commandPalette.actionGenerateSnapshots}
+                </Button>
+                <p className="px-1 text-xs text-muted-foreground" data-testid="floating-action-generate-snapshots-hint">
+                  {dict.commandPalette.actionGenerateSnapshotsHint}
+                </p>
+              </div>
+            ) : null}
+          </>
         ) : null}
       </SheetContent>
     </Sheet>

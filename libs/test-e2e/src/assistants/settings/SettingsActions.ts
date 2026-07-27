@@ -4,6 +4,24 @@ import { Step } from "@vakwen/test-framework/decorators";
 import { AppBaseActions } from "../../bases/index.js";
 import type { SettingsDrawerPage } from "../../pages/settings/SettingsDrawerPage.js";
 
+type BrowserIdentityCookie = {
+  name: string;
+  value: string;
+};
+
+export function buildAccountListIdentityHeaders(
+  cookies: readonly BrowserIdentityCookie[],
+): Record<string, string> {
+  const userId = cookies.find((cookie) => cookie.name === "tw_e2e_user")?.value;
+  const contextUserId = cookies.find(
+    (cookie) => cookie.name === "tw_context_user_id",
+  )?.value;
+  return {
+    ...(userId ? { "x-user-id": userId } : {}),
+    ...(contextUserId ? { "x-context-user-id": contextUserId } : {}),
+  };
+}
+
 export class SettingsActions extends AppBaseActions {
   declare protected readonly _instance: SettingsDrawerPage;
 
@@ -322,10 +340,10 @@ export class SettingsActions extends AppBaseActions {
 
     /* eslint-disable aaa/no-page-access -- this helper must recover the authoritative account created after the wizard unmounts */
     const identityCookies = await this.page.context().cookies(TestEnv.appBaseUrl);
-    const userId = identityCookies.find((cookie) => cookie.name === "tw_e2e_user")?.value;
+    const identityHeaders = buildAccountListIdentityHeaders(identityCookies);
     const accountsResponse = await this.page.request.get(
       new URL("/accounts", TestEnv.apiBaseUrl).href,
-      userId ? { headers: { "x-user-id": userId } } : undefined,
+      { headers: identityHeaders },
     );
     /* eslint-enable aaa/no-page-access */
     if (!accountsResponse.ok()) {

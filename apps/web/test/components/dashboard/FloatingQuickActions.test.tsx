@@ -120,6 +120,9 @@ describe("FloatingQuickActions", () => {
     expect(document.querySelector("[data-testid='floating-action-reporting-currency-loading']")).not.toBeNull();
     expect(document.querySelector("[data-testid='floating-action-reporting-currency-single']")).toBeNull();
     expect(document.querySelector("[data-testid='floating-action-reporting-currency']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-add-transaction']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-recompute']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-generate-snapshots']")).toBeNull();
   });
 
   it("renders the zero-account gate when no configured currencies exist", async () => {
@@ -132,6 +135,9 @@ describe("FloatingQuickActions", () => {
 
     expect(document.querySelector("[data-testid='portfolio-capabilities-zero-account-gate']")).not.toBeNull();
     expect(document.querySelector("[data-testid='floating-action-reporting-currency']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-add-transaction']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-recompute']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-generate-snapshots']")).toBeNull();
     expect(document.body.textContent).toContain("Set up an account before using this view");
   });
 
@@ -144,6 +150,7 @@ describe("FloatingQuickActions", () => {
     await act(async () => {});
 
     expect(document.querySelector("[data-testid='floating-action-reporting-currency-single']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-add-transaction']")).not.toBeNull();
     expect(document.body.textContent).toContain("USD");
     expect(document.querySelector("[data-testid='floating-action-reporting-currency']")).toBeNull();
   });
