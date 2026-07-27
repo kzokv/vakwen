@@ -1858,6 +1858,7 @@ async function buildAccountMutationResponse(
 
 async function buildLifecycleReportingCurrencyForContext(
   app: FastifyInstance,
+  req: FastifyRequest,
   payload: import("../persistence/types.js").AccountLifecyclePersistenceResult,
   sessionUserId: string,
   useAuthoritativeOwnerPreference: boolean,
@@ -1865,25 +1866,25 @@ async function buildLifecycleReportingCurrencyForContext(
   if (useAuthoritativeOwnerPreference) {
     return payload.reportingCurrency;
   }
-  const prefs = await app.persistence.getUserPreferences(sessionUserId);
-  const requested = resolveReportingCurrency(prefs);
-  const effective = payload.capabilities.configuredCurrencies.includes(requested)
-    ? requested
-    : payload.capabilities.configuredCurrencies[0] ?? null;
-  return {
+  let requested: AccountDefaultCurrency | null = null;
+  try {
+    const prefs = await app.persistence.getUserPreferences(sessionUserId);
+    requested = resolveReportingCurrency(prefs);
+  } catch (error) {
+    req.log.warn(
+      { error, sessionUserId, accountId: payload.account.id },
+      "account lifecycle reporting-currency enrichment failed",
+    );
+  }
+  return normalizeRequestedReportingCurrency(
+    payload.capabilities.configuredCurrencies,
     requested,
-    effective,
-    reason:
-      effective === requested
-        ? null
-        : payload.capabilities.configuredCurrencies.length === 0
-          ? "no_configured_currencies"
-          : "unconfigured_currency",
-  };
+  );
 }
 
 async function buildAccountLifecycleResponse(
   app: FastifyInstance,
+  req: FastifyRequest,
   payload: import("../persistence/types.js").AccountLifecyclePersistenceResult,
   sessionUserId: string,
   useAuthoritativeOwnerPreference: boolean,
@@ -1896,6 +1897,7 @@ async function buildAccountLifecycleResponse(
     capabilities: payload.capabilities,
     reportingCurrency: await buildLifecycleReportingCurrencyForContext(
       app,
+      req,
       payload,
       sessionUserId,
       useAuthoritativeOwnerPreference,
@@ -5096,6 +5098,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const useAuthoritativeOwnerPreference = identity.sessionUserId === identity.contextUserId;
     const response = await buildAccountLifecycleResponse(
       app,
+      req,
       result,
       identity.sessionUserId,
       useAuthoritativeOwnerPreference,
@@ -5121,6 +5124,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const useAuthoritativeOwnerPreference = identity.sessionUserId === identity.contextUserId;
     const response = await buildAccountLifecycleResponse(
       app,
+      req,
       result,
       identity.sessionUserId,
       useAuthoritativeOwnerPreference,
@@ -5164,6 +5168,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     );
     const response = await buildAccountLifecycleResponse(
       app,
+      req,
       result,
       identity.sessionUserId,
       identity.sessionUserId === identity.contextUserId,

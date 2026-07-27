@@ -496,4 +496,97 @@ describe("account mutation routes", () => {
     });
     expect(activeShare.granteeUserId).toBe(viewer.userId);
   });
+
+  it("shared delete and restore return committed lifecycle results when viewer preference enrichment fails", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/accounts",
+      headers: { cookie: sessionCookie },
+      payload: {
+        name: "Lifecycle fallback USD",
+        defaultCurrency: "USD",
+        accountType: "broker",
+      },
+    });
+
+    const viewer = await app.persistence.resolveOrCreateUser("google", "route-tests-fallback-sub", {
+      email: "route-tests-fallback@example.com",
+      emailVerified: true,
+      name: "Route Fallback Viewer",
+      picture: undefined,
+    });
+    const viewerCookie = `g_auth_session=${signSessionCookie(
+      viewer.userId,
+      testOAuthConfig.sessionSecret,
+      viewer.sessionVersion,
+    )}`;
+    const share = await app.persistence.createShareGrant({
+      ownerUserId,
+      granteeUserId: viewer.userId,
+      auditInput: { actorUserId: ownerUserId, ipAddress: null, metadata: {} },
+    });
+    await app.persistence.setShareCapabilities({
+      shareId: share.id,
+      capabilities: ["account:manage"],
+      grantedByUserId: ownerUserId,
+    });
+    const publishSpy = vi.spyOn(app.eventBus, "publishEvent");
+    const originalGetUserPreferences = app.persistence.getUserPreferences.bind(app.persistence);
+    let failNextViewerPreferenceRead = false;
+    vi.spyOn(app.persistence, "getUserPreferences").mockImplementation(async (userId) => {
+      if (userId === viewer.userId && failNextViewerPreferenceRead) {
+        failNextViewerPreferenceRead = false;
+        throw new Error("viewer preferences unavailable");
+      }
+      return originalGetUserPreferences(userId);
+    });
+
+    failNextViewerPreferenceRead = true;
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: "/accounts/acc-1",
+      headers: {
+        cookie: viewerCookie,
+        "x-context-user-id": ownerUserId,
+      },
+    });
+
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toMatchObject({
+      accountId: "acc-1",
+      capabilities: {
+        configuredCurrencies: ["USD"],
+      },
+      reportingCurrency: {
+        requested: null,
+        effective: "USD",
+        reason: null,
+      },
+    });
+    expect(publishSpy.mock.calls.some((call) => call[1] === "account_soft_deleted")).toBe(true);
+
+    failNextViewerPreferenceRead = true;
+    const restored = await app.inject({
+      method: "POST",
+      url: "/accounts/acc-1/restore",
+      headers: {
+        cookie: viewerCookie,
+        "x-context-user-id": ownerUserId,
+      },
+    });
+
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json()).toMatchObject({
+      accountId: "acc-1",
+      capabilities: {
+        configuredCurrencies: ["TWD", "USD"],
+      },
+      reportingCurrency: {
+        requested: null,
+        effective: "TWD",
+        reason: null,
+      },
+    });
+    expect(publishSpy.mock.calls.some((call) => call[1] === "account_restored")).toBe(true);
+  });
 });

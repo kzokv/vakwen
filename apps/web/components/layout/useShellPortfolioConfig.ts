@@ -27,7 +27,7 @@ interface UseShellPortfolioConfigResult extends ShellPortfolioConfigSeedDto {
   showIntegrityDialog: boolean;
   setShowIntegrityDialog: (open: boolean) => void;
   ensureLoaded: () => Promise<void>;
-  refresh: () => Promise<ShellPortfolioConfigDto>;
+  refresh: () => Promise<ShellPortfolioConfigDto | null>;
   applyAccountMutation: (response: AccountMutationResponseDto) => void;
   applyAccountLifecycleMutation: (
     response: AccountLifecycleMutationResponseDto,
@@ -57,7 +57,7 @@ export function useShellPortfolioConfig({
   const loadPromiseRef = useRef<Promise<void> | null>(null);
   const fetchRequestIdRef = useRef(0);
 
-  const fetchConfig = useCallback(async (): Promise<ShellPortfolioConfigDto> => {
+  const fetchConfig = useCallback(async (): Promise<ShellPortfolioConfigDto | null> => {
     const requestId = ++fetchRequestIdRef.current;
     setIsLoading(true);
     try {
@@ -67,8 +67,9 @@ export function useShellPortfolioConfig({
         setShowIntegrityDialog(Boolean(nextConfig.integrityIssue));
         setErrorMessage("");
         hasLoadedRef.current = true;
+        return nextConfig;
       }
-      return nextConfig;
+      return null;
     } catch (error) {
       if (requestId === fetchRequestIdRef.current) {
         setErrorMessage(resolveErrorMessage(error));

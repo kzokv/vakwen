@@ -345,7 +345,7 @@ export function AppShell({
       bumpContextRefreshSignal();
       void (async () => {
         const nextConfig = await portfolioConfig.refresh();
-        if (refreshId !== accountEventRefreshIdRef.current) return;
+        if (!nextConfig || refreshId !== accountEventRefreshIdRef.current) return;
         setPortfolioCapabilities(nextConfig.capabilities ?? null);
         const preferenceResponse = await getJson<{
           preferences: { reportingCurrency?: AccountDefaultCurrency };

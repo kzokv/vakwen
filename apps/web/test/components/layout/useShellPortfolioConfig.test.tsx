@@ -273,8 +273,8 @@ describe("useShellPortfolioConfig", () => {
       root.render(<Harness fetchMode="lazy" />);
     });
 
-    let olderRefresh!: Promise<ShellPortfolioConfigDto>;
-    let newerRefresh!: Promise<ShellPortfolioConfigDto>;
+    let olderRefresh!: Promise<ShellPortfolioConfigDto | null>;
+    let newerRefresh!: Promise<ShellPortfolioConfigDto | null>;
     act(() => {
       olderRefresh = result.refresh();
       newerRefresh = result.refresh();
@@ -329,7 +329,7 @@ describe("useShellPortfolioConfig", () => {
       root.render(<Harness fetchMode="lazy" />);
     });
 
-    let accountRefresh!: Promise<ShellPortfolioConfigDto>;
+    let accountRefresh!: Promise<ShellPortfolioConfigDto | null>;
     act(() => {
       accountRefresh = result.refresh();
     });
@@ -339,14 +339,16 @@ describe("useShellPortfolioConfig", () => {
     expect(result.accounts).toEqual([accountMutationResponse.account]);
     expect(result.isLoading).toBe(false);
 
+    let accountRefreshResult: ShellPortfolioConfigDto | null = null;
     await act(async () => {
       resolveAccountRead(loadedConfig);
-      await accountRefresh;
+      accountRefreshResult = await accountRefresh;
     });
+    expect(accountRefreshResult).toBeNull();
     expect(result.accounts).toEqual([accountMutationResponse.account]);
     expect(result.capabilities).toEqual(accountMutationResponse.capabilities);
 
-    let lifecycleRefresh!: Promise<ShellPortfolioConfigDto>;
+    let lifecycleRefresh!: Promise<ShellPortfolioConfigDto | null>;
     act(() => {
       lifecycleRefresh = result.refresh();
     });
@@ -363,6 +365,7 @@ describe("useShellPortfolioConfig", () => {
     expect(result.accounts).toEqual([]);
     expect(result.isLoading).toBe(false);
 
+    let lifecycleRefreshResult: ShellPortfolioConfigDto | null = null;
     await act(async () => {
       resolveLifecycleRead({
         ...loadedConfig,
@@ -370,8 +373,9 @@ describe("useShellPortfolioConfig", () => {
         feeProfiles: [accountMutationResponse.feeProfile],
         capabilities: accountMutationResponse.capabilities,
       });
-      await lifecycleRefresh;
+      lifecycleRefreshResult = await lifecycleRefresh;
     });
+    expect(lifecycleRefreshResult).toBeNull();
     expect(result.accounts).toEqual([]);
     expect(result.capabilities).toEqual(lifecycleResponse.capabilities);
   });
