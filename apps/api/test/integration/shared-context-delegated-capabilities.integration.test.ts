@@ -237,6 +237,176 @@ describe("shared-context delegated capabilities", () => {
     });
   });
 
+  it("[shared read]: viewer with portfolio:mcp_read gets owner fee-config capabilities", async () => {
+    const { viewerUserId } = await createViewerShare(["portfolio:mcp_read"]);
+    const ownerStore = await app.persistence.loadStore("user-1");
+    ownerStore.accounts.push({
+      id: "owner-us-1",
+      userId: "user-1",
+      name: "Owner US Broker",
+      defaultCurrency: "USD",
+      accountType: "broker",
+      feeProfileId: "owner-us-fee-1",
+    });
+    ownerStore.feeProfiles.push({
+      ...ownerStore.feeProfiles[0]!,
+      id: "owner-us-fee-1",
+      accountId: "owner-us-1",
+      commissionCurrency: "USD",
+      name: "Owner US Fee",
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/settings/fee-config",
+      headers: {
+        "x-user-id": viewerUserId,
+        "x-user-role": "viewer",
+        "x-context-user-id": "user-1",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(expect.objectContaining({
+      accounts: expect.arrayContaining([
+        expect.objectContaining({ id: "acc-1", userId: "user-1" }),
+        expect.objectContaining({ id: "owner-us-1", userId: "user-1" }),
+      ]),
+      capabilities: {
+        configuredMarkets: ["TW", "US"],
+        configuredCurrencies: ["TWD", "USD"],
+      },
+    }));
+  });
+
+  it("[shared read]: viewer with portfolio:mcp_read gets owner report capabilities", async () => {
+    const { viewerUserId } = await createViewerShare(["portfolio:mcp_read"]);
+    const ownerStore = await app.persistence.loadStore("user-1");
+    const ownerFeeProfile = ownerStore.feeProfiles[0];
+    if (!ownerFeeProfile) throw new Error("expected owner default fee profile");
+    ownerStore.accounts.push(
+      {
+        id: "owner-us-1",
+        userId: "user-1",
+        name: "Owner US Broker",
+        defaultCurrency: "USD",
+        accountType: "broker",
+        feeProfileId: "owner-us-fee-1",
+      },
+      {
+        id: "owner-us-2",
+        userId: "user-1",
+        name: "Owner US Wallet",
+        defaultCurrency: "USD",
+        accountType: "wallet",
+        feeProfileId: "owner-us-fee-2",
+      },
+    );
+    ownerStore.feeProfiles.push(
+      {
+        ...ownerFeeProfile,
+        id: "owner-us-fee-1",
+        accountId: "owner-us-1",
+        commissionCurrency: "USD",
+        name: "Owner US Fee",
+      },
+      {
+        ...ownerFeeProfile,
+        id: "owner-us-fee-2",
+        accountId: "owner-us-2",
+        commissionCurrency: "USD",
+        name: "Owner US Wallet Fee",
+      },
+    );
+    ownerStore.accounting.projections.holdings.push({
+      accountId: "acc-1",
+      ticker: "2330",
+      quantity: 1,
+      costBasisAmount: 100,
+      currency: "TWD",
+    });
+    ownerStore.accounting.facts.tradeEvents.push({
+      id: "owner-report-buy-1",
+      userId: "user-1",
+      accountId: "acc-1",
+      ticker: "2330",
+      marketCode: "TW",
+      instrumentType: "STOCK",
+      type: "BUY",
+      quantity: 1,
+      unitPrice: 100,
+      priceCurrency: "TWD",
+      tradeDate: "2026-01-02",
+      commissionAmount: 0,
+      taxAmount: 0,
+      isDayTrade: false,
+      feeSnapshot: ownerFeeProfile,
+    });
+    await app.persistence.saveStore(ownerStore);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/reports/portfolio?scope=all&range=1Y",
+      headers: {
+        "x-user-id": viewerUserId,
+        "x-user-role": "viewer",
+        "x-context-user-id": "user-1",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(expect.objectContaining({
+      capabilities: {
+        configuredMarkets: ["TW", "US"],
+        configuredCurrencies: ["TWD", "USD"],
+      },
+      query: expect.objectContaining({
+        scope: "all",
+      }),
+    }));
+  });
+
+  it("[shared read]: viewer with portfolio:mcp_read gets owner dashboard capabilities", async () => {
+    const { viewerUserId } = await createViewerShare(["portfolio:mcp_read"]);
+    const ownerStore = await app.persistence.loadStore("user-1");
+    const ownerFeeProfile = ownerStore.feeProfiles[0];
+    if (!ownerFeeProfile) throw new Error("expected owner default fee profile");
+    ownerStore.accounts.push({
+      id: "owner-us-1",
+      userId: "user-1",
+      name: "Owner US Broker",
+      defaultCurrency: "USD",
+      accountType: "broker",
+      feeProfileId: "owner-us-fee-1",
+    });
+    ownerStore.feeProfiles.push({
+      ...ownerFeeProfile,
+      id: "owner-us-fee-1",
+      accountId: "owner-us-1",
+      commissionCurrency: "USD",
+      name: "Owner US Fee",
+    });
+    await app.persistence.saveStore(ownerStore);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/dashboard/overview",
+      headers: {
+        "x-user-id": viewerUserId,
+        "x-user-role": "viewer",
+        "x-context-user-id": "user-1",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(expect.objectContaining({
+      capabilities: {
+        configuredMarkets: ["TW", "US"],
+        configuredCurrencies: ["TWD", "USD"],
+      },
+    }));
+  });
+
   it("[shared sell availability]: viewer with transaction:write can read owner sell availability", async () => {
     const { viewerUserId } = await createViewerShare(["portfolio:mcp_read", "transaction:write"]);
 

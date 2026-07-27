@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { AccountDto, LocaleCode, MarketCode } from "@vakwen/shared-types";
 
@@ -88,6 +88,9 @@ describe("AccountsListSection", () => {
   let root: Root;
 
   const onUpdateAccountProfile = vi.fn();
+  const onSaveAccountProfile = vi.fn(async () => undefined);
+  const onUpdateAccountType = vi.fn();
+  const onSaveAccountType = vi.fn(async () => undefined);
   const onSaveProfile = vi.fn(async () => undefined);
   const onRenameAccount = vi.fn(async () => undefined);
   const onAddProfileForAccount = vi.fn();
@@ -125,16 +128,31 @@ describe("AccountsListSection", () => {
     activeLocale = "en",
     focusedDividendSettings = null,
   }: RenderOptions = {}) {
-    act(() => {
-      root.render(
+    function Harness() {
+      const [localDrafts, setLocalDrafts] = useState(accountDrafts);
+
+      return (
         <AccountsListSection
           accounts={accounts}
-          accountDrafts={accountDrafts}
+          accountDrafts={localDrafts}
           profiles={profiles}
           feeProfileBindings={feeProfileBindings}
           activeLocale={activeLocale}
           onSaveProfile={onSaveProfile}
-          onUpdateAccountProfile={onUpdateAccountProfile}
+          onUpdateAccountProfile={(accountId, feeProfileId) => {
+            onUpdateAccountProfile(accountId, feeProfileId);
+            setLocalDrafts((current) =>
+              current.map((draft) => (draft.id === accountId ? { ...draft, feeProfileId } : draft)),
+            );
+          }}
+          onSaveAccountProfile={onSaveAccountProfile}
+          onUpdateAccountType={(accountId, accountType) => {
+            onUpdateAccountType(accountId, accountType);
+            setLocalDrafts((current) =>
+              current.map((draft) => (draft.id === accountId ? { ...draft, accountType } : draft)),
+            );
+          }}
+          onSaveAccountType={onSaveAccountType}
           onRenameAccount={onRenameAccount}
           onAddProfileForAccount={onAddProfileForAccount}
           onUpdateProfileField={onUpdateProfileField}
@@ -145,8 +163,12 @@ describe("AccountsListSection", () => {
           onRemoveBinding={onRemoveBinding}
           dict={dict}
           focusedDividendSettings={focusedDividendSettings}
-        />,
+        />
       );
+    }
+
+    act(() => {
+      root.render(<Harness />);
     });
   }
 
@@ -395,5 +417,132 @@ describe("AccountsListSection", () => {
     expect(target).toBeTruthy();
     expect(target?.getAttribute("tabindex")).toBe("-1");
     expect(container.querySelector('[data-testid="settings-account-profile-acc-2"]')).toBeNull();
+  });
+
+  it("search matches account name, market, currency, and account type in addition to profile names", async () => {
+    render({
+      accounts: [
+        buildAccount({ id: "acc-1", name: "Fubon Securities", feeProfileId: "fp-1", defaultCurrency: "TWD", accountType: "broker" }),
+        buildAccount({ id: "acc-2", name: "Japan Cash", feeProfileId: "fp-2", defaultCurrency: "JPY", accountType: "wallet" }),
+      ],
+      accountDrafts: [
+        buildBinding({ id: "acc-1", feeProfileId: "fp-1" }),
+        buildBinding({ id: "acc-2", feeProfileId: "fp-2" }),
+      ],
+      profiles: [
+        buildProfile({ id: "fp-1", accountId: "acc-1", name: "TW Default" }),
+        buildProfile({ id: "fp-2", accountId: "acc-2", name: "JP Wallet Profile", commissionCurrency: "JPY" }),
+      ],
+    });
+
+    await setInputValue("accounts-tab-search", "wallet");
+    expect(container.querySelector('[data-testid="accounts-card-acc-2-profile-fp-2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="accounts-card-acc-1-profile-fp-1"]')).toBeNull();
+
+    await setInputValue("accounts-tab-search", "japan");
+    expect(container.querySelector('[data-testid="accounts-card-acc-2-profile-fp-2"]')).toBeTruthy();
+
+    await setInputValue("accounts-tab-search", "twd");
+    expect(container.querySelector('[data-testid="accounts-card-acc-1-profile-fp-1"]')).toBeTruthy();
+
+    await setInputValue("accounts-tab-search", "fubon");
+    expect(container.querySelector('[data-testid="accounts-card-acc-1-profile-fp-1"]')).toBeTruthy();
+  });
+
+  it("persists default fee profile changes on blur", async () => {
+    render({
+      profiles: [
+        buildProfile({ id: "fp-1", accountId: "acc-1", name: "TW Default" }),
+        buildProfile({ id: "fp-2", accountId: "acc-1", name: "TW Alt" }),
+      ],
+      accountDrafts: [buildBinding({ id: "acc-1", feeProfileId: "fp-1" })],
+    });
+
+    await click("accounts-card-acc-1-toggle");
+    await setSelectValue("settings-account-profile-acc-1", "fp-2");
+
+    const select = container.querySelector('[data-testid="settings-account-profile-acc-1"]') as HTMLSelectElement;
+    await act(async () => {
+      select.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+
+    expect(onUpdateAccountProfile).toHaveBeenCalledWith("acc-1", "fp-2");
+    expect(onSaveAccountProfile).toHaveBeenCalledWith("acc-1", "fp-2");
+    expect(select.value).toBe("fp-2");
+  });
+
+  it("restores the authoritative default fee profile and shows an inline error when saving fails", async () => {
+    onSaveAccountProfile.mockRejectedValueOnce(new Error("boom"));
+    render({
+      profiles: [
+        buildProfile({ id: "fp-1", accountId: "acc-1", name: "TW Default" }),
+        buildProfile({ id: "fp-2", accountId: "acc-1", name: "TW Alt" }),
+      ],
+      accountDrafts: [buildBinding({ id: "acc-1", feeProfileId: "fp-1" })],
+    });
+
+    await click("accounts-card-acc-1-toggle");
+    await setSelectValue("settings-account-profile-acc-1", "fp-2");
+
+    const select = container.querySelector('[data-testid="settings-account-profile-acc-1"]') as HTMLSelectElement;
+    await act(async () => {
+      select.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="accounts-card-acc-1-account-error"]')?.textContent)
+      .toBe(dict.settings.accountsListAccountUpdateError);
+    expect(select.value).toBe("fp-1");
+    expect(onUpdateAccountProfile).toHaveBeenNthCalledWith(1, "acc-1", "fp-2");
+    expect(onUpdateAccountProfile).toHaveBeenNthCalledWith(2, "acc-1", "fp-1");
+  });
+
+  it("persists account type changes immediately", async () => {
+    render();
+
+    await click("accounts-card-acc-1-toggle");
+    await setSelectValue("settings-account-type-acc-1", "wallet");
+
+    expect(onUpdateAccountType).toHaveBeenCalledWith("acc-1", "wallet");
+    expect(onSaveAccountType).toHaveBeenCalledWith("acc-1", "wallet");
+  });
+
+  it("disables account type changes until the active save completes", async () => {
+    let resolveSave: (() => void) | undefined;
+    onSaveAccountType.mockImplementationOnce(
+      () => new Promise<undefined>((resolve) => {
+        resolveSave = () => resolve(undefined);
+      }),
+    );
+    render();
+
+    await click("accounts-card-acc-1-toggle");
+    await setSelectValue("settings-account-type-acc-1", "wallet");
+
+    const select = container.querySelector(
+      '[data-testid="settings-account-type-acc-1"]',
+    ) as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+    expect(onSaveAccountType).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveSave?.();
+    });
+    expect(select.disabled).toBe(false);
+  });
+
+  it("restores the authoritative account type and shows an inline error when saving fails", async () => {
+    onSaveAccountType.mockRejectedValueOnce(new Error("boom"));
+
+    render();
+
+    await click("accounts-card-acc-1-toggle");
+    await setSelectValue("settings-account-type-acc-1", "wallet");
+
+    expect(container.querySelector('[data-testid="accounts-card-acc-1-account-error"]')?.textContent)
+      .toBe(dict.settings.accountsListAccountUpdateError);
+    expect((container.querySelector('[data-testid="settings-account-type-acc-1"]') as HTMLSelectElement).value)
+      .toBe("broker");
+    expect(onUpdateAccountType).toHaveBeenNthCalledWith(1, "acc-1", "wallet");
+    expect(onUpdateAccountType).toHaveBeenNthCalledWith(2, "acc-1", "broker");
   });
 });

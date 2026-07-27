@@ -340,6 +340,39 @@ describe("dashboard components", () => {
     expect(html).toContain("Exact A$60,000");
   });
 
+  it("keeps a held market visible when its valuation is unavailable", () => {
+    const html = renderToStaticMarkup(
+      <DashboardHero
+        holdingCount={1}
+        marketValues={[{ marketCode: "US", value: null, reportingCurrency: "TWD" }]}
+        summary={{
+          asOf: "2026-06-08",
+          accountCount: 1,
+          holdingCount: 1,
+          totalCostAmount: 1_000,
+          reportingCurrency: "TWD",
+          fxStatus: "missing",
+          marketValueAmount: null,
+          unrealizedPnlAmount: null,
+          dailyChangeAmount: null,
+          dailyChangePercent: null,
+          upcomingDividendCount: 0,
+          upcomingDividendAmount: null,
+          openIssueCount: 0,
+          priceStateRollup: testPriceStateRollup({ holdingCount: 1, missingPriceCount: 1 }),
+        }}
+        locale="en"
+        dict={dict}
+        canOpenQuickActions
+        onOpenQuickActions={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('data-testid="dashboard-hero-market-US"');
+    expect(html).toContain(dict.dashboardHome.noMarketValue);
+    expect(html).toContain(dict.reports.viewDataHealth);
+  });
+
   it("shows a read-only quick-actions hint when the dashboard cannot change reporting currency", () => {
     const groups = buildHoldingGroupsFromHoldings({ holdings })
       .map((group) => ({

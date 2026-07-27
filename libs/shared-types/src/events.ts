@@ -1,3 +1,10 @@
+import type {
+  AccountDefaultCurrency,
+  AccountDto,
+  PortfolioCapabilitiesDto,
+  PortfolioSelectionNormalizationResult,
+} from "./index.js";
+
 // System event types
 export interface HeartbeatEvent {
   type: "heartbeat";
@@ -233,17 +240,46 @@ export interface AccountSoftDeletedEvent {
   type: "account_soft_deleted";
   accountId: string;
   deletedAt: string; // ISO
+  account: AccountDto;
+  capabilities: PortfolioCapabilitiesDto;
+  reportingCurrency: PortfolioSelectionNormalizationResult<AccountDefaultCurrency>;
 }
 
 export interface AccountRestoredEvent {
   type: "account_restored";
   accountId: string;
   finalName: string; // post-collision-resolution
+  account: AccountDto;
+  capabilities: PortfolioCapabilitiesDto;
+  reportingCurrency: PortfolioSelectionNormalizationResult<AccountDefaultCurrency>;
 }
 
 export interface AccountHardPurgedEvent {
   type: "account_hard_purged";
   accountId: string;
+  deletedAt: string | null;
+  account: AccountDto;
+  capabilities: PortfolioCapabilitiesDto;
+  reportingCurrency: PortfolioSelectionNormalizationResult<AccountDefaultCurrency>;
+}
+
+export interface AccountCreatedEvent {
+  type: "account_created";
+  accountId: string;
+  account: AccountDto;
+  feeProfile: import("./index.js").FeeProfileDto;
+  capabilities: PortfolioCapabilitiesDto;
+  reportingCurrency: PortfolioSelectionNormalizationResult<AccountDefaultCurrency>;
+}
+
+export interface AccountUpdatedEvent {
+  type: "account_updated";
+  accountId: string;
+  account: AccountDto;
+  feeProfile: import("./index.js").FeeProfileDto;
+  capabilities: PortfolioCapabilitiesDto;
+  reportingCurrency: PortfolioSelectionNormalizationResult<AccountDefaultCurrency>;
+  changedFields?: string[];
 }
 
 // Discriminated union
@@ -272,6 +308,8 @@ export type SSEEvent =
   | PortfolioDividendsChangedEvent
   | AuditLogChangedEvent
   | PostedTransactionMutationRebuildEvent
+  | AccountCreatedEvent
+  | AccountUpdatedEvent
   | AccountSoftDeletedEvent
   | AccountRestoredEvent
   | AccountHardPurgedEvent;
@@ -301,6 +339,8 @@ export type SSEDomainEventType =
   | "portfolio_dividends_changed"
   | "audit_log_changed"
   | "posted_transaction_mutation_rebuild"
+  | "account_created"
+  | "account_updated"
   | "account_soft_deleted"
   | "account_restored"
   | "account_hard_purged";

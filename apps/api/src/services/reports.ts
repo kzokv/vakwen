@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { resolveRangeBounds, roundToDecimal, type QuoteSnapshot } from "@vakwen/domain";
+import { derivePortfolioCapabilities, resolveRangeBounds, roundToDecimal, type QuoteSnapshot } from "@vakwen/domain";
 import {
   ACCOUNT_DEFAULT_CURRENCIES,
   MARKET_CODES,
@@ -13,6 +13,7 @@ import {
   type FxConversionRateDto,
   type MarketReportDto,
   type MarketCode,
+  type PortfolioCapabilitiesDto,
   type PortfolioReportDto,
   type ReportDataHealthDto,
   type ReportDiagnosticsDto,
@@ -65,6 +66,7 @@ export interface BuildReportInput {
 }
 
 interface PreparedReportData {
+  capabilities: PortfolioCapabilitiesDto;
   reportQuery: ReportQueryStateDto;
   translatedSummary: Awaited<ReturnType<typeof translateOverviewSummary>>;
   translatedHoldingGroups: Awaited<ReturnType<typeof translateOverviewHoldingGroups>>;
@@ -123,6 +125,7 @@ export async function buildDailyReviewReport(
     .slice(0, 5);
 
   return {
+    capabilities: prepared.capabilities,
     query: prepared.reportQuery,
     summary: buildSummaryTotals(
       prepared.translatedSummary,
@@ -174,6 +177,7 @@ export async function buildPortfolioReport(
   const snapshotGapHoldings = await buildSnapshotGapHoldings(app, userId, allRows, prepared.expectedValuationDatesByMarket, prepared.scopedStore);
 
   return {
+    capabilities: prepared.capabilities,
     query: prepared.reportQuery,
     summary: buildSummaryTotals(
       prepared.translatedSummary,
@@ -238,6 +242,7 @@ export async function buildMarketReport(
   const snapshotGapHoldings = await buildSnapshotGapHoldings(app, userId, allRows, prepared.expectedValuationDatesByMarket, prepared.scopedStore);
 
   return {
+    capabilities: prepared.capabilities,
     query: prepared.reportQuery,
     summary: buildSummaryTotals(
       prepared.translatedSummary,
@@ -271,6 +276,7 @@ async function prepareReportData(
     app.persistence.loadOverviewReadStore(userId),
     app.persistence.getUserPreferences(userId),
   ]);
+  const capabilities = derivePortfolioCapabilities(store.accounts);
   const { ranges } = await resolveEffectiveRanges(app.persistence, userId, prefs);
   const context = resolveReportContext({
     scope: input.scope,
@@ -381,6 +387,7 @@ async function prepareReportData(
     asOf,
   };
   return {
+    capabilities,
     reportQuery,
     translatedSummary,
     translatedHoldingGroups,

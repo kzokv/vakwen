@@ -219,15 +219,21 @@ export function DashboardHero({
               >
                 <span className="text-xs font-medium text-muted-foreground">{market.marketCode}</span>
                 <span className="mt-1 block font-mono text-lg font-semibold tabular-nums text-foreground">
-                  <RollingNumber
-                    value={formatCompactCurrencyAmount(market.value, summary.reportingCurrency, locale)}
-                    animateOnKey={quoteRefreshVersion}
-                  />
+                  {market.value === null ? (
+                    dict.dashboardHome.noMarketValue
+                  ) : (
+                    <RollingNumber
+                      value={formatCompactCurrencyAmount(market.value, summary.reportingCurrency, locale)}
+                      animateOnKey={quoteRefreshVersion}
+                    />
+                  )}
                 </span>
                 <span className="mt-0.5 block text-xs text-muted-foreground">
-                  {formatHeroMessage(dict.dashboardHome.exactAmountInline, {
-                    amount: formatCurrencyAmount(market.value, summary.reportingCurrency, locale),
-                  })}
+                  {market.value === null
+                    ? dict.reports.viewDataHealth
+                    : formatHeroMessage(dict.dashboardHome.exactAmountInline, {
+                        amount: formatCurrencyAmount(market.value, summary.reportingCurrency, locale),
+                      })}
                 </span>
               </Link>
             ))}

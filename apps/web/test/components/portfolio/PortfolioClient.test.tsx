@@ -66,6 +66,10 @@ const dict = getDictionary("en");
 const openQuickActions = vi.fn();
 
 const portfolioData = {
+  capabilities: {
+    configuredMarkets: ["TW", "US"],
+    configuredCurrencies: ["TWD", "USD"],
+  },
   holdings: [],
   holdingGroups: [
     {

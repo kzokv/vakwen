@@ -24,6 +24,7 @@ import type { EventBus } from "../events/types.js";
 import type { Persistence } from "../persistence/types.js";
 import { Env } from "@vakwen/config";
 import { getEffectiveAccountHardPurgeDays } from "./appConfig/accountLifecycle.js";
+import { publishLifecycleEventToOwnerAndActiveGrantees } from "./accountMutationEvents.js";
 import { DEFAULT_MARKET_DATA_QUEUE_OPTIONS } from "./market-data/registerBackfillWorker.js";
 
 export const ACCOUNT_HARD_PURGE_QUEUE = "account-hard-purge";
@@ -36,7 +37,13 @@ const ACCOUNT_HARD_PURGE_QUEUE_OPTIONS = {
 } as const;
 
 export interface AccountHardPurgeDeps {
-  persistence: Pick<Persistence, "selectAccountsForHardPurge" | "hardPurgeAccount">;
+  persistence: Pick<
+    Persistence,
+    | "selectAccountsForHardPurge"
+    | "hardPurgeAccount"
+    | "getUserPreferences"
+    | "listSharesForOwner"
+  >;
   eventBus: Pick<EventBus, "publishEvent">;
   /** Resolver — read AT TICK TIME so admin overrides take effect each run. */
   getGraceDays?: () => number;
@@ -53,20 +60,19 @@ export function createAccountHardPurgeHandler(deps: AccountHardPurgeDeps) {
       const candidates = await deps.persistence.selectAccountsForHardPurge(graceDays);
       for (const { accountId, userId } of candidates) {
         try {
-          await deps.persistence.hardPurgeAccount(
+          const result = await deps.persistence.hardPurgeAccount(
             accountId,
             userId,
             { actorUserId: null, ipAddress: null, metadata: { reason: "cron" } },
             { mustBeSoftDeleted: true },
           );
           purged += 1;
-          // Payload mirrors AccountHardPurgedEvent (events.ts) — includes
-          // `type` so the SSE wire envelope is self-describing for clients
-          // that read off the payload (in addition to the buffered-bus type).
-          await deps.eventBus.publishEvent(userId, "account_hard_purged", {
-            type: "account_hard_purged" as const,
-            accountId,
-          });
+          await publishLifecycleEventToOwnerAndActiveGrantees(
+            deps,
+            userId,
+            "account_hard_purged",
+            result,
+          );
         } catch (err) {
           errors += 1;
           deps.log.warn(

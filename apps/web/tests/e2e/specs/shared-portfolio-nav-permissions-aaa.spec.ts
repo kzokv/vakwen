@@ -42,12 +42,17 @@ test.describe("shared portfolio nav and permissions", () => {
 
     await appShell.actions.navigateToRoute("/settings/accounts");
     await appShell.assert.appIsReady();
-    const accountNameInput = page.getByTestId("account-create-name-input");
-    await accountNameInput.waitFor({ state: "visible" });
+    const readonlyNote = page.getByTestId("accounts-shared-readonly-note");
+    await readonlyNote.waitFor({ state: "visible" });
     await appShell.assert.mxAssertEqual(
-      await accountNameInput.isDisabled(),
+      await page.getByTestId("account-create-name-input").count(),
+      0,
+      "account creation flow is hidden without account:manage",
+    );
+    await appShell.assert.mxAssertEqual(
+      await readonlyNote.isVisible(),
       true,
-      "account creation controls are read-only without account:manage",
+      "account management explains the shared read-only state",
     );
   });
 

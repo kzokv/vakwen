@@ -7,3 +7,4 @@ export * from "./dividend-bookkeeping.js";
 export * from "./dividend-stock-calculation.js";
 export * from "./dividend-deductions.js";
 export * from "./performanceRange.js";
+export * from "./portfolioCapabilities.js";

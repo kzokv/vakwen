@@ -1,6 +1,7 @@
 import type {
-  AccountDefaultCurrency,
   AccountDto,
+  AccountMutationResponseDto,
+  AccountDefaultCurrency,
   AccountType,
 } from "@vakwen/shared-types";
 import { getJson, postJson } from "../../../lib/api";
@@ -75,6 +76,6 @@ export async function fetchAccounts(
  * The shared `postJson` helper throws `ApiError` for non-2xx responses;
  * callers should `.catch` and read `error.code` / `error.status`.
  */
-export async function createAccount(input: CreateAccountInput): Promise<AccountDto> {
-  return postJson<AccountDto>("/accounts", input);
+export async function createAccount(input: CreateAccountInput): Promise<AccountMutationResponseDto> {
+  return postJson<AccountMutationResponseDto>("/accounts", input);
 }

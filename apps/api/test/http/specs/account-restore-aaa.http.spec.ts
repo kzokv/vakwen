@@ -1,7 +1,8 @@
 /**
  * ui-enhancement — HTTP API tests for POST /accounts/:id/restore.
  *
- * Response shape: `{ accountId, finalName }`. `finalName` is the resolved name
+ * Response shape: authoritative lifecycle delta with `{ accountId, account,
+ * finalName, capabilities, reportingCurrency }`. `finalName` is the resolved name
  * after auto-rename. Body-envelope errors follow `service-error-pattern.md`
  * (`body.error`, never `body.code`).
  *
@@ -41,6 +42,19 @@ test.describe("POST /accounts/:id/restore (ui-enhancement)", () => {
     const respBody = (await accountsApi.arrange.body(response)) as Record<string, unknown>;
     await accountsApi.assert.fieldEquals(respBody, "accountId", id);
     await accountsApi.assert.fieldEquals(respBody, "finalName", "Restore Happy");
+    const restoredAccount = respBody.account as Record<string, unknown>;
+    await accountsApi.assert.fieldEquals(restoredAccount, "id", id);
+    await accountsApi.assert.fieldEquals(restoredAccount, "name", "Restore Happy");
+    await accountsApi.assert.fieldEquals(restoredAccount, "defaultCurrency", "TWD");
+    await accountsApi.assert.mxAssertDeepEqual(respBody.capabilities, {
+      configuredMarkets: ["TW"],
+      configuredCurrencies: ["TWD"],
+    });
+    await accountsApi.assert.mxAssertDeepEqual(respBody.reportingCurrency, {
+      requested: null,
+      effective: "TWD",
+      reason: null,
+    });
 
     // Assert — GET /accounts surfaces the restored row again
     const listResponse = await accountsApi.actions.listAccounts();
@@ -80,6 +94,19 @@ test.describe("POST /accounts/:id/restore (ui-enhancement)", () => {
     // Assert — finalName carries the renamed suffix.
     const respBody = (await accountsApi.arrange.body(response)) as Record<string, unknown>;
     await accountsApi.assert.fieldEquals(respBody, "finalName", "Collision Test (restored)");
+    const restoredAccount = respBody.account as Record<string, unknown>;
+    await accountsApi.assert.fieldEquals(restoredAccount, "id", aId);
+    await accountsApi.assert.fieldEquals(restoredAccount, "name", "Collision Test (restored)");
+    await accountsApi.assert.fieldEquals(restoredAccount, "defaultCurrency", "USD");
+    await accountsApi.assert.mxAssertDeepEqual(respBody.capabilities, {
+      configuredMarkets: ["TW", "US"],
+      configuredCurrencies: ["TWD", "USD"],
+    });
+    await accountsApi.assert.mxAssertDeepEqual(respBody.reportingCurrency, {
+      requested: null,
+      effective: "TWD",
+      reason: null,
+    });
 
     // Assert — both rows are visible with distinct names.
     const listResponse = await accountsApi.actions.listAccounts();

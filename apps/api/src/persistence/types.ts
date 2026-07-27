@@ -435,6 +435,8 @@ export type AuditLogAction =
   | "quote_fallback_policy_updated"
   | "quote_fallback_policy_deactivated"
   | "quote_fallback_manual_refresh_requested"
+  | "account_created"
+  | "account_updated"
   // ui-enhancement — account lifecycle audit actions.
   | "account_soft_deleted"
   | "account_restored"
@@ -2790,6 +2792,43 @@ export interface EodhdCallBudgetStatus {
   remaining: number;
 }
 
+export interface CreateAccountInput {
+  userId: string;
+  name: string;
+  defaultCurrency: import("@vakwen/shared-types").AccountDefaultCurrency;
+  accountType: import("@vakwen/shared-types").AccountType;
+  auditInput: Omit<AuditLogInput, "action">;
+}
+
+export interface UpdateAccountInput {
+  userId: string;
+  accountId: string;
+  name?: string;
+  feeProfileId?: string;
+  defaultCurrency?: import("@vakwen/shared-types").AccountDefaultCurrency;
+  accountType?: import("@vakwen/shared-types").AccountType;
+  auditInput: Omit<AuditLogInput, "action">;
+}
+
+export interface AccountMutationPersistenceResult {
+  account: import("@vakwen/shared-types").AccountDto;
+  feeProfile: import("@vakwen/shared-types").FeeProfileDto;
+  capabilities: import("@vakwen/shared-types").PortfolioCapabilitiesDto;
+  changedFields?: string[];
+}
+
+export interface AccountLifecyclePersistenceResult {
+  account: import("@vakwen/shared-types").AccountDto;
+  deletedAt: string | null;
+  finalName: string | null;
+  capabilities: import("@vakwen/shared-types").PortfolioCapabilitiesDto;
+  reportingCurrency: import("@vakwen/shared-types").PortfolioSelectionNormalizationResult<
+    import("@vakwen/shared-types").AccountDefaultCurrency
+  >;
+  feeProfiles?: import("@vakwen/shared-types").FeeProfileDto[];
+  feeProfileBindings?: import("@vakwen/shared-types").FeeProfileBindingDto[];
+}
+
 export interface Persistence {
   init(): Promise<void>;
   close(): Promise<void>;
@@ -3205,6 +3244,8 @@ export interface Persistence {
   ): Promise<PersistedTickerFundamentalsRecord>;
   listCashLedgerEntries(userId: string, opts: CashLedgerListOptions): Promise<CashLedgerListResult>;
   listAccountsWithLiveBalances(userId: string): Promise<AccountWithLiveBalancesRecord[]>;
+  /** Narrow account metadata read used by bounded account mutations. */
+  listActiveAccounts(userId: string): Promise<import("@vakwen/shared-types").AccountDto[]>;
   getCashLedgerEnrichment(
     userId: string,
     input: {
@@ -3921,6 +3962,8 @@ export interface Persistence {
   softDeleteUser(userId: string, auditInput: Omit<AuditLogInput, "action">): Promise<void>;
   hardPurgeUser(userId: string, auditInput: Omit<AuditLogInput, "action">): Promise<void>;
   hasActiveJobs(userId: string): Promise<boolean>;
+  createAccount(input: CreateAccountInput): Promise<AccountMutationPersistenceResult>;
+  updateAccount(input: UpdateAccountInput): Promise<AccountMutationPersistenceResult>;
 
   // ── ui-enhancement — Account lifecycle (soft-delete / restore / hard-purge) ──
   /**
@@ -3939,7 +3982,7 @@ export interface Persistence {
     accountId: string,
     userId: string,
     auditInput: Omit<AuditLogInput, "action">,
-  ): Promise<{ deletedAt: string }>;
+  ): Promise<AccountLifecyclePersistenceResult>;
 
   /**
    * Restore a soft-deleted account: clears `accounts.deleted_at`. If an
@@ -3956,7 +3999,7 @@ export interface Persistence {
     accountId: string,
     userId: string,
     auditInput: Omit<AuditLogInput, "action">,
-  ): Promise<{ accountId: string; finalName: string }>;
+  ): Promise<AccountLifecyclePersistenceResult>;
 
   /**
    * Hard-purge a single account: deletes the account row and all
@@ -3976,7 +4019,7 @@ export interface Persistence {
     userId: string,
     auditInput: Omit<AuditLogInput, "action">,
     options?: { mustBeSoftDeleted?: boolean },
-  ): Promise<void>;
+  ): Promise<AccountLifecyclePersistenceResult>;
 
   /**
    * List soft-deleted accounts for the given user, ordered by `deleted_at`

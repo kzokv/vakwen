@@ -37,11 +37,19 @@ let result: ReturnType<typeof useTransactionsPrimaryData>;
 const initialPrimaryData: TransactionPrimaryDto = {
   recentTransactions: [],
   accountOptions: [],
+  capabilities: {
+    configuredMarkets: ["US"],
+    configuredCurrencies: ["USD"],
+  },
   portfolioConfig: {
     accounts: [],
     feeProfiles: [],
     feeProfileBindings: [],
     integrityIssue: null,
+    capabilities: {
+      configuredMarkets: ["US"],
+      configuredCurrencies: ["USD"],
+    },
   },
 };
 
@@ -142,6 +150,19 @@ describe("useTransactionsPrimaryData", () => {
 
     expect(fetchTransactionsPrimaryData).not.toHaveBeenCalled();
     expect(result.data.recentTransactions[0]?.id).toBe("cached");
+  });
+
+  it("keeps capabilities unknown when the initial primary request fails", async () => {
+    vi.mocked(fetchTransactionsPrimaryData).mockRejectedValue(new Error("primary unavailable"));
+
+    act(() => {
+      root.render(<Harness />);
+    });
+    await act(async () => {});
+
+    expect(result.isBootstrapping).toBe(false);
+    expect(result.errorMessage).toBe("primary unavailable");
+    expect(result.data.capabilities).toBeUndefined();
   });
 
   it("restores stale cached transactions data before refreshing", async () => {

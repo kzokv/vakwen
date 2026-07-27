@@ -1,8 +1,16 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PortfolioCapabilitiesDto } from "@vakwen/shared-types";
 import { FloatingQuickActions } from "../../../components/dashboard/FloatingQuickActions";
 import { getDictionary } from "../../../lib/i18n";
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/dashboard",
+  useRouter: () => ({
+    replace: vi.fn(),
+  }),
+}));
 
 vi.mock("../../../lib/hooks/use-mobile", () => ({
   useIsMobile: () => false,
@@ -61,7 +69,7 @@ describe("FloatingQuickActions", () => {
     container.remove();
   });
 
-  it("renders global actions and reporting currency controls when visible", async () => {
+  function renderFloatingQuickActions(capabilities: PortfolioCapabilitiesDto | null) {
     const onReportingCurrencyChange = vi.fn(async () => undefined);
 
     act(() => {
@@ -70,6 +78,9 @@ describe("FloatingQuickActions", () => {
           hidden={false}
           open
           onOpenChange={() => undefined}
+          portfolioCapabilities={capabilities}
+          isSharedContext={false}
+          canManageAccounts
           reportingCurrency="TWD"
           onReportingCurrencyChange={onReportingCurrencyChange}
           isReportingCurrencySaving={false}
@@ -81,67 +92,73 @@ describe("FloatingQuickActions", () => {
           dict={getDictionary("en")}
         />,
       );
+    });
+
+    return { onReportingCurrencyChange };
+  }
+
+  it("renders configured currencies only once for multi-currency portfolios", async () => {
+    renderFloatingQuickActions({
+      configuredMarkets: ["TW", "US"],
+      configuredCurrencies: ["TWD", "USD", "USD"],
     });
 
     await act(async () => {});
 
     expect(document.body.textContent).toContain("Quick actions");
-    expect(document.body.textContent).toContain("Add transaction");
-    expect(document.body.textContent).toContain("Generate snapshots for current context");
-    expect(document.body.textContent).toContain("Broad repair/backfill is admin/system only");
-    expect(document.body.textContent).toContain("Change reporting currency");
-    expect(document.body.textContent).toContain("TWD");
-
-    const usdButton = Array.from(document.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "USD");
-    expect(usdButton).not.toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-reporting-currency']")).not.toBeNull();
+    expect(Array.from(document.querySelectorAll("button")).filter((button) => button.textContent?.trim() === "USD"))
+      .toHaveLength(1);
+    expect(document.body.textContent).not.toContain("AUD");
   });
 
-  it("does not render when hidden", async () => {
-    act(() => {
-      root.render(
-        <FloatingQuickActions
-          hidden
-          open={false}
-          onOpenChange={() => undefined}
-          reportingCurrency="TWD"
-          onReportingCurrencyChange={async () => undefined}
-          isReportingCurrencySaving={false}
-          reportingCurrencyError=""
-          onAddTransaction={() => undefined}
-          onRecompute={() => undefined}
-          onGenerateSnapshots={() => undefined}
-          isGeneratingSnapshots={false}
-          dict={getDictionary("en")}
-        />,
-      );
+  it("renders a loading state instead of fabricating a single currency while capabilities are unknown", async () => {
+    renderFloatingQuickActions(null);
+
+    await act(async () => {});
+
+    expect(document.querySelector("[data-testid='floating-action-reporting-currency-loading']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-reporting-currency-single']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-reporting-currency']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-add-transaction']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-recompute']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-generate-snapshots']")).toBeNull();
+  });
+
+  it("renders the zero-account gate when no configured currencies exist", async () => {
+    renderFloatingQuickActions({
+      configuredMarkets: [],
+      configuredCurrencies: [],
     });
 
     await act(async () => {});
 
-    expect(document.body.textContent).toBe("");
+    expect(document.querySelector("[data-testid='portfolio-capabilities-zero-account-gate']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-reporting-currency']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-add-transaction']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-recompute']")).toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-generate-snapshots']")).toBeNull();
+    expect(document.body.textContent).toContain("Set up an account before using this view");
   });
 
-  it("saves reporting currency changes from the Quick Actions control", async () => {
-    const onReportingCurrencyChange = vi.fn(async () => undefined);
+  it("renders static single-currency context when only one currency is configured", async () => {
+    renderFloatingQuickActions({
+      configuredMarkets: ["US"],
+      configuredCurrencies: ["USD"],
+    });
 
-    act(() => {
-      root.render(
-        <FloatingQuickActions
-          hidden={false}
-          open
-          onOpenChange={() => undefined}
-          reportingCurrency="TWD"
-          onReportingCurrencyChange={onReportingCurrencyChange}
-          isReportingCurrencySaving={false}
-          reportingCurrencyError=""
-          onAddTransaction={() => undefined}
-          onRecompute={() => undefined}
-          onGenerateSnapshots={() => undefined}
-          isGeneratingSnapshots={false}
-          dict={getDictionary("en")}
-        />,
-      );
+    await act(async () => {});
+
+    expect(document.querySelector("[data-testid='floating-action-reporting-currency-single']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='floating-action-add-transaction']")).not.toBeNull();
+    expect(document.body.textContent).toContain("USD");
+    expect(document.querySelector("[data-testid='floating-action-reporting-currency']")).toBeNull();
+  });
+
+  it("saves reporting currency changes from configured selector options", async () => {
+    const { onReportingCurrencyChange } = renderFloatingQuickActions({
+      configuredMarkets: ["TW", "US"],
+      configuredCurrencies: ["TWD", "USD"],
     });
 
     await act(async () => {});

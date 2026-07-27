@@ -7,6 +7,7 @@ import type {
   InstrumentOptionDto,
   InstrumentCatalogItemDto,
   MarketCode,
+  PortfolioCapabilitiesDto,
   RecomputeConfirmRequestDto,
   RecomputeConfirmResponseDto,
   RecomputeFeeMode,
@@ -37,6 +38,7 @@ export type PortfolioPageData = Pick<
   DashboardOverviewDto,
   "holdings" | "holdingGroups" | "dividends" | "instruments" | "fxRates" | "refreshPending"
 > & {
+  capabilities: PortfolioCapabilitiesDto;
   settings?: UserSettings;
   accounts: AccountDto[];
   feeProfiles: FeeProfileDto[];

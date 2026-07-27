@@ -5,7 +5,7 @@ import { DisplaySettingsClient } from "../../../components/settings/DisplaySetti
 
 export default function DisplaySettingsPage() {
   return (
-    <SettingsSectionShell portfolioConfigMode="lazy">
+    <SettingsSectionShell portfolioConfigMode="eager">
       <DisplaySettingsClient />
     </SettingsSectionShell>
   );

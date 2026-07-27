@@ -38,6 +38,7 @@ export default async function DashboardPage() {
       feeProfiles: initialPrimaryData.feeProfiles,
       feeProfileBindings: initialPrimaryData.feeProfileBindings,
       integrityIssue: initialPrimaryData.actions.integrityIssue,
+      capabilities: initialPrimaryData.capabilities,
     }
     : null;
   const locale = settings?.locale ?? "en";

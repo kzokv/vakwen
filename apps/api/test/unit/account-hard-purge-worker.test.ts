@@ -23,12 +23,40 @@ function makeJob(): JobWithMetadata<Record<string, never>> {
   return { data: {}, retryCount: 0, retryLimit: 3 } as JobWithMetadata<Record<string, never>>;
 }
 
+function makePurgeResult(accountId: string, userId: string) {
+  return {
+    account: {
+      id: accountId,
+      userId,
+      name: accountId,
+      feeProfileId: `fee-${accountId}`,
+      defaultCurrency: "TWD" as const,
+      accountType: "broker" as const,
+    },
+    deletedAt: "2026-07-01T00:00:00.000Z",
+    finalName: null,
+    capabilities: {
+      hasAccounts: false,
+      configuredCurrencies: [],
+      configuredMarkets: [],
+      accountCount: 0,
+    },
+    reportingCurrency: {
+      requested: "TWD" as const,
+      effective: null,
+      reason: "no_configured_currencies" as const,
+    },
+  };
+}
+
 describe("createAccountHardPurgeHandler", () => {
   it("reads grace days via the resolver AT TICK TIME and forwards to selectAccountsForHardPurge", async () => {
     let resolverCalls = 0;
     const persistence = {
       selectAccountsForHardPurge: vi.fn().mockResolvedValue([]),
       hardPurgeAccount: vi.fn(),
+      getUserPreferences: vi.fn(),
+      listSharesForOwner: vi.fn(),
     };
     const eventBus = { publishEvent: vi.fn().mockResolvedValue(undefined) };
     const log = { info: vi.fn(), error: vi.fn(), warn: vi.fn() };
@@ -55,7 +83,10 @@ describe("createAccountHardPurgeHandler", () => {
         { accountId: "acc-1", userId: "user-A" },
         { accountId: "acc-2", userId: "user-B" },
       ]),
-      hardPurgeAccount: vi.fn().mockResolvedValue(undefined),
+      hardPurgeAccount: vi.fn().mockImplementation((accountId: string, userId: string) =>
+        Promise.resolve(makePurgeResult(accountId, userId))),
+      getUserPreferences: vi.fn().mockResolvedValue({ reportingCurrency: "TWD" }),
+      listSharesForOwner: vi.fn().mockResolvedValue({ active: [], revoked: [] }),
     };
     const eventBus = { publishEvent: vi.fn().mockResolvedValue(undefined) };
     const log = { info: vi.fn(), error: vi.fn(), warn: vi.fn() };
@@ -96,8 +127,10 @@ describe("createAccountHardPurgeHandler", () => {
       ]),
       hardPurgeAccount: vi.fn().mockImplementation((accountId: string) => {
         if (accountId === "acc-fail") throw boom;
-        return Promise.resolve();
+        return Promise.resolve(makePurgeResult(accountId, "user-Y"));
       }),
+      getUserPreferences: vi.fn().mockResolvedValue({ reportingCurrency: "TWD" }),
+      listSharesForOwner: vi.fn().mockResolvedValue({ active: [], revoked: [] }),
     };
     const eventBus = { publishEvent: vi.fn().mockResolvedValue(undefined) };
     const log = { info: vi.fn(), error: vi.fn(), warn: vi.fn() };
@@ -130,6 +163,8 @@ describe("createAccountHardPurgeHandler", () => {
     const persistence = {
       selectAccountsForHardPurge: vi.fn().mockResolvedValue([]),
       hardPurgeAccount: vi.fn(),
+      getUserPreferences: vi.fn(),
+      listSharesForOwner: vi.fn(),
     };
     const eventBus = { publishEvent: vi.fn() };
     const log = { info: vi.fn(), error: vi.fn(), warn: vi.fn() };

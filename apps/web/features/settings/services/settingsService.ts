@@ -1,5 +1,7 @@
 import type {
   AccountDto,
+  AccountMutationResponseDto,
+  AccountType,
   FeeProfileBindingDto,
   FeeProfileDto,
   ProfileDto,
@@ -18,8 +20,17 @@ export interface SaveSettingsResponse {
   feeProfileBindings: FeeProfileBindingDto[];
 }
 
-export async function renameAccount(accountId: string, name: string): Promise<AccountDto> {
-  return patchJson<AccountDto>(`/accounts/${encodeURIComponent(accountId)}`, { name });
+export interface AccountPatch {
+  name?: string;
+  feeProfileId?: string;
+  accountType?: AccountType;
+}
+
+export async function patchAccount(
+  accountId: string,
+  patch: AccountPatch,
+): Promise<AccountMutationResponseDto> {
+  return patchJson<AccountMutationResponseDto>(`/accounts/${encodeURIComponent(accountId)}`, patch);
 }
 
 export interface FeeProfilePatch {

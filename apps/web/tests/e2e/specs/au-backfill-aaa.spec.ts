@@ -97,23 +97,12 @@ test("[transactions]: BHP AU trade against AUD account → posted, recent table 
   await transactions.assert.recentTransactionTickerIsVisible("BHP");
 });
 
-test("[transactions]: AU chip on BHP without AUD account asks user to create a compatible account", async ({
-  settings,
+test("[transactions]: TWD-only account set → AU market chip is hidden", async ({
   transactions,
 }) => {
-  // ── Arrange: seed BHP AU; default user only has TWD account ─────────────
-  await settings.arrange.seedInstruments([BHP_AU]);
-
-  // ── Act ──────────────────────────────────────────────────────────────────
+  // ── Act ─────────────────────────────────────────────────────────────────
   await transactions.actions.navigateToTransactions();
-  await transactions.actions.selectTransactionType("BUY");
-  await transactions.actions.selectMarketChip("AU");
-  await transactions.actions.typeInTickerSearch("BHP");
-  await transactions.actions.selectTickerOption("BHP", "AU");
 
-  // ── Assert: chip derives AUD but blocks submit until a compatible account exists.
-  await transactions.assert.priceCurrencyIs("AUD");
-  await transactions.assert.noAccountErrorContains(/AUD/);
-  await transactions.assert.createAccountLinkHrefContains(/accountsPrefillCurrency=AUD/);
-  await transactions.assert.submitButtonIsDisabled();
+  // ── Assert: AU is not offered until an AUD account enables that market.
+  await transactions.assert.marketChipIsAbsent("AU");
 });

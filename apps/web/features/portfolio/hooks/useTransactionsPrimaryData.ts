@@ -20,6 +20,10 @@ const EMPTY_PRIMARY_DATA: TransactionPrimaryDto = {
     feeProfiles: [],
     feeProfileBindings: [],
     integrityIssue: null,
+    capabilities: {
+      configuredMarkets: [],
+      configuredCurrencies: [],
+    },
   },
 };
 

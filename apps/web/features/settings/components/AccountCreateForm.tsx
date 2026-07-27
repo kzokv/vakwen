@@ -5,6 +5,7 @@ import { Building2, Landmark, Wallet } from "lucide-react";
 import type {
   AccountDefaultCurrency,
   AccountDto,
+  AccountMutationResponseDto,
   AccountType,
 } from "@vakwen/shared-types";
 import { ACCOUNT_DEFAULT_CURRENCIES } from "@vakwen/shared-types";
@@ -50,9 +51,9 @@ const TYPE_ICONS: Record<AccountType, typeof Building2> = {
 interface AccountCreateFormProps {
   // Returns the new account on success; the form ignores the resolved value
   // and signals refresh via `onAccountsRefresh`. Matches the
-  // `createAccount` web service shape (`Promise<AccountDto>`).
-  onCreate: (input: CreateAccountInput) => Promise<AccountDto>;
-  onAccountsRefresh: () => void;
+  // `createAccount` web service shape (`Promise<AccountMutationResponseDto>`).
+  onCreate: (input: CreateAccountInput) => Promise<AccountMutationResponseDto>;
+  onAccountsRefresh: (response?: AccountMutationResponseDto) => void | Promise<void>;
   dict: AppDictionary;
   // KZO-169 (NC4): deep-link support — the transaction form's "no {currency}
   // account" inline error links here with `?accountsPrefillCurrency=USD`,
@@ -61,6 +62,9 @@ interface AccountCreateFormProps {
   // without having to reselect.
   prefillCurrency?: AccountDefaultCurrency;
   disabled?: boolean;
+  existingAccounts?: AccountDto[];
+  isFirstAccount?: boolean;
+  onCreatedSuccess?: (response: AccountMutationResponseDto) => void;
 }
 
 export function AccountCreateForm({
@@ -69,7 +73,11 @@ export function AccountCreateForm({
   dict,
   prefillCurrency,
   disabled = false,
+  existingAccounts = [],
+  isFirstAccount = false,
+  onCreatedSuccess,
 }: AccountCreateFormProps) {
+  const [step, setStep] = useState<"market" | "details" | "review">("market");
   const [name, setName] = useState("");
   const [accountType, setAccountType] = useState<AccountType>("broker");
   const [defaultCurrency, setDefaultCurrency] = useState<AccountDefaultCurrency>(
@@ -77,9 +85,11 @@ export function AccountCreateForm({
   );
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
 
   const trimmedName = name.trim();
-  const submitDisabled = disabled || trimmedName.length === 0 || submitting;
+  const submitDisabled = disabled || trimmedName.length === 0 || submitting || step !== "review";
+  const marketAlreadyEnabled = existingAccounts.some((account) => account.defaultCurrency === defaultCurrency);
 
   const typeLabels: AccountTypeLabels = useMemo(
     () => ({
@@ -114,8 +124,9 @@ export function AccountCreateForm({
   function resetForm() {
     setName("");
     setAccountType("broker");
-    setDefaultCurrency("TWD");
+    setDefaultCurrency(prefillCurrency ?? "TWD");
     setErrorMessage("");
+    setStep("market");
   }
 
   async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
@@ -133,11 +144,18 @@ export function AccountCreateForm({
     };
 
     setErrorMessage("");
+    setSuccessMessage("");
     setSubmitting(true);
     try {
-      await onCreate(input);
-      onAccountsRefresh();
+      const created = await onCreate(input);
+      await onAccountsRefresh(created);
+      onCreatedSuccess?.(created);
       resetForm();
+      setSuccessMessage(
+        dict.settings.accountCreateSuccess
+          .replace("{name}", created.account.name)
+          .replace("{currency}", created.account.defaultCurrency),
+      );
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         setErrorMessage(dict.settings.accountCreateNameInUseError);
@@ -197,6 +215,20 @@ export function AccountCreateForm({
     }
   }
 
+  function capabilityLinesFor(currency: AccountDefaultCurrency): string[] {
+    const marketCode = currency === "TWD" ? "TW" : currency === "USD" ? "US" : currency === "AUD" ? "AU" : currency === "KRW" ? "KR" : "JP";
+    return [
+      dict.settings.accountCreateCapabilityTransactions.replace("{market}", marketCode),
+      dict.settings.accountCreateCapabilityReports.replace("{market}", marketCode),
+      dict.settings.accountCreateCapabilityDividends,
+      dict.settings.accountCreateCapabilityReportingCurrency.replace("{currency}", currency),
+    ];
+  }
+
+  function canContinueFromDetails(): boolean {
+    return !disabled && trimmedName.length > 0;
+  }
+
   const titleId = "account-create-form-title";
 
   return (
@@ -205,130 +237,239 @@ export function AccountCreateForm({
       className="space-y-4 rounded-xl border border-border bg-card p-4"
       data-testid="account-create-form"
     >
+      <div className="grid gap-2 sm:grid-cols-3">
+        {([
+          ["market", dict.settings.accountCreateStepMarket],
+          ["details", dict.settings.accountCreateStepDetails],
+          ["review", dict.settings.accountCreateStepReview],
+        ] as const).map(([value, label], index) => {
+          const active = step === value;
+          const complete = (step === "details" || step === "review") && value === "market"
+            || step === "review" && value === "details";
+          return (
+            <div
+              key={value}
+              className={[
+                "rounded-xl border px-3 py-2 text-sm",
+                active ? "border-primary bg-primary/10 text-primary" : "border-border bg-muted/20 text-muted-foreground",
+              ].join(" ")}
+              data-testid={`account-create-step-${value}`}
+            >
+              <span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-semibold">
+                {complete ? "✓" : index + 1}
+              </span>
+              {label}
+            </div>
+          );
+        })}
+      </div>
       <form className="space-y-4" onSubmit={(event) => void handleSubmit(event)}>
         <div className="space-y-1">
           <h3 id={titleId} className="text-lg font-semibold text-foreground">
-            {dict.settings.accountCreateTitle}
+            {isFirstAccount ? dict.settings.accountCreateFirstAccountTitle : dict.settings.accountCreateTitle}
           </h3>
+          <p className="text-sm text-muted-foreground">
+            {isFirstAccount ? dict.settings.accountCreateFirstAccountDescription : dict.settings.accountCreateDescription}
+          </p>
         </div>
 
-      {/* Name input */}
-      <label className="space-y-1 text-sm">
-        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {dict.settings.accountCreateNameLabel}
-        </span>
-        <input
-          type="text"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          maxLength={80}
-          placeholder={dict.settings.accountCreateNamePlaceholder}
-          className={fieldClassName}
-          data-testid="account-create-name-input"
-          disabled={disabled}
-        />
-      </label>
+        {step === "market" ? (
+          <div className="space-y-4">
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {dict.settings.accountCreateMarketLabel}
+              </legend>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5" role="radiogroup">
+                {ACCOUNT_CURRENCIES.map((currency) => {
+                  const active = defaultCurrency === currency;
+                  const alreadyEnabled = existingAccounts.some((account) => account.defaultCurrency === currency);
+                  return (
+                    <button
+                      key={currency}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => setDefaultCurrency(currency)}
+                      className={marketCardClassName(active)}
+                      data-testid={`account-create-currency-${currency}`}
+                      disabled={disabled}
+                    >
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-semibold tracking-wide text-foreground">
+                        {marketLabelFor(currency)}
+                      </span>
+                      <span className="mt-1.5 font-mono text-[10px] text-muted-foreground">
+                        {marketSubtextFor(currency)}
+                      </span>
+                      {alreadyEnabled ? (
+                        <span className="mt-2 text-[10px] font-medium text-primary">
+                          {dict.settings.accountCreateAlreadyEnabled}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
 
-      {/* Type pills */}
-      <fieldset className="space-y-2">
-        <legend className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {dict.settings.accountCreateTypeLabel}
-        </legend>
-        <div className="flex flex-wrap gap-2" role="radiogroup">
-          {ACCOUNT_TYPES.map((type) => {
-            const Icon = TYPE_ICONS[type];
-            const active = accountType === type;
-            return (
-              <button
-                key={type}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={() => setAccountType(type)}
-                className={typePillClassName(active)}
-                data-testid={`account-create-type-${type}`}
+            <div
+              className="rounded-2xl border border-primary/20 bg-primary/10 p-4"
+              data-testid="account-create-enabled-market-note"
+            >
+              <p className="text-sm font-semibold text-foreground">{dict.settings.accountCreateCapabilitiesTitle}</p>
+              {marketAlreadyEnabled ? (
+                <div className="mt-1 space-y-1">
+                  <p className="text-xs font-semibold text-primary">{dict.settings.accountCreateAlreadyEnabled}</p>
+                  <p className="text-xs text-muted-foreground">{dict.settings.accountCreateAlreadyEnabledBody}</p>
+                </div>
+              ) : null}
+              <ul className="mt-3 grid gap-2 text-sm text-foreground sm:grid-cols-2">
+                {capabilityLinesFor(defaultCurrency).map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        ) : null}
+
+        {step === "details" ? (
+          <div className="space-y-4">
+            <label className="space-y-1 text-sm">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {dict.settings.accountCreateNameLabel}
+              </span>
+              <input
+                type="text"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                maxLength={80}
+                placeholder={dict.settings.accountCreateNamePlaceholder}
+                className={fieldClassName}
+                data-testid="account-create-name-input"
                 disabled={disabled}
-              >
-                <Icon className="h-4 w-4" />
-                <span>{typeLabelFor(type)}</span>
-              </button>
-            );
-          })}
-        </div>
-      </fieldset>
+              />
+            </label>
 
-      {/* KZO-183: Market cards (was "Currency"). */}
-      <fieldset className="space-y-2">
-        <legend className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {dict.settings.accountCreateMarketLabel}
-        </legend>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" role="radiogroup">
-          {ACCOUNT_CURRENCIES.map((currency) => {
-            const active = defaultCurrency === currency;
-            return (
-              <button
-                key={currency}
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {dict.settings.accountCreateTypeLabel}
+              </legend>
+              <div className="grid gap-2 sm:grid-cols-3" role="radiogroup">
+                {ACCOUNT_TYPES.map((type) => {
+                  const Icon = TYPE_ICONS[type];
+                  const active = accountType === type;
+                  return (
+                    <button
+                      key={type}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => setAccountType(type)}
+                      className={typePillClassName(active)}
+                      data-testid={`account-create-type-${type}`}
+                      disabled={disabled}
+                    >
+                      <Icon className="h-4 w-4" />
+                      <span>{typeLabelFor(type)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
+
+            <p
+              className="rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-xs text-primary"
+              data-testid="account-create-currency-lock"
+            >
+              {dict.settings.accountCreateCurrencyLockBody}
+            </p>
+          </div>
+        ) : null}
+
+        {step === "review" ? (
+          <div className="space-y-4" data-testid="account-create-step-review">
+            <div className="rounded-xl border border-border bg-muted/20 p-4">
+              <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">{dict.settings.accountCreateMarketLabel}</dt>
+                  <dd>{marketLabelFor(defaultCurrency)} · {defaultCurrency}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">{dict.settings.accountCreateTypeLabel}</dt>
+                  <dd>{typeLabelFor(accountType)}</dd>
+                </div>
+                <div className="sm:col-span-2">
+                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">{dict.settings.accountCreateDefaultProfileReviewTitle}</dt>
+                  <dd>{dict.settings.accountCreateDefaultProfileReview}</dd>
+                </div>
+              </dl>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="space-y-1 text-sm">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {dict.settings.accountCreatePreviewLabel}
+          </span>
+          <div
+            className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-3 py-1 text-xs text-foreground"
+            data-testid="account-create-preview-chip"
+          >
+            {previewLabel}
+          </div>
+        </div>
+
+        {errorMessage ? (
+          <p
+            className="text-xs text-rose-500"
+            data-testid="account-create-error"
+          >
+            {errorMessage}
+          </p>
+        ) : null}
+
+        {successMessage ? (
+          <p
+            className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700"
+            data-testid="account-create-success"
+          >
+            {successMessage}
+          </p>
+        ) : null}
+
+        <div className="flex flex-wrap justify-between gap-2">
+          <div>
+            {step !== "market" ? (
+              <Button
                 type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={() => setDefaultCurrency(currency)}
-                className={marketCardClassName(active)}
-                data-testid={`account-create-currency-${currency}`}
-                disabled={disabled}
+                variant="secondary"
+                onClick={() => setStep(step === "review" ? "details" : "market")}
+                data-testid="account-create-back"
               >
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-semibold tracking-wide text-foreground">
-                  {marketLabelFor(currency)}
-                </span>
-                <span className="mt-1.5 font-mono text-[10px] text-muted-foreground">
-                  {marketSubtextFor(currency)}
-                </span>
-              </button>
-            );
-          })}
+                {dict.settings.accountCreateBack}
+              </Button>
+            ) : null}
+          </div>
+          <div className="flex gap-2">
+            {step !== "review" ? (
+              <Button
+                type="button"
+                disabled={disabled || (step === "details" && !canContinueFromDetails())}
+                onClick={() => setStep(step === "market" ? "details" : "review")}
+                data-testid="account-create-continue"
+              >
+                {dict.settings.accountCreateContinue}
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                disabled={submitDisabled}
+                data-testid="account-create-submit"
+              >
+                {dict.settings.accountCreateSubmit}
+              </Button>
+            )}
+          </div>
         </div>
-      </fieldset>
-
-      {/* Currency-lock callout */}
-      <p
-        className="rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-xs text-primary"
-        data-testid="account-create-currency-lock"
-      >
-        {dict.settings.accountCreateCurrencyLockBody}
-      </p>
-
-      {/* Live-preview chip */}
-      <div className="space-y-1 text-sm">
-        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {dict.settings.accountCreatePreviewLabel}
-        </span>
-        <div
-          className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-3 py-1 text-xs text-foreground"
-          data-testid="account-create-preview-chip"
-        >
-          {previewLabel}
-        </div>
-      </div>
-
-      {/* Inline error */}
-      {errorMessage ? (
-        <p
-          className="text-xs text-rose-500"
-          data-testid="account-create-error"
-        >
-          {errorMessage}
-        </p>
-      ) : null}
-
-      {/* Submit */}
-      <div>
-        <Button
-          type="submit"
-          disabled={submitDisabled}
-          data-testid="account-create-submit"
-        >
-          {dict.settings.accountCreateSubmit}
-        </Button>
-      </div>
       </form>
     </section>
   );

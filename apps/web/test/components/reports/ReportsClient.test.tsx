@@ -21,6 +21,12 @@ const refreshMock = vi.hoisted(() => vi.fn());
 const replaceMock = vi.hoisted(() => vi.fn());
 const useReportDataMock = vi.hoisted(() => vi.fn());
 const openQuickActionsMock = vi.hoisted(() => vi.fn());
+const appShellStateMock = vi.hoisted(() => ({
+  isSharedContext: false,
+  portfolioCapabilities: null as DailyReviewReportDto["capabilities"] | null,
+  sessionUserRole: "viewer",
+  sharedContextPermissions: { canManageAccounts: true },
+}));
 const searchParamsMock = vi.hoisted(() => ({ value: "tab=daily-review&scope=all&currencyMode=specified&currency=AUD&range=1Y" }));
 const effectiveRangesMock = vi.hoisted(() => ({ value: ["1M", "1Y"] }));
 const reportHookOverride = vi.hoisted(() => ({
@@ -46,13 +52,34 @@ vi.mock("../../../components/layout/AppShellDataContext", () => ({
   useAppShellData: () => ({
     canUseGlobalQuickActions: true,
     contextRefreshSignal: 0,
+    isSharedContext: appShellStateMock.isSharedContext,
     locale: "en",
     openQuickActions: openQuickActionsMock,
+    portfolioCapabilities: appShellStateMock.portfolioCapabilities,
     sessionUserId: "user-a",
+    sessionUserRole: appShellStateMock.sessionUserRole,
+    sharedContextPermissions: appShellStateMock.sharedContextPermissions,
     uiDict: {
+      actions: {
+        dismiss: "Dismiss",
+      },
       navigation: {
         reportsLabel: "Reports",
         reportsDescription: "Structured reports",
+      },
+      portfolioCapabilities: {
+        normalizationNoticeTitle: "Updated to available portfolio settings",
+        dismissNormalizationNotice: "Dismiss update notice",
+        noConfiguredMarkets: "Set up at least one account market before using this view.",
+        noConfiguredCurrencies: "Set up at least one account currency before using this view.",
+        unconfiguredMarket: "Updated to {value}.",
+        unconfiguredReportScope: "Updated report scope to {value}.",
+        unconfiguredCurrency: "Updated currency to {value}.",
+        noneAvailable: "None available",
+        zeroAccountGateTitle: "Set up an account to continue",
+        zeroAccountGateDescription: "Add an account before using reports.",
+        zeroAccountGateReadonly: "The owner has not configured any account markets for this shared view.",
+        zeroAccountGateAction: "Open account setup",
       },
       dashboardHome: {
         performanceSnapshotAsOfTooltip: "Latest reliable snapshot: {date}. Trend charts use server snapshots only.",
@@ -390,6 +417,10 @@ beforeAll(() => {
 });
 
 const fixture: DailyReviewReportDto = {
+  capabilities: {
+    configuredMarkets: ["AU", "US"],
+    configuredCurrencies: ["AUD", "USD"],
+  },
   query: {
     scope: "all",
     currencyMode: "specified",
@@ -485,6 +516,7 @@ const fixture: DailyReviewReportDto = {
 };
 
 const portfolioFixture: PortfolioReportDto = {
+  capabilities: fixture.capabilities,
   query: {
     ...fixture.query,
     range: "1Y",
@@ -541,6 +573,7 @@ const portfolioFixture: PortfolioReportDto = {
 };
 
 const marketFixture: MarketReportDto = {
+  capabilities: fixture.capabilities,
   query: { ...portfolioFixture.query, scope: "AU" },
   summary: portfolioFixture.summary,
   fxStatus: portfolioFixture.fxStatus,
@@ -587,6 +620,10 @@ describe("ReportsClient", () => {
     reportHookOverride.data = undefined;
     reportHookOverride.errorMessage = "";
     reportHookOverride.isBootstrapping = false;
+    appShellStateMock.isSharedContext = false;
+    appShellStateMock.portfolioCapabilities = null;
+    appShellStateMock.sessionUserRole = "viewer";
+    appShellStateMock.sharedContextPermissions = { canManageAccounts: true };
     searchParamsMock.value = "tab=daily-review&scope=all&currencyMode=specified&currency=AUD&range=1Y";
     effectiveRangesMock.value = ["1M", "1Y"];
     userPreferencesMock.value = {};
@@ -604,6 +641,139 @@ describe("ReportsClient", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+  });
+
+  it("shows the readonly zero-account gate when reports resolve zero configured markets in shared context", async () => {
+    appShellStateMock.isSharedContext = true;
+    appShellStateMock.sharedContextPermissions = { canManageAccounts: false };
+    reportHookOverride.data = {
+      ...fixture,
+      capabilities: {
+        configuredMarkets: [],
+        configuredCurrencies: [],
+      },
+    };
+
+    act(() => {
+      root.render(<ReportsClient initialReport={fixture} initialState={parseReportRouteState({})} />);
+    });
+    await act(async () => {});
+
+    expect(document.querySelector("[data-testid='portfolio-capabilities-zero-account-gate']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='portfolio-capabilities-zero-account-cta']")).toBeNull();
+    expect(document.querySelector("[data-testid='portfolio-capabilities-zero-account-readonly']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='reports-tabs']")).toBeNull();
+  });
+
+  it("renders a static single-scope context for single-market report capabilities", async () => {
+    reportHookOverride.data = {
+      ...fixture,
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      },
+      query: {
+        ...fixture.query,
+        scope: "TW",
+        reportingCurrency: "TWD",
+        currency: "TWD",
+      },
+      fxStatus: {
+        ...fixture.fxStatus,
+        reportingCurrency: "TWD",
+        nativeCurrencies: ["TWD"],
+      },
+      diagnostics: {
+        ...fixture.diagnostics,
+        scope: "TW",
+        reportingCurrency: "TWD",
+      },
+    };
+
+    act(() => {
+      root.render(<ReportsClient initialReport={reportHookOverride.data ?? null} initialState={parseReportRouteState({ scope: "TW" })} />);
+    });
+    await act(async () => {});
+
+    expect(document.querySelector("[data-testid='portfolio-capabilities-single-context-report-scope']")?.textContent).toContain("TW");
+    expect(document.querySelector("[data-testid='reports-control-scope']")).toBeNull();
+  });
+
+  it("renders the multi-market scope selector for TW+US report capabilities", async () => {
+    reportHookOverride.data = {
+      ...fixture,
+      capabilities: {
+        configuredMarkets: ["TW", "US"],
+        configuredCurrencies: ["TWD", "USD"],
+      },
+    };
+
+    act(() => {
+      root.render(<ReportsClient initialReport={reportHookOverride.data ?? null} initialState={parseReportRouteState({})} />);
+    });
+    await act(async () => {});
+
+    expect(document.querySelector("[data-testid='reports-control-scope']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='portfolio-capabilities-single-context-report-scope']")).toBeNull();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it("normalizes stale report scopes to all and shows the report scope capability notice", async () => {
+    searchParamsMock.value = "tab=daily-review&scope=US&range=1Y";
+    reportHookOverride.data = {
+      ...fixture,
+      capabilities: {
+        configuredMarkets: ["TW", "AU"],
+        configuredCurrencies: ["TWD", "AUD"],
+      },
+    };
+
+    act(() => {
+      root.render(<ReportsClient initialReport={reportHookOverride.data ?? null} initialState={parseReportRouteState({ scope: "US" })} />);
+    });
+    await act(async () => {});
+
+    expect(`${window.location.pathname}${window.location.search}`).toBe(
+      "/reports?tab=daily-review&scope=all&range=1Y",
+    );
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(document.querySelector("[data-testid='portfolio-capabilities-normalization-notice-reportScope']")).not.toBeNull();
+  });
+
+  it("keeps rendering report content when configured markets exist but the report data is empty", async () => {
+    reportHookOverride.data = {
+      ...fixture,
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      },
+      dataHealth: {
+        ...fixture.dataHealth,
+        holdingCount: 0,
+      },
+      diagnostics: {
+        ...fixture.diagnostics,
+        rowCounts: {
+          ...fixture.diagnostics.rowCounts,
+          holdingsReturned: 0,
+          holdingsTotal: 0,
+        },
+      },
+      topMovers: [],
+      holdings: {
+        ...fixture.holdings,
+        total: 0,
+        rows: [],
+      },
+    };
+
+    act(() => {
+      root.render(<ReportsClient initialReport={reportHookOverride.data ?? null} initialState={parseReportRouteState({ scope: "TW" })} />);
+    });
+    await act(async () => {});
+
+    expect(document.querySelector("[data-testid='portfolio-capabilities-zero-account-gate']")).toBeNull();
+    expect(document.querySelector("[data-testid='reports-daily-review-content']")).not.toBeNull();
   });
 
   it("[Holdings terminology]: uses Cost basis and holdings consistently in English and Traditional Chinese", () => {

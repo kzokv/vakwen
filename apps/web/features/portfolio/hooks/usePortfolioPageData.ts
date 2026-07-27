@@ -18,6 +18,10 @@ import {
 } from "../services/portfolioService";
 
 const EMPTY_PORTFOLIO_PAGE_DATA: PortfolioPageData = {
+  capabilities: {
+    configuredMarkets: [],
+    configuredCurrencies: [],
+  },
   holdings: [],
   holdingGroups: [],
   dividends: {
