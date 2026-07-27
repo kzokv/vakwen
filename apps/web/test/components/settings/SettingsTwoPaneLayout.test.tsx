@@ -39,6 +39,7 @@ function buildShellData(isSharedContext: boolean, capabilities: AppShellData["cu
     feeProfileBindings: [],
     refreshPortfolioConfig: vi.fn(),
     isPortfolioConfigLoading: false,
+    portfolioConfigError: "",
     integrityIssue: null,
     showIntegrityDialog: false,
     setShowIntegrityDialog: vi.fn(),

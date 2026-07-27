@@ -11,15 +11,16 @@ import { resolveTransactionDraftAccount } from "../../features/dashboard/types";
 import {
   fetchShellPortfolioConfig,
   type ShellPortfolioConfigDto,
+  type ShellPortfolioConfigSeedDto,
 } from "../../features/settings/services/shellPortfolioConfigService";
 
 interface UseShellPortfolioConfigOptions {
   initialTransaction: TransactionInput;
-  initialConfig?: ShellPortfolioConfigDto | null;
+  initialConfig?: ShellPortfolioConfigSeedDto | null;
   fetchMode?: "eager" | "lazy";
 }
 
-interface UseShellPortfolioConfigResult extends ShellPortfolioConfigDto {
+interface UseShellPortfolioConfigResult extends ShellPortfolioConfigSeedDto {
   isLoading: boolean;
   errorMessage: string;
   setErrorMessage: (message: string) => void;
@@ -35,7 +36,7 @@ interface UseShellPortfolioConfigResult extends ShellPortfolioConfigDto {
   synchronizeTransactionDraft: (previous: TransactionInput) => TransactionInput;
 }
 
-const EMPTY_CONFIG: ShellPortfolioConfigDto = {
+const EMPTY_CONFIG: ShellPortfolioConfigSeedDto = {
   accounts: [],
   feeProfiles: [],
   feeProfileBindings: [],
@@ -47,11 +48,12 @@ export function useShellPortfolioConfig({
   initialConfig = null,
   fetchMode = "eager",
 }: UseShellPortfolioConfigOptions): UseShellPortfolioConfigResult {
-  const [config, setConfig] = useState<ShellPortfolioConfigDto>(initialConfig ?? EMPTY_CONFIG);
-  const [isLoading, setIsLoading] = useState(initialConfig === null && fetchMode === "eager");
+  const initialConfigComplete = initialConfig?.capabilities !== undefined;
+  const [config, setConfig] = useState<ShellPortfolioConfigSeedDto>(initialConfig ?? EMPTY_CONFIG);
+  const [isLoading, setIsLoading] = useState(!initialConfigComplete && fetchMode === "eager");
   const [errorMessage, setErrorMessage] = useState("");
   const [showIntegrityDialog, setShowIntegrityDialog] = useState(Boolean(initialConfig?.integrityIssue));
-  const hasLoadedRef = useRef(initialConfig !== null);
+  const hasLoadedRef = useRef(initialConfigComplete);
   const loadPromiseRef = useRef<Promise<void> | null>(null);
   const fetchRequestIdRef = useRef(0);
 
@@ -95,7 +97,9 @@ export function useShellPortfolioConfig({
 
   const applyAccountMutation = useCallback((response: AccountMutationResponseDto) => {
     fetchRequestIdRef.current += 1;
+    hasLoadedRef.current = true;
     setIsLoading(false);
+    setErrorMessage("");
     setConfig((current) => ({
       ...current,
       accounts: upsertById(current.accounts, response.account),
@@ -109,7 +113,9 @@ export function useShellPortfolioConfig({
     operation: "soft_delete" | "restore" | "hard_purge",
   ) => {
     fetchRequestIdRef.current += 1;
+    hasLoadedRef.current = true;
     setIsLoading(false);
+    setErrorMessage("");
     setConfig((current) => {
       const accounts = operation === "restore"
         ? upsertById(current.accounts, response.account)
@@ -159,7 +165,8 @@ export function useShellPortfolioConfig({
   }, []);
 
   useEffect(() => {
-    if (initialConfig !== null) {
+    if (initialConfigComplete) {
+      if (!initialConfig) return;
       setConfig(initialConfig);
       setShowIntegrityDialog(Boolean(initialConfig.integrityIssue));
       setIsLoading(false);
@@ -168,8 +175,8 @@ export function useShellPortfolioConfig({
     }
 
     if (fetchMode === "lazy") {
-      setConfig(EMPTY_CONFIG);
-      setShowIntegrityDialog(false);
+      setConfig(initialConfig ?? EMPTY_CONFIG);
+      setShowIntegrityDialog(Boolean(initialConfig?.integrityIssue));
       setIsLoading(false);
       hasLoadedRef.current = false;
       return;
@@ -182,7 +189,7 @@ export function useShellPortfolioConfig({
     return () => {
       mounted = false;
     };
-  }, [ensureLoaded, fetchMode, initialConfig]);
+  }, [ensureLoaded, fetchMode, initialConfig, initialConfigComplete]);
 
   const synchronizeTransactionDraft = useCallback(
     (previous: TransactionInput) =>

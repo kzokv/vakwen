@@ -46,6 +46,10 @@ const initialPrimaryData: TransactionPrimaryDto = {
     feeProfiles: [],
     feeProfileBindings: [],
     integrityIssue: null,
+    capabilities: {
+      configuredMarkets: ["US"],
+      configuredCurrencies: ["USD"],
+    },
   },
 };
 

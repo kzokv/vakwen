@@ -104,6 +104,113 @@ test("[reporting fallback]: delete final TWD account → initiating shell immedi
   );
 });
 
+test("[quick actions]: configured TWD and USD accounts → Dashboard and Portfolio can change reporting currency", async ({
+  appShell,
+  dashboard,
+  page,
+}) => {
+  const user = await seedUser({
+    sub: "e2e-configured-capabilities-quick-actions-user",
+    email: "configured-capabilities-quick-actions@example.com",
+    name: "Configured Capabilities Quick Actions",
+    role: "member",
+  });
+  await softDeleteAllActiveAccountsForUser(user.userId);
+  await seedAccountForUser(user.userId, {
+    name: "Quick Actions TWD",
+    defaultCurrency: "TWD",
+  });
+  await seedAccountForUser(user.userId, {
+    name: "Quick Actions USD",
+    defaultCurrency: "USD",
+  });
+  await seedUserPreferencesForUser(user.userId, { reportingCurrency: "TWD" });
+  await switchIdentity(page, { userId: user.userId, role: "member" });
+
+  for (const [route, targetCurrency] of [
+    ["/dashboard", "USD"],
+    ["/portfolio", "TWD"],
+  ] as const) {
+    await appShell.actions.navigateToRoute(route);
+    await dashboard.actions.openFloatingQuickActions();
+
+    const selector = page.getByTestId("floating-action-reporting-currency");
+    await selector.waitFor({ state: "visible" });
+    await appShell.assert.mxAssertEqual(
+      await page.getByTestId("floating-action-reporting-currency-loading").count(),
+      0,
+      `${route} Quick Actions does not remain capability-loading`,
+    );
+
+    await selector.click();
+    await page.getByRole("option", { name: targetCurrency, exact: true }).click();
+    await selector.waitFor({ state: "visible" });
+    await appShell.assert.mxAssertTruthy(
+      (await selector.textContent())?.includes(targetCurrency) ?? false,
+      `${route} Quick Actions saves ${targetCurrency} as reporting currency`,
+    );
+  }
+});
+
+test("[accounts readiness]: delayed existing-account config → onboarding never appears before account list", async ({
+  appShell,
+  page,
+}) => {
+  const user = await seedUser({
+    sub: "e2e-configured-capabilities-accounts-readiness-user",
+    email: "configured-capabilities-accounts-readiness@example.com",
+    name: "Configured Capabilities Accounts Readiness",
+    role: "member",
+  });
+  await softDeleteAllActiveAccountsForUser(user.userId);
+  await seedAccountForUser(user.userId, {
+    name: "Existing TWD Account",
+    defaultCurrency: "TWD",
+  });
+  await switchIdentity(page, { userId: user.userId, role: "member" });
+
+  let releaseConfig: () => void = () => undefined;
+  const configGate = new Promise<void>((resolve) => {
+    releaseConfig = resolve;
+  });
+  await page.route("**/settings/fee-config", async (route) => {
+    await configGate;
+    await route.continue();
+  });
+
+  try {
+    await appShell.actions.navigateToRoute("/settings/accounts");
+    const accountsSection = page.getByTestId("settings-section-accounts");
+    await accountsSection.waitFor({ state: "visible" });
+    await appShell.assert.mxAssertEqual(
+      await accountsSection.getAttribute("aria-busy"),
+      "true",
+      "Accounts section reports unresolved configuration as busy",
+    );
+    await appShell.assert.mxAssertEqual(
+      await page.getByTestId("account-create-form").count(),
+      0,
+      "first-account form is absent while account configuration is unresolved",
+    );
+    await appShell.assert.mxAssertEqual(
+      await page.getByText("Set up your portfolio capabilities", { exact: true }).count(),
+      0,
+      "first-account onboarding copy is absent while account configuration is unresolved",
+    );
+
+    releaseConfig();
+    await page.getByTestId("accounts-add-account-trigger").waitFor({ state: "visible" });
+    await appShell.assert.mxAssertEqual(
+      await page.getByTestId("account-create-form").count(),
+      0,
+      "existing-account view keeps the additional-account form collapsed after readiness",
+    );
+  } finally {
+    releaseConfig();
+    await page.unroute("**/settings/fee-config");
+  }
+});
+
 test("[zero-account onboarding]: no active accounts → dividends gate preserves return route into market-first setup", async ({
   appShell,
   page,

@@ -69,6 +69,10 @@ describe("DividendsTabsClient", () => {
       feeProfiles: [],
       feeProfileBindings: [],
       integrityIssue: null,
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      },
     });
   });
 

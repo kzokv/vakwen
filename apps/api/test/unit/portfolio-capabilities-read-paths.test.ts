@@ -135,6 +135,51 @@ describe("portfolio capability read paths", () => {
     }));
   });
 
+  it("returns canonical deduped capabilities from portfolio primary and enrichment reads", async () => {
+    const store = await app.persistence.loadStore("user-1");
+    const defaultFeeProfile = store.feeProfiles[0];
+    if (!defaultFeeProfile) throw new Error("expected default fee profile");
+
+    store.accounts.push(
+      {
+        id: "acc-us-1",
+        userId: "user-1",
+        name: "US Broker",
+        defaultCurrency: "USD",
+        accountType: "broker",
+        feeProfileId: "fee-us-1",
+      },
+      {
+        id: "acc-us-2",
+        userId: "user-1",
+        name: "US Wallet",
+        defaultCurrency: "USD",
+        accountType: "wallet",
+        feeProfileId: "fee-us-2",
+      },
+    );
+    store.feeProfiles.push(
+      { ...defaultFeeProfile, id: "fee-us-1", accountId: "acc-us-1", commissionCurrency: "USD", name: "US Fee" },
+      { ...defaultFeeProfile, id: "fee-us-2", accountId: "acc-us-2", commissionCurrency: "USD", name: "US Wallet Fee" },
+    );
+
+    for (const url of ["/portfolio/primary", "/portfolio/enrichment"]) {
+      const response = await app.inject({
+        method: "GET",
+        url,
+        headers: ownerHeaders,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(expect.objectContaining({
+        capabilities: {
+          configuredMarkets: ["TW", "US"],
+          configuredCurrencies: ["TWD", "USD"],
+        },
+      }));
+    }
+  });
+
   it("returns canonical deduped capabilities from dashboard overview", async () => {
     const store = await app.persistence.loadStore("user-1");
     const defaultFeeProfile = store.feeProfiles[0];

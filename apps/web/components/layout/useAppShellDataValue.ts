@@ -60,6 +60,7 @@ interface BuildAppShellDataValueOptions {
   feeProfileBindings: FeeProfileBindingDto[];
   refreshPortfolioConfig: () => Promise<void>;
   isPortfolioConfigLoading: boolean;
+  portfolioConfigError: string;
   integrityIssue: IntegrityIssue | null;
   showIntegrityDialog: boolean;
   setShowIntegrityDialog: (open: boolean) => void;
@@ -104,6 +105,7 @@ export function useAppShellDataValue(options: BuildAppShellDataValueOptions): Ap
     feeProfileBindings,
     refreshPortfolioConfig,
     isPortfolioConfigLoading,
+    portfolioConfigError,
     integrityIssue,
     showIntegrityDialog,
     setShowIntegrityDialog,
@@ -143,6 +145,7 @@ export function useAppShellDataValue(options: BuildAppShellDataValueOptions): Ap
       feeProfileBindings,
       refreshPortfolioConfig,
       isPortfolioConfigLoading,
+      portfolioConfigError,
       integrityIssue,
       showIntegrityDialog,
       setShowIntegrityDialog,
@@ -169,6 +172,7 @@ export function useAppShellDataValue(options: BuildAppShellDataValueOptions): Ap
       mutations,
       openQuickActions,
       portfolioCapabilities,
+      portfolioConfigError,
       openRecomputeConfirm,
       recomputeAction,
       reportingCurrency,

@@ -6579,6 +6579,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         Promise.resolve(buildOverviewHoldingGroups(store, overview.holdings)));
 
       return {
+        capabilities: derivePortfolioCapabilities(store.accounts),
         settings: overview.settings,
         holdings: overview.holdings,
         holdingGroups,
@@ -6630,6 +6631,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         Promise.resolve(mapPortfolioInstrumentOptions(store)));
 
       return {
+        capabilities: derivePortfolioCapabilities(store.accounts),
         settings: withTickerPriceFreshnessSettings(store.settings),
         holdings,
         holdingGroups: translatedHoldingGroups,
@@ -6703,6 +6705,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         ));
 
       return {
+        capabilities: derivePortfolioCapabilities(store.accounts),
         settings: overview.settings,
         refreshPending,
         holdings: overview.holdings,

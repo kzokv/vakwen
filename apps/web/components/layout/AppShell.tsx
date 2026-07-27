@@ -45,7 +45,7 @@ import { useShellInstrumentIndex } from "./useShellInstrumentIndex";
 import { useShellPortfolioConfig } from "./useShellPortfolioConfig";
 import { useSnapshotGeneration } from "./useSnapshotGeneration";
 import { deriveSharedContextPermissions } from "../../features/sharing/capabilities";
-import type { ShellPortfolioConfigDto } from "../../features/settings/services/shellPortfolioConfigService";
+import type { ShellPortfolioConfigSeedDto } from "../../features/settings/services/shellPortfolioConfigService";
 
 type AppSection = "dashboard" | "analysis" | "reports" | "portfolio" | "transactions" | "dividends" | "cash-ledger";
 
@@ -58,7 +58,7 @@ interface AppShellProps {
   activeSectionOverride?: AppSection | null;
   initialProfile?: ProfileWithImpersonationDto | null;
   initialSettings?: UserSettings | null;
-  initialPortfolioConfig?: ShellPortfolioConfigDto | null;
+  initialPortfolioConfig?: ShellPortfolioConfigSeedDto | null;
   portfolioConfigMode?: "eager" | "lazy";
   initialSidebarOpen?: boolean;
   children?: React.ReactNode;
@@ -441,6 +441,7 @@ export function AppShell({
       await portfolioConfig.refresh();
     },
     isPortfolioConfigLoading: portfolioConfig.isLoading,
+    portfolioConfigError: portfolioConfig.errorMessage,
     integrityIssue: portfolioConfig.integrityIssue,
     showIntegrityDialog: portfolioConfig.showIntegrityDialog,
     setShowIntegrityDialog: portfolioConfig.setShowIntegrityDialog,

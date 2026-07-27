@@ -51,6 +51,7 @@ function buildShellData(capabilities: AppShellData["currentSharedCapabilities"])
     feeProfileBindings: [],
     refreshPortfolioConfig: vi.fn(),
     isPortfolioConfigLoading: false,
+    portfolioConfigError: "",
     integrityIssue: null,
     showIntegrityDialog: false,
     setShowIntegrityDialog: vi.fn(),

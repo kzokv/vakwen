@@ -158,6 +158,63 @@ describe("AccountsSettingsClient", () => {
     expect(container.textContent).toContain(dict.settings.accountsZeroStateTitle);
   });
 
+  it("shows loading without first-account onboarding while account configuration is unresolved", () => {
+    vi.mocked(useAppShellData).mockReturnValue({
+      accounts: [],
+      feeProfiles: [],
+      feeProfileBindings: [],
+      refreshPortfolioConfig: vi.fn(),
+      applyAccountMutationResponse: vi.fn(),
+      isPortfolioConfigLoading: true,
+      portfolioConfigError: "",
+      isSharedContext: false,
+      sharedContextPermissions: { canManageAccounts: true },
+      uiDict: dict,
+    } as never);
+
+    act(() => {
+      root.render(<AccountsSettingsClient />);
+    });
+
+    expect(container.textContent).toContain(dict.feedback.loadingSettings);
+    expect(container.textContent).not.toContain(dict.settings.accountsZeroStateTitle);
+    expect(container.querySelector('[data-testid="account-create-form"]')).toBeNull();
+    expect(container.querySelector('[data-testid="accounts-list-section"]')).toBeNull();
+  });
+
+  it("shows a retryable error instead of first-account onboarding when configuration fails", async () => {
+    const refreshPortfolioConfig = vi.fn(async () => undefined);
+    vi.mocked(useAppShellData).mockReturnValue({
+      accounts: [],
+      feeProfiles: [],
+      feeProfileBindings: [],
+      refreshPortfolioConfig,
+      applyAccountMutationResponse: vi.fn(),
+      isPortfolioConfigLoading: false,
+      portfolioConfigError: "Account configuration unavailable",
+      isSharedContext: false,
+      sharedContextPermissions: { canManageAccounts: true },
+      uiDict: dict,
+    } as never);
+
+    act(() => {
+      root.render(<AccountsSettingsClient />);
+    });
+
+    expect(container.textContent).toContain("Account configuration unavailable");
+    expect(container.textContent).not.toContain(dict.settings.accountsZeroStateTitle);
+    expect(container.querySelector('[data-testid="account-create-form"]')).toBeNull();
+
+    const retry = container.querySelector(
+      '[data-testid="accounts-config-retry"]',
+    ) as HTMLButtonElement | null;
+    expect(retry).not.toBeNull();
+    await act(async () => {
+      retry?.click();
+    });
+    expect(refreshPortfolioConfig).toHaveBeenCalledTimes(1);
+  });
+
   it("recovers from missing initial settings without changing hook order", () => {
     vi.mocked(useAppShellData).mockReturnValue({
       accounts: [],

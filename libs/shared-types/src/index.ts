@@ -1288,7 +1288,7 @@ export interface ShellPortfolioConfigDto {
   feeProfiles: FeeProfileDto[];
   feeProfileBindings: FeeProfileBindingDto[];
   integrityIssue: IntegrityIssueDto | null;
-  capabilities?: PortfolioCapabilitiesDto;
+  capabilities: PortfolioCapabilitiesDto;
 }
 
 // KZO-159 (158A): `DashboardPerformanceRange` widened from the closed

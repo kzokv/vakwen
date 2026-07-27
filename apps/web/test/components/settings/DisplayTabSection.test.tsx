@@ -112,6 +112,7 @@ function buildShellData(overrides: Partial<AppShellData> = {}): AppShellData {
     feeProfileBindings: [],
     refreshPortfolioConfig: vi.fn(async () => undefined),
     isPortfolioConfigLoading: false,
+    portfolioConfigError: "",
     integrityIssue: null,
     showIntegrityDialog: false,
     setShowIntegrityDialog: vi.fn(),

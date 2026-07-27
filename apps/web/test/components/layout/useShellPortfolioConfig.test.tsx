@@ -6,7 +6,10 @@ import type {
   AccountMutationResponseDto,
 } from "@vakwen/shared-types";
 import { useShellPortfolioConfig } from "../../../components/layout/useShellPortfolioConfig";
-import type { ShellPortfolioConfigDto } from "../../../features/settings/services/shellPortfolioConfigService";
+import type {
+  ShellPortfolioConfigDto,
+  ShellPortfolioConfigSeedDto,
+} from "../../../features/settings/services/shellPortfolioConfigService";
 import type { TransactionInput } from "../../../components/portfolio/types";
 
 vi.mock("../../../features/settings/services/shellPortfolioConfigService", () => ({
@@ -125,10 +128,16 @@ const lifecycleResponse: AccountLifecycleMutationResponseDto = {
 
 let result: ReturnType<typeof useShellPortfolioConfig>;
 
-function Harness({ fetchMode = "lazy" }: { fetchMode?: "eager" | "lazy" }) {
+function Harness({
+  fetchMode = "lazy",
+  initialConfig = null,
+}: {
+  fetchMode?: "eager" | "lazy";
+  initialConfig?: ShellPortfolioConfigSeedDto | null;
+}) {
   result = useShellPortfolioConfig({
     initialTransaction,
-    initialConfig: null,
+    initialConfig,
     fetchMode,
   });
   return null;
@@ -172,6 +181,59 @@ describe("useShellPortfolioConfig", () => {
     expect(result.feeProfiles).toEqual(loadedConfig.feeProfiles);
     expect(result.capabilities).toEqual(loadedConfig.capabilities);
     expect(result.isLoading).toBe(false);
+  });
+
+  it("loads missing capabilities when a lazy initial config is incomplete", async () => {
+    const partialConfig: ShellPortfolioConfigSeedDto = {
+      ...loadedConfig,
+      capabilities: undefined,
+    };
+    act(() => {
+      root.render(<Harness fetchMode="lazy" initialConfig={partialConfig} />);
+    });
+
+    await act(async () => {});
+
+    expect(fetchShellPortfolioConfig).not.toHaveBeenCalled();
+    expect(result.accounts).toEqual(loadedConfig.accounts);
+    expect(result.capabilities).toBeUndefined();
+
+    await act(async () => {
+      await result.ensureLoaded();
+    });
+
+    expect(fetchShellPortfolioConfig).toHaveBeenCalledTimes(1);
+    expect(result.capabilities).toEqual(loadedConfig.capabilities);
+  });
+
+  it("loads missing capabilities immediately when an eager initial config is incomplete", async () => {
+    const partialConfig: ShellPortfolioConfigSeedDto = {
+      ...loadedConfig,
+      capabilities: undefined,
+    };
+    act(() => {
+      root.render(<Harness fetchMode="eager" initialConfig={partialConfig} />);
+    });
+
+    await act(async () => {});
+
+    expect(fetchShellPortfolioConfig).toHaveBeenCalledTimes(1);
+    expect(result.accounts).toEqual(loadedConfig.accounts);
+    expect(result.capabilities).toEqual(loadedConfig.capabilities);
+    expect(result.isLoading).toBe(false);
+  });
+
+  it("does not refetch a complete server-seeded config", async () => {
+    act(() => {
+      root.render(<Harness fetchMode="eager" initialConfig={loadedConfig} />);
+    });
+
+    await act(async () => {
+      await result.ensureLoaded();
+    });
+
+    expect(fetchShellPortfolioConfig).not.toHaveBeenCalled();
+    expect(result.capabilities).toEqual(loadedConfig.capabilities);
   });
 
   it("deduplicates concurrent lazy config loads", async () => {
@@ -245,6 +307,11 @@ describe("useShellPortfolioConfig", () => {
     expect(result.accounts).toEqual([accountMutationResponse.account]);
     expect(result.capabilities).toEqual(accountMutationResponse.capabilities);
     expect(result.feeProfiles).toEqual([accountMutationResponse.feeProfile]);
+
+    await act(async () => {
+      await result.ensureLoaded();
+    });
+    expect(fetchShellPortfolioConfig).not.toHaveBeenCalled();
   });
 
   it("keeps authoritative mutation state when an older config read finishes later", async () => {

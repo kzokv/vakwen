@@ -65,6 +65,7 @@ export interface AppShellData {
   feeProfileBindings: FeeProfileBindingDto[];
   refreshPortfolioConfig: () => Promise<void>;
   isPortfolioConfigLoading: boolean;
+  portfolioConfigError: string;
   integrityIssue: IntegrityIssue | null;
   showIntegrityDialog: boolean;
   setShowIntegrityDialog: (open: boolean) => void;

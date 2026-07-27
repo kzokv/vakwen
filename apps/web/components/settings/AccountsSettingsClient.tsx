@@ -424,6 +424,42 @@ export function AccountsSettingsClient() {
   const hasShellAccountConfig = shellData.accounts.length > 0 || shellData.feeProfiles.length > 0;
   const hasAccounts = shellData.accounts.length > 0;
 
+  if (shellData.isPortfolioConfigLoading && !hasShellAccountConfig) {
+    return (
+      <div
+        className="rounded-xl border border-border bg-card px-4 py-6 text-sm text-muted-foreground shadow-sm"
+        data-testid="settings-section-accounts"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        {dict.feedback.loadingSettings}
+      </div>
+    );
+  }
+
+  if (shellData.portfolioConfigError && !hasShellAccountConfig) {
+    return (
+      <div
+        className="space-y-3 rounded-xl border border-destructive/40 bg-card px-4 py-6 shadow-sm"
+        data-testid="settings-section-accounts"
+        role="alert"
+      >
+        <p className="text-sm text-destructive">{shellData.portfolioConfigError}</p>
+        <Button
+          type="button"
+          variant="secondary"
+          data-testid="accounts-config-retry"
+          onClick={() => {
+            void shellData.refreshPortfolioConfig().catch(() => undefined);
+          }}
+        >
+          {dict.actions.retry}
+        </Button>
+      </div>
+    );
+  }
+
   const accountCreateForm = (
     <AccountCreateForm
       onCreate={createAccount}
@@ -481,44 +517,33 @@ export function AccountsSettingsClient() {
           </Drawer>
         </>
       )}
-      {shellData.isPortfolioConfigLoading && !hasShellAccountConfig ? (
-        <div
-          className="rounded-xl border border-border bg-card px-4 py-6 text-sm text-muted-foreground shadow-sm"
-          role="status"
-          aria-live="polite"
-          aria-busy="true"
-        >
-          {dict.feedback.loadingSettings}
-        </div>
-      ) : (
-        <AccountsListSection
-          accounts={shellData.accounts}
-          accountDrafts={accountDrafts}
-          profiles={profiles}
-          feeProfileBindings={bindings}
-          activeLocale={initialSettings.locale ?? locale}
-          onUpdateAccountProfile={updateAccountProfile}
-          onSaveAccountProfile={saveAccountFeeProfile}
-          onUpdateAccountType={updateAccountType}
-          onSaveAccountType={saveAccountType}
-          onRenameAccount={handleRenameAccount}
-          onAddProfileForAccount={addProfileForAccount}
-          onUpdateProfileField={updateProfileField}
-          onSaveProfile={saveProfile}
-          onRemoveProfileFromAccount={removeProfileFromAccount}
-          onDuplicateProfilesFromAccount={duplicateProfilesFromAccount}
-          onAddBinding={addBinding}
-          onUpdateBinding={updateBinding}
-          onRemoveBinding={removeBinding}
-          onLifecycleMutation={applyAccountLifecycleMutation}
-          effectiveAccountHardPurgeDays={initialSettings.effectiveAccountHardPurgeDays}
-          dict={dict}
-          canManage={canManageAccounts}
-          allowHardPurge={allowHardPurge}
-          focusedDividendSettings={focusedDividendSettings}
-          highlightedAccountId={highlightedAccountId}
-        />
-      )}
+      <AccountsListSection
+        accounts={shellData.accounts}
+        accountDrafts={accountDrafts}
+        profiles={profiles}
+        feeProfileBindings={bindings}
+        activeLocale={initialSettings.locale ?? locale}
+        onUpdateAccountProfile={updateAccountProfile}
+        onSaveAccountProfile={saveAccountFeeProfile}
+        onUpdateAccountType={updateAccountType}
+        onSaveAccountType={saveAccountType}
+        onRenameAccount={handleRenameAccount}
+        onAddProfileForAccount={addProfileForAccount}
+        onUpdateProfileField={updateProfileField}
+        onSaveProfile={saveProfile}
+        onRemoveProfileFromAccount={removeProfileFromAccount}
+        onDuplicateProfilesFromAccount={duplicateProfilesFromAccount}
+        onAddBinding={addBinding}
+        onUpdateBinding={updateBinding}
+        onRemoveBinding={removeBinding}
+        onLifecycleMutation={applyAccountLifecycleMutation}
+        effectiveAccountHardPurgeDays={initialSettings.effectiveAccountHardPurgeDays}
+        dict={dict}
+        canManage={canManageAccounts}
+        allowHardPurge={allowHardPurge}
+        focusedDividendSettings={focusedDividendSettings}
+        highlightedAccountId={highlightedAccountId}
+      />
     </div>
   );
 }

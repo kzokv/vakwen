@@ -7,14 +7,18 @@ import {
   type ShellPortfolioConfigDto as SharedShellPortfolioConfigDto,
 } from "@vakwen/shared-types";
 
-export interface ShellPortfolioConfigDto extends SharedShellPortfolioConfigDto {
+export type ShellPortfolioConfigDto = SharedShellPortfolioConfigDto;
+
+export type ShellPortfolioConfigSeedDto = Omit<ShellPortfolioConfigDto, "capabilities"> & {
   capabilities?: PortfolioCapabilitiesDto;
-}
+};
+
+type LegacyShellPortfolioConfigWireDto = Omit<ShellPortfolioConfigDto, "capabilities"> & {
+  capabilities?: PortfolioCapabilitiesDto | null;
+};
 
 export async function fetchShellPortfolioConfig(): Promise<ShellPortfolioConfigDto> {
-  const response = await getJson<SharedShellPortfolioConfigDto & {
-    capabilities?: PortfolioCapabilitiesDto | null;
-  }>("/settings/fee-config");
+  const response = await getJson<LegacyShellPortfolioConfigWireDto>("/settings/fee-config");
 
   return {
     ...response,

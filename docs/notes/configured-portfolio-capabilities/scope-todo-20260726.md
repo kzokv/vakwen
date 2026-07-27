@@ -119,8 +119,74 @@ superseded_by: null
 - Persisting derived capabilities in new database columns
 - General fee-profile CRUD and ticker-binding persistence optimization
 
+## Post-deployment Fix Todo: Capability Bootstrap and Accounts Loading
+
+### Confirmed Root Causes
+
+1. Dashboard and Portfolio pass a non-null but capability-less `initialPortfolioConfig` into `AppShell`. `useShellPortfolioConfig` treats every non-null initial config as fully loaded, so `ensureLoaded()` does not fetch the missing capability state. The floating Quick Actions sheet therefore keeps rendering its reporting-currency loading placeholder and never exposes the configured-currency selector.
+2. `/settings/accounts` starts with eager portfolio-config loading and temporary empty account arrays. `AccountsSettingsClient` evaluates `accounts.length === 0` before its loading branch, so an unresolved account configuration is rendered as confirmed zero-account onboarding. A successful request produces a flash; a failed request can leave the false onboarding visible.
+
+### Contract and Bootstrap Fix
+
+- [x] Make normalized shell portfolio configuration require `capabilities`; keep any legacy/optional wire response separate from the normalized internal type.
+- [x] Add `capabilities` to `/portfolio/primary`, derived from the viewed owner's active accounts with the existing domain authority.
+- [x] Add `capabilities` to the web `PortfolioPageData` contract and preserve it when `PortfolioPage` constructs `initialPortfolioConfig`.
+- [x] Preserve `initialPrimaryData.capabilities` when `DashboardPage` constructs `initialPortfolioConfig`.
+- [x] Centralize legacy capability fallback from returned active accounts so `/settings/fee-config`, Dashboard server seeding, and Portfolio server seeding cannot diverge.
+- [x] Change `useShellPortfolioConfig` completeness detection so a non-null config without capabilities is incomplete. In eager mode it must load immediately; in lazy mode `ensureLoaded()` must load it.
+- [x] Preserve request ordering guards: an older capability bootstrap must not overwrite authoritative account mutation/lifecycle state.
+- [x] Keep complete server-seeded paths request-efficient: opening Quick Actions must not issue another `/settings/fee-config` request when capabilities were already supplied.
+- [x] Keep shared-context authority unchanged: configured capabilities must belong to the portfolio owner being viewed, while the session user's stored reporting preference remains non-destructive.
+
+### Accounts Loading-State Fix
+
+- [x] Expose an explicit portfolio-config state to account settings that distinguishes `loading`, `ready`, and `error`; do not infer readiness from empty arrays.
+- [x] While account configuration is unresolved, render only the Accounts loading/skeleton state. Do not mount the first-account form or account list.
+- [x] Render first-account onboarding only after a successful authoritative load confirms zero active accounts.
+- [x] Render a recoverable configuration error when the account-config request fails; do not present failure as a zero-account portfolio.
+- [x] After successful loading with existing accounts, render the account list directly and keep Add account collapsed in its existing drawer flow.
+- [x] Preserve genuine zero-account behavior, validated return routes, shared read-only behavior, and authoritative create/lifecycle response patching.
+
+### Regression Coverage
+
+- [x] Add `useShellPortfolioConfig` coverage for a non-null partial initial config without capabilities; verify eager load, lazy `ensureLoaded()`, deduplication, and stale-response rejection.
+- [x] Add Dashboard page coverage asserting that server-seeded shell configuration includes the primary DTO's capabilities.
+- [x] Extend Portfolio primary API and page tests to assert canonical capabilities are returned and server-seeded.
+- [x] Add an AppShell/Quick Actions integration test proving a successful multi-currency primary seed renders the configured-currency selector instead of the loading placeholder.
+- [x] Add Accounts settings tests for `loading + empty arrays`, `error + empty arrays`, `ready + zero accounts`, and `ready + existing accounts`.
+- [x] Add E2E coverage for Dashboard and Portfolio: open the floating `+` action and change among configured reporting currencies.
+- [x] Add E2E coverage that delays the Accounts configuration response and asserts first-account onboarding never appears before readiness.
+- [x] Add E2E coverage that a confirmed zero-account user still receives the market-first onboarding flow.
+
+### Fix Acceptance Criteria
+
+- [x] A multi-currency user can open the floating `+` action on Dashboard and Portfolio and select every configured currency exactly once.
+- [x] Quick Actions never remains in capability loading after a successful primary or shell-config response.
+- [x] A complete server-seeded shell config does not trigger a redundant configuration request when Quick Actions opens.
+- [x] A capability-less partial initial config self-heals deterministically instead of being treated as complete.
+- [x] Existing-account users never see first-account onboarding during initial loading, slow loading, or load failure.
+- [x] Confirmed zero-account users still see the existing focused account onboarding.
+- [x] Configuration failures show an actionable error and retry path without fabricating portfolio capabilities.
+- [x] Focused unit/API/E2E tests pass, followed by all eight repository-required regression suites before the fix is declared complete.
+
+### Investigation Evidence
+
+- Deployed multi-currency account: Dashboard and Portfolio Quick Actions rendered `floating-action-reporting-currency-loading` with no selector; the placeholder remained after a 30-second wait.
+- Deployed existing-account user: `/settings/accounts` initially rendered first-account onboarding together with `Loading settings...`, then replaced it with seven account cards after configuration completed.
+- Focused existing tests passed 20/20 but do not cover partial non-null shell configuration or `isPortfolioConfigLoading: true` account settings, confirming the regression gap.
+- Fix validation at implementation head:
+  - lint passed with 0 errors and 46 pre-existing warnings; typecheck passed;
+  - web unit tests passed in the repository's split run: 1,369 passed and 2 skipped;
+  - API unit and memory-backed integration tests: 2,200 passed and 512 skipped;
+  - managed PostgreSQL integration: 1,154 passed and 1 skipped across 107 files;
+  - standard `dev_bypass` E2E: 429 passed and 20 skipped;
+  - OAuth E2E: 121 passed;
+  - OAuth API HTTP: 312 passed and 2 skipped.
+- Focused fix coverage additionally passed for API capability read paths, Dashboard/Portfolio server seeding, partial/complete shell bootstrap and request ordering, Accounts loading/error/ready states, multi-currency Quick Actions, and delayed Accounts configuration.
+
 ## Open Items
 
+- [x] Implement and validate the post-deployment capability-bootstrap and Accounts loading-state fix above.
 - [ ] Follow-up note: fee-profile create/update/delete and ticker-binding mutations still use full-store persistence and should receive a separate bounded-persistence optimization after this scope.
 
 ## References

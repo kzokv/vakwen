@@ -20,7 +20,11 @@ const EMPTY_PRIMARY_DATA: TransactionPrimaryDto = {
     feeProfiles: [],
     feeProfileBindings: [],
     integrityIssue: null,
-  } as TransactionPrimaryDto["portfolioConfig"],
+    capabilities: {
+      configuredMarkets: [],
+      configuredCurrencies: [],
+    },
+  },
 };
 
 const TRANSACTIONS_PRIMARY_CACHE_TAGS = [buildRouteDtoCacheTag("route", "transactions-primary")];

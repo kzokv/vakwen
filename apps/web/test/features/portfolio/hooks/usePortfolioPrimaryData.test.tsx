@@ -40,6 +40,10 @@ beforeAll(() => {
 let result: ReturnType<typeof usePortfolioPrimaryData>;
 
 const initialPrimaryData: PortfolioPageData = {
+  capabilities: {
+    configuredMarkets: [],
+    configuredCurrencies: [],
+  },
   holdings: [],
   holdingGroups: [],
   dividends: { upcoming: [], recent: [] },

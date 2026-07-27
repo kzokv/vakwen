@@ -173,9 +173,8 @@ export class SettingsActions extends AppBaseActions {
 
   @Step()
   async openAccountCreateFlow(): Promise<void> {
-    // Existing-account pages briefly render the first-account form while the
-    // shell config is loading. Wait for that transitional frame to settle so
-    // callers do not advance a wizard that React is about to replace.
+    // Wait for account configuration readiness before deciding whether this
+    // is the inline first-account flow or the additional-account drawer.
     await this.el.accountCreate.portfolioConfigLoading
       .waitFor({ state: "hidden", timeout: 10_000 })
       .catch(() => undefined);
