@@ -20138,10 +20138,13 @@ export class PostgresPersistence implements Persistence {
 
       if (input.feeProfileId !== undefined) {
         const profileLookup = await client.query<{ id: string; account_id: string }>(
-          `SELECT id, account_id
-           FROM fee_profiles
-           WHERE id = $1`,
-          [input.feeProfileId],
+          `SELECT fp.id, fp.account_id
+           FROM fee_profiles fp
+           INNER JOIN accounts owner_account
+             ON owner_account.id = fp.account_id
+            AND owner_account.user_id = $2
+           WHERE fp.id = $1`,
+          [input.feeProfileId, input.userId],
         );
         const profile = profileLookup.rows[0];
         if (!profile) {

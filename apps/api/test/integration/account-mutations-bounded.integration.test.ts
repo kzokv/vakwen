@@ -204,6 +204,16 @@ describePostgres("bounded account mutations (postgres integration)", () => {
       accountType: "bank",
       auditInput: { actorUserId: userId, ipAddress: "127.0.0.1", metadata: { routeKey: "POST /accounts" } },
     });
+    const foreignUser = await persistence!.resolveOrCreateUser(
+      "google",
+      "bounded-account-mutations-foreign",
+      {
+        email: "bounded-account-mutations-foreign@example.com",
+        name: "Foreign Mutation Test",
+      },
+    );
+    const foreignStore = await persistence!.loadStore(foreignUser.userId);
+    const foreignFeeProfileId = foreignStore.feeProfiles[0]!.id;
 
     const fullStoreRead = vi.spyOn(persistence!, "loadStore");
     const fullStoreWrite = vi.spyOn(persistence!, "saveStore");
@@ -214,6 +224,13 @@ describePostgres("bounded account mutations (postgres integration)", () => {
       feeProfileId: other.feeProfile.id,
       auditInput: { actorUserId: userId, ipAddress: "127.0.0.1", metadata: { routeKey: "PATCH /accounts/:id" } },
     })).rejects.toMatchObject({ statusCode: 400, code: "invalid_fee_profile" });
+
+    await expect(persistence!.updateAccount({
+      userId,
+      accountId: created.account.id,
+      feeProfileId: foreignFeeProfileId,
+      auditInput: { actorUserId: userId, ipAddress: "127.0.0.1", metadata: { routeKey: "PATCH /accounts/:id" } },
+    })).rejects.toMatchObject({ statusCode: 404, code: "fee_profile_not_found" });
 
     const updated = await persistence!.updateAccount({
       userId,

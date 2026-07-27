@@ -184,6 +184,7 @@ superseded_by: null
   - OAuth API HTTP: 312 passed and 2 skipped.
 - Focused fix coverage additionally passed for API capability read paths, Dashboard/Portfolio server seeding, partial/complete shell bootstrap and request ordering, Accounts loading/error/ready states, multi-currency Quick Actions, and delayed Accounts configuration.
 - Codex review follow-up keeps FX creation unavailable while configured currencies are unknown, renders a distinct loading state, and exposes a retryable error without fabricating currency capabilities. Focused Cash Ledger and i18n validation passed 22/22 with targeted lint and web typecheck clean.
+- Codex security follow-up scopes account-update fee-profile lookup through an account owned by the current user, making foreign and nonexistent profile identifiers indistinguishable while preserving same-owner account validation. The affected bounded mutation suite passed 15/15 and the full managed PostgreSQL gate passed 1,154 tests with 1 skipped across 107 files; targeted API lint and typecheck were clean.
 
 ## Open Items
 
