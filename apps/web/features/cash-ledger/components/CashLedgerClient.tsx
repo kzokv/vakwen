@@ -484,8 +484,8 @@ export function CashLedgerClient({
       />
     );
   }
-  const canCreateFxTransfer =
-    configuredCurrencyCount === null || configuredCurrencyCount >= 2;
+  const capabilitiesUnknown = configuredCurrencyCount === null;
+  const canCreateFxTransfer = configuredCurrencyCount !== null && configuredCurrencyCount >= 2;
 
   return (
     <div className="grid gap-4" data-testid="cash-ledger-page">
@@ -494,7 +494,35 @@ export function CashLedgerClient({
           <h1 className="text-2xl font-semibold text-slate-950 sm:text-3xl">{d.pageTitle}</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{d.pageDescription}</p>
         </div>
-        {canCreateFxTransfer ? (
+        {capabilitiesUnknown ? (
+          shellData?.portfolioConfigError ? (
+            <div
+              className="max-w-md rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3"
+              data-testid="fx-transfer-capabilities-error"
+              role="alert"
+            >
+              <p className="text-sm font-semibold text-rose-900">{d.fxCapabilitiesError}</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="mt-3"
+                data-testid="fx-transfer-capabilities-retry"
+                onClick={() => void shellData.refreshPortfolioConfig()}
+              >
+                {d.fxCapabilitiesRetry}
+              </Button>
+            </div>
+          ) : (
+            <div
+              className="h-10 w-52 animate-pulse rounded-xl bg-muted/50"
+              data-testid="fx-transfer-capabilities-loading"
+              role="status"
+              aria-label={d.fxCapabilitiesLoading}
+              aria-busy="true"
+            />
+          )
+        ) : canCreateFxTransfer ? (
           <Button onClick={openCreateFxDialog} data-testid="new-fx-transfer-button" className="self-start lg:self-auto">
             <Plus className="h-4 w-4" aria-hidden="true" />
             {d.fxFormTitleCreate}

@@ -183,6 +183,7 @@ superseded_by: null
   - OAuth E2E: 121 passed;
   - OAuth API HTTP: 312 passed and 2 skipped.
 - Focused fix coverage additionally passed for API capability read paths, Dashboard/Portfolio server seeding, partial/complete shell bootstrap and request ordering, Accounts loading/error/ready states, multi-currency Quick Actions, and delayed Accounts configuration.
+- Codex review follow-up keeps FX creation unavailable while configured currencies are unknown, renders a distinct loading state, and exposes a retryable error without fabricating currency capabilities. Focused Cash Ledger and i18n validation passed 22/22 with targeted lint and web typecheck clean.
 
 ## Open Items
 

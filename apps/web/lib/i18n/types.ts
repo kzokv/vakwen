@@ -1884,6 +1884,9 @@ export interface AppDictionary {
     fxEnablementTitle: string;
     fxEnablementDescription: string;
     fxEnablementAction: string;
+    fxCapabilitiesLoading: string;
+    fxCapabilitiesError: string;
+    fxCapabilitiesRetry: string;
     fxFormTitleEdit: string;
     fxFormSubtitle: string;
     fxFromSection: string;

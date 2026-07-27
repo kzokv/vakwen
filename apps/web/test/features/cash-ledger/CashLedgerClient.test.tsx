@@ -164,6 +164,69 @@ describe("CashLedgerClient pagination", () => {
     expect(container.querySelector('[data-testid="new-fx-transfer-button"]')).toBeNull();
   });
 
+  it("keeps FX creation unavailable while configured currencies are loading", async () => {
+    await act(async () => {
+      root.render(
+        <AppShellDataProvider
+          value={{
+            portfolioCapabilities: null,
+            portfolioConfigError: "",
+            isPortfolioConfigLoading: true,
+            sharedContextPermissions: { canManageAccounts: true },
+          } as never}
+        >
+          <CashLedgerClient
+            initialData={buildResponse(0, 0)}
+            initialAccounts={[]}
+            initialAccountMetaReady
+            dict={dict}
+            locale="en"
+          />
+        </AppShellDataProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="fx-transfer-capabilities-loading"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="new-fx-transfer-button"]')).toBeNull();
+    expect(container.querySelector('[data-testid="fx-transfer-enablement"]')).toBeNull();
+  });
+
+  it("offers a retry without enabling FX creation when configured currencies fail to load", async () => {
+    const refreshPortfolioConfig = vi.fn().mockResolvedValue(undefined);
+    await act(async () => {
+      root.render(
+        <AppShellDataProvider
+          value={{
+            portfolioCapabilities: null,
+            portfolioConfigError: "configuration unavailable",
+            isPortfolioConfigLoading: false,
+            refreshPortfolioConfig,
+            sharedContextPermissions: { canManageAccounts: true },
+          } as never}
+        >
+          <CashLedgerClient
+            initialData={buildResponse(0, 0)}
+            initialAccounts={[]}
+            initialAccountMetaReady
+            dict={dict}
+            locale="en"
+          />
+        </AppShellDataProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="fx-transfer-capabilities-error"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="new-fx-transfer-button"]')).toBeNull();
+
+    await act(async () => {
+      (container.querySelector('[data-testid="fx-transfer-capabilities-retry"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+    expect(refreshPortfolioConfig).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshes account metadata when an account lifecycle event arrives", async () => {
     await renderCashLedgerClient(root, { initialData: buildResponse(0, 0) });
     expect(mockFetchAccounts).toHaveBeenCalledTimes(1);
