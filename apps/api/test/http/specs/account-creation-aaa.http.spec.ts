@@ -24,10 +24,43 @@
 
 import { test } from "../fixtures.js";
 
+function expectAccountMutationEnvelope(
+  body: Record<string, unknown>,
+  expected: { name: string; defaultCurrency: string; accountType: string; capabilityMarkets: string[]; capabilityCurrencies: string[]; effectiveReportingCurrency: string },
+) {
+  const account = body.account as Record<string, unknown>;
+  const feeProfile = body.feeProfile as Record<string, unknown>;
+  const capabilities = body.capabilities as Record<string, unknown>;
+  const reportingCurrency = body.reportingCurrency as Record<string, unknown>;
+  const valid = typeof body.id === "string"
+    && typeof body.userId === "string"
+    && typeof body.feeProfileId === "string"
+    && body.name === expected.name
+    && body.defaultCurrency === expected.defaultCurrency
+    && body.accountType === expected.accountType
+    && account.id === body.id
+    && account.userId === body.userId
+    && account.name === expected.name
+    && account.defaultCurrency === expected.defaultCurrency
+    && account.accountType === expected.accountType
+    && account.feeProfileId === body.feeProfileId
+    && feeProfile.id === body.feeProfileId
+    && feeProfile.accountId === body.id
+    && feeProfile.commissionCurrency === expected.defaultCurrency
+    && JSON.stringify(capabilities.configuredMarkets) === JSON.stringify(expected.capabilityMarkets)
+    && JSON.stringify(capabilities.configuredCurrencies) === JSON.stringify(expected.capabilityCurrencies)
+    && reportingCurrency.requested === "TWD"
+    && reportingCurrency.effective === expected.effectiveReportingCurrency
+    && reportingCurrency.reason === null;
+  if (!valid) {
+    throw new Error(`Unexpected account mutation envelope: ${JSON.stringify(body)}`);
+  }
+}
+
 test.describe("POST /accounts (KZO-179 / KZO-183)", () => {
   // ── Happy path + DTO shape ─────────────────────────────────────────────────
 
-  test("happy path: returns 200 with bare AccountDto and resolves the default fee profile", async ({
+  test("happy path: returns 200 with authoritative mutation envelope and resolves the default fee profile", async ({
     accountsApi,
     feeProfilesApi,
   }) => {
@@ -40,27 +73,16 @@ test.describe("POST /accounts (KZO-179 / KZO-183)", () => {
 
     const body = (await accountsApi.arrange.body(response)) as Record<string, unknown>;
 
-    // AccountDto fields per D7 — no envelope, no createdAt.
-    await accountsApi.assert.fieldEquals(body, "name", "USD Brokerage");
-    await accountsApi.assert.fieldEquals(body, "defaultCurrency", "USD");
-    await accountsApi.assert.fieldEquals(body, "accountType", "bank");
-    if (typeof body.feeProfileId !== "string" || body.feeProfileId.length === 0) {
-      throw new Error(`Expected body.feeProfileId to be a non-empty string; got ${String(body.feeProfileId)}`);
-    }
-    // id (uuid) and userId are present.
-    if (typeof body.id !== "string" || body.id.length < 16) {
-      throw new Error(`Expected body.id to be a uuid string; got ${String(body.id)}`);
-    }
-    if (typeof body.userId !== "string" || body.userId.length === 0) {
-      throw new Error(`Expected body.userId to be a non-empty string`);
-    }
+    expectAccountMutationEnvelope(body, {
+      name: "USD Brokerage",
+      defaultCurrency: "USD",
+      accountType: "bank",
+      capabilityMarkets: ["TW", "US"],
+      capabilityCurrencies: ["TWD", "USD"],
+      effectiveReportingCurrency: "TWD",
+    });
 
-    // D2 / D7 — createdAt MUST NOT be exposed on the read DTO.
-    if ("createdAt" in body) {
-      throw new Error(`Expected body to NOT include 'createdAt'; received: ${JSON.stringify(body)}`);
-    }
-
-    const profilesResponse = await feeProfilesApi.actions.listFeeProfilesForAccount(body.id);
+    const profilesResponse = await feeProfilesApi.actions.listFeeProfilesForAccount(String(body.id));
     await feeProfilesApi.assert.statusIs(profilesResponse, 200);
     const profiles = await feeProfilesApi.arrange.feeProfiles(profilesResponse);
     if (profiles.length !== 1) {
@@ -131,7 +153,14 @@ test.describe("POST /accounts (KZO-179 / KZO-183)", () => {
     await accountsApi.assert.statusIs(response, 200);
 
     const body = (await accountsApi.arrange.body(response)) as Record<string, unknown>;
-    await accountsApi.assert.fieldEquals(body, "name", "Padded Account");
+    expectAccountMutationEnvelope(body, {
+      name: "Padded Account",
+      defaultCurrency: "TWD",
+      accountType: "broker",
+      capabilityMarkets: ["TW"],
+      capabilityCurrencies: ["TWD"],
+      effectiveReportingCurrency: "TWD",
+    });
   });
 
   // ── Round-trip via GET /accounts ───────────────────────────────────────────

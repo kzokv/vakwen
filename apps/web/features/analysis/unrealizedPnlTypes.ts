@@ -1,4 +1,4 @@
-import type { AccountDefaultCurrency, CurrencyCode } from "@vakwen/shared-types";
+import type { AccountDefaultCurrency, CurrencyCode, PortfolioCapabilitiesDto } from "@vakwen/shared-types";
 
 export const ANALYSIS_RANGE_OPTIONS = ["1M", "3M", "YTD", "1Y", "3Y", "5Y", "ALL", "CUSTOM"] as const;
 export type AnalysisRangeOption = (typeof ANALYSIS_RANGE_OPTIONS)[number];
@@ -215,6 +215,7 @@ export interface UnrealizedPnlAnalysisBasis {
 }
 
 export interface UnrealizedPnlAnalysisDto {
+  capabilities?: PortfolioCapabilitiesDto;
   query: UnrealizedPnlAnalysisResolvedFilters;
   basis?: UnrealizedPnlAnalysisBasis;
   diagnostics?: {

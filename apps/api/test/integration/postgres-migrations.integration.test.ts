@@ -851,6 +851,102 @@ describePostgres("postgres migrations", () => {
     expect(baselineSignature).toEqual(upgradedSignature);
   }, 15_000);
 
+  it("migration 114 preserves uninitialized users created after its first application", async () => {
+    await resetDatabase();
+    await applyMigrationFiles(await getNumberedMigrationsBefore("114_user_portfolio_initialization_marker.sql"));
+    await pool.query(
+      `INSERT INTO users (id, email)
+       VALUES
+         ('migration-114-us', 'migration-114-us@example.com'),
+         ('migration-114-us-implicit', 'migration-114-us-implicit@example.com'),
+         ('migration-114-us-no-row', 'migration-114-us-no-row@example.com'),
+         ('migration-114-empty', 'migration-114-empty@example.com')`,
+    );
+    await seedAccountWithFeeProfilePost042({
+      userId: "migration-114-us",
+      accountId: "migration-114-us-account",
+      accountName: "USD Only",
+      feeProfileId: "migration-114-us-profile",
+      defaultCurrency: "USD",
+    });
+    await seedAccountWithFeeProfilePost042({
+      userId: "migration-114-us-implicit",
+      accountId: "migration-114-us-implicit-account",
+      accountName: "Implicit USD",
+      feeProfileId: "migration-114-us-implicit-profile",
+      defaultCurrency: "USD",
+    });
+    await seedAccountWithFeeProfilePost042({
+      userId: "migration-114-us-no-row",
+      accountId: "migration-114-us-no-row-account",
+      accountName: "No Preferences USD",
+      feeProfileId: "migration-114-us-no-row-profile",
+      defaultCurrency: "USD",
+    });
+    await pool.query(
+      `INSERT INTO user_preferences (user_id, preferences)
+       VALUES
+         ('migration-114-us', '{"reportingCurrency":"TWD","locale":"en"}'::jsonb),
+         ('migration-114-us-implicit', '{"locale":"en"}'::jsonb),
+         ('migration-114-empty', '{"reportingCurrency":"AUD","locale":"en"}'::jsonb)`,
+    );
+
+    await applyMigrationFiles(["114_user_portfolio_initialization_marker.sql"]);
+
+    const result = await pool.query<{
+      id: string;
+      portfolio_initialized: boolean;
+      preferences: Record<string, unknown>;
+    }>(
+      `SELECT u.id, u.portfolio_initialized, up.preferences
+         FROM users u
+         JOIN user_preferences up ON up.user_id = u.id
+        WHERE u.id IN (
+          'migration-114-us',
+          'migration-114-us-implicit',
+          'migration-114-us-no-row',
+          'migration-114-empty'
+        )
+        ORDER BY u.id`,
+    );
+    expect(result.rows).toEqual([
+      {
+        id: "migration-114-empty",
+        portfolio_initialized: true,
+        preferences: { locale: "en" },
+      },
+      {
+        id: "migration-114-us",
+        portfolio_initialized: true,
+        preferences: { locale: "en", reportingCurrency: "USD" },
+      },
+      {
+        id: "migration-114-us-implicit",
+        portfolio_initialized: true,
+        preferences: { locale: "en", reportingCurrency: "USD" },
+      },
+      {
+        id: "migration-114-us-no-row",
+        portfolio_initialized: true,
+        preferences: { reportingCurrency: "USD" },
+      },
+    ]);
+
+    await pool.query(
+      `INSERT INTO users (id, email)
+       VALUES ('migration-114-new', 'migration-114-new@example.com')`,
+    );
+    await applyMigrationFiles(["114_user_portfolio_initialization_marker.sql"]);
+
+    await expect(pool.query<{ portfolio_initialized: boolean }>(
+      `SELECT portfolio_initialized
+         FROM users
+        WHERE id = 'migration-114-new'`,
+    )).resolves.toMatchObject({
+      rows: [{ portfolio_initialized: false }],
+    });
+  });
+
   it("converts legacy full-year market calendar rows into exception-only records", async () => {
     await resetDatabase();
     await applyMigrationFiles(await getNumberedMigrationsBefore("082_market_calendar_activity_schema_reconcile.sql"));

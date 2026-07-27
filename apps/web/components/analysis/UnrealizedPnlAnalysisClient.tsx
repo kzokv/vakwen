@@ -5,6 +5,9 @@ import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, Info, Search, X } from "lucide-react";
 import type { LocaleCode } from "@vakwen/shared-types";
+import { CapabilityNormalizationNotice } from "../../features/portfolio-capabilities/components/CapabilityNormalizationNotice";
+import { SingleCapabilityContext } from "../../features/portfolio-capabilities/components/SingleCapabilityContext";
+import { ZeroAccountSetupGate } from "../../features/portfolio-capabilities/components/ZeroAccountSetupGate";
 import { Button } from "../ui/Button";
 import { Drawer } from "../ui/Drawer";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/shadcn/card";
@@ -17,6 +20,7 @@ import { useReducedMotion } from "../../lib/hooks/use-reduced-motion";
 import { useAppShellData } from "../layout/AppShellDataContext";
 import { holdingsFinanceToneClass } from "../holdings/holdingsStyle";
 import { useUnrealizedPnlData } from "../../features/analysis/hooks/useUnrealizedPnlData";
+import { resolveUnrealizedPnlCapabilityState } from "../../features/analysis/unrealizedPnlCapabilities";
 import {
   ANALYSIS_DEFAULT_STATE,
   ANALYSIS_UNREALIZED_PNL_PREFERENCE_KEY,
@@ -90,12 +94,27 @@ export function UnrealizedPnlAnalysisClient({
   const [mobileTotalDetailOpen, setMobileTotalDetailOpen] = useState(false);
   const [detailSort, setDetailSort] = useState<DetailSortOption>("ranking");
   const [mutedSeriesIds, setMutedSeriesIds] = useState<Set<string>>(() => new Set());
+  const [marketNormalizationNotice, setMarketNormalizationNotice] = useState<{
+    id: number;
+    key: string;
+    effectiveLabel: string;
+    normalization: NonNullable<ReturnType<typeof resolveUnrealizedPnlCapabilityState>["marketNormalization"]>;
+  } | null>(null);
+  const [currencyNormalizationNotice, setCurrencyNormalizationNotice] = useState<{
+    id: number;
+    key: string;
+    effectiveLabel: string;
+    normalization: NonNullable<ReturnType<typeof resolveUnrealizedPnlCapabilityState>["reportingCurrencyNormalization"]>;
+  } | null>(null);
   const [, startTransition] = useTransition();
   const stateRef = useRef(initialState);
   const didHydratePreferencesRef = useRef(false);
   const hasLocalStateEditRef = useRef(false);
   const settingsRef = useRef<UnrealizedPnlAnalysisSettings>(settingsFromState(initialState));
   const lastPersistedPreferencesRef = useRef<string | null>(null);
+  const suppressedPersistStateKeyRef = useRef<string | null>(null);
+  const handledMarketNormalizationKeyRef = useRef<string | null>(null);
+  const handledCurrencyNormalizationKeyRef = useRef<string | null>(null);
   const cacheScope = useMemo(() => getRouteDtoContextScope(shellData.sessionUserId), [shellData.sessionUserId]);
   const reducedMotion = useReducedMotion();
   const { cacheStatus, data, errorMessage, isBootstrapping, isRefreshing, refresh } = useUnrealizedPnlData({
@@ -106,6 +125,18 @@ export function UnrealizedPnlAnalysisClient({
     locale: resolvedLocale,
     state,
   });
+  const canManageAccounts = !shellData.isSharedContext || shellData.sharedContextPermissions.canManageAccounts;
+  const analysisCapabilities = data?.capabilities
+    ?? initialData?.capabilities
+    ?? (isBootstrapping ? shellData.portfolioCapabilities : null);
+  const capabilityState = useMemo(
+    () => resolveUnrealizedPnlCapabilityState(
+      analysisCapabilities,
+      state.markets,
+      state.reportingCurrency,
+    ),
+    [analysisCapabilities, state.markets, state.reportingCurrency],
+  );
 
   useEffect(() => {
     stateRef.current = state;
@@ -124,6 +155,76 @@ export function UnrealizedPnlAnalysisClient({
       mediaQuery.removeEventListener("change", handleChange);
     };
   }, [mobileTotalDetailOpen]);
+
+  useEffect(() => {
+    if (!analysisCapabilities) return;
+    if (capabilityState.mode === "zero") {
+      handledMarketNormalizationKeyRef.current = null;
+      handledCurrencyNormalizationKeyRef.current = null;
+      return;
+    }
+
+    const normalizedMarkets = capabilityState.effectiveMarkets;
+    const sameMarkets = sameStringArray(normalizedMarkets, state.markets);
+    const marketNormalizationKey = `${state.markets.join(",")}->${normalizedMarkets.join(",")}:${capabilityState.marketNormalization?.reason ?? "none"}`;
+    if (!sameMarkets) {
+      if (handledMarketNormalizationKeyRef.current !== marketNormalizationKey) {
+        handledMarketNormalizationKeyRef.current = marketNormalizationKey;
+        const marketNormalization = capabilityState.marketNormalization;
+        if (marketNormalization?.reason === "unconfigured_market") {
+          setMarketNormalizationNotice((current) => (
+            current?.key === marketNormalizationKey
+              ? current
+              : {
+                  id: Date.now(),
+                  key: marketNormalizationKey,
+                  effectiveLabel: normalizedMarkets.length === 0 ? shellData.uiDict.reports.allMarkets : normalizedMarkets.join(", "),
+                  normalization: marketNormalization,
+                }
+          ));
+        }
+        replaceState({ ...state, markets: normalizedMarkets }, { persist: false });
+        return;
+      }
+    } else if (handledMarketNormalizationKeyRef.current === marketNormalizationKey) {
+      handledMarketNormalizationKeyRef.current = null;
+    }
+
+    const normalizedCurrency = capabilityState.effectiveReportingCurrency;
+    const currencyNormalizationKey = `${state.reportingCurrency}->${normalizedCurrency ?? "none"}:${capabilityState.reportingCurrencyNormalization?.reason ?? "none"}`;
+    if (normalizedCurrency && normalizedCurrency !== state.reportingCurrency) {
+      if (handledCurrencyNormalizationKeyRef.current !== currencyNormalizationKey) {
+        handledCurrencyNormalizationKeyRef.current = currencyNormalizationKey;
+        const reportingCurrencyNormalization = capabilityState.reportingCurrencyNormalization;
+        if (reportingCurrencyNormalization?.reason === "unconfigured_currency") {
+          setCurrencyNormalizationNotice((current) => (
+            current?.key === currencyNormalizationKey
+              ? current
+              : {
+                  id: Date.now(),
+                  key: currencyNormalizationKey,
+                  effectiveLabel: normalizedCurrency,
+                  normalization: reportingCurrencyNormalization,
+                }
+          ));
+        }
+        replaceState({ ...state, reportingCurrency: normalizedCurrency }, { persist: false });
+      }
+      return;
+    }
+    if (handledCurrencyNormalizationKeyRef.current === currencyNormalizationKey) {
+      handledCurrencyNormalizationKeyRef.current = null;
+    }
+  }, [
+    analysisCapabilities,
+    capabilityState.effectiveMarkets,
+    capabilityState.effectiveReportingCurrency,
+    capabilityState.marketNormalization,
+    capabilityState.mode,
+    capabilityState.reportingCurrencyNormalization,
+    shellData.uiDict.reports.allMarkets,
+    state,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -275,13 +376,18 @@ export function UnrealizedPnlAnalysisClient({
     state.to,
   ]);
 
-  function replaceState(next: UnrealizedPnlAnalysisRouteState): void {
+  function replaceState(next: UnrealizedPnlAnalysisRouteState, options: { persist?: boolean } = {}): void {
     const previousState = stateRef.current;
     hasLocalStateEditRef.current = true;
+    if (options.persist === false) {
+      suppressedPersistStateKeyRef.current = JSON.stringify(next);
+    } else {
+      suppressedPersistStateKeyRef.current = null;
+    }
     stateRef.current = next;
     setState(next);
     settingsRef.current = mergeSettingsWithState(settingsRef.current, next);
-    if (next.detailLayout !== previousState.detailLayout) persistSettings(next);
+    if (options.persist !== false && next.detailLayout !== previousState.detailLayout) persistSettings(next);
     const params = unrealizedPnlRouteStateToSearchParams(next);
     startTransition(() => {
       router.replace(`/analysis/unrealized-pnl${params.size > 0 ? `?${params.toString()}` : ""}`, { scroll: false });
@@ -290,6 +396,9 @@ export function UnrealizedPnlAnalysisClient({
 
   useEffect(() => {
     if (!data || !analysisDataMatchesState(data, state)) return;
+    if (suppressedPersistStateKeyRef.current === JSON.stringify(state)) {
+      return;
+    }
     persistSettings(state);
   }, [data, state]);
 
@@ -366,8 +475,35 @@ export function UnrealizedPnlAnalysisClient({
           <strong>{staleCurrencyTitle}</strong> {staleCurrencyDetail}
         </div>
       ) : null}
+      {marketNormalizationNotice ? (
+        <CapabilityNormalizationNotice
+          key={`analysis-market-normalization-${marketNormalizationNotice.id}`}
+          dict={shellData.uiDict}
+          kind="market"
+          normalization={marketNormalizationNotice.normalization}
+          effectiveLabel={marketNormalizationNotice.effectiveLabel}
+        />
+      ) : null}
+      {currencyNormalizationNotice ? (
+        <CapabilityNormalizationNotice
+          key={`analysis-currency-normalization-${currencyNormalizationNotice.id}`}
+          dict={shellData.uiDict}
+          kind="reportingCurrency"
+          normalization={currencyNormalizationNotice.normalization}
+          effectiveLabel={currencyNormalizationNotice.effectiveLabel}
+        />
+      ) : null}
       {errorMessage ? <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">{errorMessage}</div> : null}
       {isBootstrapping && !data ? <AnalysisSkeleton /> : null}
+
+      {analysisCapabilities && capabilityState.mode === "zero" ? (
+        <ZeroAccountSetupGate
+          dict={shellData.uiDict}
+          canManageAccounts={canManageAccounts}
+          returnTo="/analysis/unrealized-pnl"
+        />
+      ) : (
+        <>
 
       <button
         className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-sm font-medium md:hidden"
@@ -443,12 +579,20 @@ export function UnrealizedPnlAnalysisClient({
             onChange={(positionStatus) => replaceState({ ...state, positionStatus })}
           />
         </ControlGroup>
-        <OptionChecklist
-          label={dict.marketsLabel}
-          options={data?.availableFilters.markets ?? []}
-          selected={state.markets}
-          onChange={(markets) => replaceState({ ...state, markets: markets as AnalysisMarketCode[] })}
-        />
+        {capabilityState.mode === "single" ? (
+          <SingleCapabilityContext
+            label={dict.marketsLabel}
+            value={capabilityState.configuredMarkets[0] ?? "-"}
+            testId="portfolio-capabilities-single-context-analysis-market"
+          />
+        ) : (
+          <OptionChecklist
+            label={dict.marketsLabel}
+            options={analysisMarketOptions(capabilityState, data?.availableFilters.markets)}
+            selected={state.markets}
+            onChange={(markets) => replaceState({ ...state, markets: markets as AnalysisMarketCode[] })}
+          />
+        )}
         <OptionChecklist
           label={dict.accountsLabel}
           options={data?.availableFilters.accounts ?? []}
@@ -471,25 +615,34 @@ export function UnrealizedPnlAnalysisClient({
           selected={state.instrumentTypes}
           onChange={(instrumentTypes) => replaceState({ ...state, instrumentTypes: instrumentTypes as AnalysisInstrumentType[] })}
         />
-        <ControlGroup label={dict.currencyLabel}>
-          <select
-            aria-label={dict.currencyLabel}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            value={state.reportingCurrency}
-            onChange={(event) => replaceState({ ...state, reportingCurrency: event.currentTarget.value as UnrealizedPnlAnalysisRouteState["reportingCurrency"] })}
-          >
-            {(data?.availableFilters.reportingCurrencies ?? [{ value: state.reportingCurrency, label: state.reportingCurrency }]).map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-        </ControlGroup>
+        {capabilityState.configuredCurrencies.length === 1 ? (
+          <SingleCapabilityContext
+            label={dict.currencyLabel}
+            value={capabilityState.configuredCurrencies[0] ?? state.reportingCurrency}
+            testId="portfolio-capabilities-single-context-analysis-currency"
+          />
+        ) : (
+          <ControlGroup label={dict.currencyLabel}>
+            <select
+              aria-label={dict.currencyLabel}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+              data-testid="analysis-currency-select"
+              value={state.reportingCurrency}
+              onChange={(event) => replaceState({ ...state, reportingCurrency: event.currentTarget.value as UnrealizedPnlAnalysisRouteState["reportingCurrency"] })}
+            >
+              {analysisCurrencyOptions(capabilityState, data?.availableFilters.reportingCurrencies, state.reportingCurrency).map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </ControlGroup>
+        )}
         <label className="flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm md:self-end">
           <input
             type="checkbox"
             checked={state.includeProvisional}
             onChange={(event) => replaceState({ ...state, includeProvisional: event.currentTarget.checked })}
           />
-          {dict.provisionalLabel}
+              {dict.provisionalLabel}
         </label>
       </section>
 
@@ -785,6 +938,8 @@ export function UnrealizedPnlAnalysisClient({
           </CardContent>
         </Card>
       </section>
+        </>
+      )}
     </main>
   );
 }
@@ -1435,6 +1590,29 @@ function analysisDataMatchesState(data: UnrealizedPnlAnalysisDto, state: Unreali
 function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false;
   return left.every((value, index) => value === right[index]);
+}
+
+function analysisMarketOptions(
+  capabilityState: ReturnType<typeof resolveUnrealizedPnlCapabilityState>,
+  fallback: AnalysisFilterOption[] | undefined,
+): AnalysisFilterOption[] {
+  if (capabilityState.mode === "loading") return fallback ?? [];
+  if (capabilityState.configuredMarkets.length === 0) return [];
+  return capabilityState.configuredMarkets.map((market) => ({ value: market, label: market }));
+}
+
+function analysisCurrencyOptions(
+  capabilityState: ReturnType<typeof resolveUnrealizedPnlCapabilityState>,
+  fallback: AnalysisFilterOption[] | undefined,
+  currentCurrency: UnrealizedPnlAnalysisRouteState["reportingCurrency"],
+): AnalysisFilterOption[] {
+  if (capabilityState.mode === "loading") {
+    return fallback ?? [{ value: currentCurrency, label: currentCurrency }];
+  }
+  if (capabilityState.configuredCurrencies.length === 0) {
+    return [{ value: currentCurrency, label: currentCurrency }];
+  }
+  return capabilityState.configuredCurrencies.map((currency) => ({ value: currency, label: currency }));
 }
 
 function formatNullableCurrency(value: number | null, currency: string, locale: LocaleCode): string {

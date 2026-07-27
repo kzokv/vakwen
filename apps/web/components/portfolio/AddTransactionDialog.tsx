@@ -1,6 +1,6 @@
 "use client";
 
-import type { LocaleCode } from "@vakwen/shared-types";
+import type { LocaleCode, MarketCode } from "@vakwen/shared-types";
 import type { SellAvailabilityDto } from "@vakwen/shared-types";
 import type { AppDictionary } from "../../lib/i18n";
 import type { TransactionPriceHint } from "../../features/portfolio/hooks/useTransactionSubmission";
@@ -24,6 +24,7 @@ interface AddTransactionDialogProps {
   onSubmit: () => Promise<void>;
   pending: boolean;
   accountOptions: TransactionAccountOption[];
+  availableMarkets?: readonly MarketCode[];
   message: string;
   errorMessage: string;
   dict: AppDictionary;
@@ -61,6 +62,7 @@ export function AddTransactionDialog({
   onSubmit,
   pending,
   accountOptions,
+  availableMarkets,
   message,
   errorMessage,
   dict,
@@ -87,6 +89,7 @@ export function AddTransactionDialog({
         <AddTransactionCard
           value={value}
           accountOptions={accountOptions}
+          availableMarkets={availableMarkets}
           pending={pending}
           onChange={onChange}
           onUnitPriceEdited={onUnitPriceEdited}

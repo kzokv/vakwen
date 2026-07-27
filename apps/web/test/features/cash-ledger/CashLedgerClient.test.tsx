@@ -2,11 +2,16 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { CashLedgerClient } from "../../../features/cash-ledger/components/CashLedgerClient";
+import { AppShellDataProvider } from "../../../components/layout/AppShellDataContext";
 import { getDictionary } from "../../../lib/i18n";
 import type {
   CashLedgerListResponse,
   EnrichedCashLedgerEntry,
 } from "../../../features/cash-ledger/types";
+
+const { mockUseEventStream } = vi.hoisted(() => ({
+  mockUseEventStream: vi.fn(),
+}));
 
 vi.mock("../../../features/cash-ledger/services/cashLedgerService", () => ({
   fetchCashLedgerEntries: vi.fn(),
@@ -20,7 +25,11 @@ vi.mock("../../../features/cash-ledger/services/cashLedgerService", () => ({
 }));
 
 vi.mock("../../../hooks/useEventStream", () => ({
-  useEventStream: () => undefined,
+  useEventStream: mockUseEventStream,
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
 }));
 
 import {
@@ -98,6 +107,7 @@ describe("CashLedgerClient pagination", () => {
     mockFetch.mockReset();
     mockFetchAccounts.mockReset();
     mockFetchAccounts.mockResolvedValue([]);
+    mockUseEventStream.mockReset();
   });
 
   afterEach(() => {
@@ -123,6 +133,122 @@ describe("CashLedgerClient pagination", () => {
 
     const pagination = container.querySelector('[data-testid="pagination"]');
     expect(pagination).toBeNull();
+  });
+
+  it("shows FX enablement instead of the transfer action for a single configured currency", async () => {
+    await act(async () => {
+      root.render(
+        <AppShellDataProvider
+          value={{
+            portfolioCapabilities: {
+              configuredMarkets: ["TW"],
+              configuredCurrencies: ["TWD"],
+            },
+            isPortfolioConfigLoading: false,
+            sharedContextPermissions: { canManageAccounts: true },
+          } as never}
+        >
+          <CashLedgerClient
+            initialData={buildResponse(0, 0)}
+            initialAccounts={[]}
+            initialAccountMetaReady
+            dict={dict}
+            locale="en"
+          />
+        </AppShellDataProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="fx-transfer-enablement"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="new-fx-transfer-button"]')).toBeNull();
+  });
+
+  it("keeps FX creation unavailable while configured currencies are loading", async () => {
+    await act(async () => {
+      root.render(
+        <AppShellDataProvider
+          value={{
+            portfolioCapabilities: null,
+            portfolioConfigError: "",
+            isPortfolioConfigLoading: true,
+            sharedContextPermissions: { canManageAccounts: true },
+          } as never}
+        >
+          <CashLedgerClient
+            initialData={buildResponse(0, 0)}
+            initialAccounts={[]}
+            initialAccountMetaReady
+            dict={dict}
+            locale="en"
+          />
+        </AppShellDataProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="fx-transfer-capabilities-loading"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="new-fx-transfer-button"]')).toBeNull();
+    expect(container.querySelector('[data-testid="fx-transfer-enablement"]')).toBeNull();
+  });
+
+  it("offers a retry without enabling FX creation when configured currencies fail to load", async () => {
+    const refreshPortfolioConfig = vi.fn().mockResolvedValue(undefined);
+    await act(async () => {
+      root.render(
+        <AppShellDataProvider
+          value={{
+            portfolioCapabilities: null,
+            portfolioConfigError: "configuration unavailable",
+            isPortfolioConfigLoading: false,
+            refreshPortfolioConfig,
+            sharedContextPermissions: { canManageAccounts: true },
+          } as never}
+        >
+          <CashLedgerClient
+            initialData={buildResponse(0, 0)}
+            initialAccounts={[]}
+            initialAccountMetaReady
+            dict={dict}
+            locale="en"
+          />
+        </AppShellDataProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="fx-transfer-capabilities-error"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="new-fx-transfer-button"]')).toBeNull();
+
+    await act(async () => {
+      (container.querySelector('[data-testid="fx-transfer-capabilities-retry"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+    expect(refreshPortfolioConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes account metadata when an account lifecycle event arrives", async () => {
+    await renderCashLedgerClient(root, { initialData: buildResponse(0, 0) });
+    expect(mockFetchAccounts).toHaveBeenCalledTimes(1);
+
+    const streamOptions = mockUseEventStream.mock.calls[0]?.[0] as {
+      eventTypes: string[];
+      onEvent: () => void;
+    };
+    expect(streamOptions.eventTypes).toEqual(expect.arrayContaining([
+      "account_created",
+      "account_updated",
+      "account_soft_deleted",
+      "account_restored",
+      "account_hard_purged",
+    ]));
+
+    await act(async () => {
+      streamOptions.onEvent();
+      await Promise.resolve();
+    });
+
+    expect(mockFetchAccounts).toHaveBeenCalledTimes(2);
   });
 
   it("disables prev button on page 1", async () => {

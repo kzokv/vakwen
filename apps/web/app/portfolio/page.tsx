@@ -24,6 +24,7 @@ export default async function PortfolioPage() {
       feeProfiles: initialPrimaryData.feeProfiles,
       feeProfileBindings: initialPrimaryData.feeProfileBindings,
       integrityIssue: initialPrimaryData.integrityIssue,
+      capabilities: initialPrimaryData.capabilities,
     }
     : null;
   const locale = settings?.locale ?? "en";

@@ -7,6 +7,7 @@ import { createClient, type RedisClientType } from "redis";
 import { Env } from "@vakwen/config";
 import {
   calculateAppliedTaxComponents,
+  derivePortfolioCapabilities,
   materializeFeeProfileTaxRules,
   projectLegacyFeeProfileTaxFields,
   roundToDecimal,
@@ -50,6 +51,9 @@ import type {
   Transaction,
 } from "../types/store.js";
 import type {
+  AccountDefaultCurrency,
+  FeeProfileDto,
+  FeeProfileBindingDto,
   AccountMarketDividendSettingsDto,
   AiConnectorAccessKind,
   AiConnectorAccessResult,
@@ -85,11 +89,18 @@ import type {
   LocaleCode,
   MonitoredTickerDto,
   NotificationDto,
+  PortfolioCapabilitiesDto,
+  PortfolioSelectionNormalizationResult,
   ProfileDto,
   ShareCapability,
   TickerFundamentalsDto,
 } from "@vakwen/shared-types";
-import { marketCodeFor, normalizeInstrumentSector, type MarketCode as SharedMarketCode } from "@vakwen/shared-types";
+import {
+  ACCOUNT_DEFAULT_CURRENCIES,
+  marketCodeFor,
+  normalizeInstrumentSector,
+  type MarketCode as SharedMarketCode,
+} from "@vakwen/shared-types";
 import { routeError } from "../lib/routeError.js";
 import { defaultClientCapabilities, getMcpClientByLegacyProvider } from "../mcp/clientRegistry.js";
 import { replayPositionHistory } from "../services/replayPositionHistory.js";
@@ -118,6 +129,7 @@ import type {
   ConsumeInviteResult,
   CreateInviteInput,
   AccountWithLiveBalancesRecord,
+  AccountLifecyclePersistenceResult,
   CashLedgerEnrichmentResult,
   CashLedgerListOptions,
   CashLedgerListResult,
@@ -1340,9 +1352,13 @@ export class PostgresPersistence implements Persistence {
     const feeProfileId = this.defaultFeeProfileId(userId);
     const accountId = this.defaultAccountId(userId);
 
-    // Quick check: skip all seed work if fee profile already exists (common path)
-    const existing = await this.pool.query(`SELECT 1 FROM fee_profiles WHERE id = $1`, [feeProfileId]);
-    if (existing.rows.length > 0) return;
+    // Common path: once the one-time bootstrap boundary has been crossed,
+    // intentionally empty portfolios must remain empty.
+    const existing = await this.pool.query<{ portfolio_initialized: boolean }>(
+      `SELECT portfolio_initialized FROM users WHERE id = $1`,
+      [userId],
+    );
+    if (existing.rows[0]?.portfolio_initialized) return;
 
     // KZO-183: the seed rows must be inserted in the same transaction
     // so the deferred composite FK (accounts_fee_profile_owner_fk) resolves at
@@ -1361,6 +1377,18 @@ export class PostgresPersistence implements Persistence {
          ON CONFLICT (id) DO NOTHING`,
         [userId, normalizeEmail(`${userId}@placeholder.local`)],
       );
+
+      const initialization = await client.query<{ portfolio_initialized: boolean }>(
+        `SELECT portfolio_initialized
+           FROM users
+          WHERE id = $1
+          FOR UPDATE`,
+        [userId],
+      );
+      if (initialization.rows[0]?.portfolio_initialized) {
+        await client.query("COMMIT");
+        return;
+      }
 
       await client.query(
         `INSERT INTO accounts (id, user_id, name, fee_profile_id, default_currency, account_type)
@@ -1406,6 +1434,14 @@ export class PostgresPersistence implements Persistence {
           commissionChargeMode: "CHARGED_UPFRONT",
         });
       }
+
+      await client.query(
+        `UPDATE users
+            SET portfolio_initialized = true,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [userId],
+      );
 
       await client.query("COMMIT");
     } catch (err) {
@@ -14441,6 +14477,31 @@ export class PostgresPersistence implements Persistence {
     return [...accountsById.values()];
   }
 
+  async listActiveAccounts(userId: string): Promise<import("@vakwen/shared-types").AccountDto[]> {
+    const result = await this.pool.query<{
+      id: string;
+      user_id: string;
+      name: string;
+      fee_profile_id: string;
+      default_currency: import("@vakwen/shared-types").AccountDefaultCurrency;
+      account_type: import("@vakwen/shared-types").AccountType;
+    }>(
+      `SELECT id, user_id, name, fee_profile_id, default_currency, account_type
+       FROM accounts
+       WHERE user_id = $1 AND deleted_at IS NULL
+       ORDER BY created_at ASC, id ASC`,
+      [userId],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      name: row.name,
+      feeProfileId: row.fee_profile_id,
+      defaultCurrency: row.default_currency,
+      accountType: row.account_type,
+    }));
+  }
+
   async getCashLedgerEnrichment(
     userId: string,
     input: {
@@ -19858,6 +19919,10 @@ export class PostgresPersistence implements Persistence {
       if (accountIds.rows.length > 0) {
         const ids = accountIds.rows.map((r) => r.id);
         await client.query("DELETE FROM daily_holding_snapshots WHERE account_id = ANY($1)", [ids]);
+        await client.query(
+          "DELETE FROM position_action_migration_audit WHERE account_id = ANY($1)",
+          [ids],
+        );
         // KZO-165: composite FK (account_id, user_id) → accounts(id, user_id), so wallet
         // rows must be deleted before the accounts row below. Delete by account_id (PK
         // includes account_id, so this is index-supported).
@@ -19922,14 +19987,345 @@ export class PostgresPersistence implements Persistence {
 
   // ── ui-enhancement — Account lifecycle ──────────────────────────────────
 
+  async createAccount(
+    input: import("./types.js").CreateAccountInput,
+  ): Promise<import("./types.js").AccountMutationPersistenceResult> {
+    const client = await this.pool.connect();
+    const name = input.name.trim();
+    const accountId = randomUUID();
+    const feeProfile = createDefaultFeeProfile(accountId, input.defaultCurrency);
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [input.userId],
+      );
+      const activeAccountResult = await client.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM accounts
+           WHERE user_id = $1
+             AND deleted_at IS NULL
+         ) AS exists`,
+        [input.userId],
+      );
+      const hadActiveAccounts = activeAccountResult.rows[0]?.exists ?? false;
+      await client.query(
+        `INSERT INTO accounts (id, user_id, name, fee_profile_id, default_currency, account_type)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [accountId, input.userId, name, feeProfile.id, input.defaultCurrency, input.accountType],
+      );
+      await client.query(
+        `INSERT INTO fee_profiles (
+           id, account_id, name, commission_rate_bps, board_commission_rate, commission_discount_percent, commission_discount_bps,
+           minimum_commission_amount, commission_currency, commission_rounding_mode, tax_rounding_mode,
+           stock_sell_tax_rate_bps, stock_day_trade_tax_rate_bps, etf_sell_tax_rate_bps,
+           bond_etf_sell_tax_rate_bps, commission_charge_mode
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6, $7,
+           $8, $9, $10, $11,
+           $12, $13, $14,
+           $15, $16
+         )`,
+        [
+          feeProfile.id,
+          accountId,
+          feeProfile.name,
+          legacyCommissionRateBps(feeProfile.boardCommissionRate),
+          feeProfile.boardCommissionRate,
+          feeProfile.commissionDiscountPercent,
+          legacyCommissionDiscountBps(feeProfile.commissionDiscountPercent),
+          feeProfile.minimumCommissionAmount,
+          feeProfile.commissionCurrency,
+          feeProfile.commissionRoundingMode,
+          feeProfile.taxRoundingMode,
+          feeProfile.stockSellTaxRateBps,
+          feeProfile.stockDayTradeTaxRateBps,
+          feeProfile.etfSellTaxRateBps,
+          feeProfile.bondEtfSellTaxRateBps,
+          feeProfile.commissionChargeMode,
+        ],
+      );
+      await ensureFeeProfileTaxRules(client, feeProfile);
+      await client.query(
+        `UPDATE users
+            SET portfolio_initialized = true,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [input.userId],
+      );
+      if (!hadActiveAccounts) {
+        await setStoredReportingCurrencyPreferenceTx(client, input.userId, input.defaultCurrency);
+      }
+      await this.appendAuditLogTx(client, {
+        ...input.auditInput,
+        action: "account_created",
+        targetUserId: input.userId,
+        metadata: {
+          ...input.auditInput.metadata,
+          accountId,
+          accountName: name,
+          accountType: input.accountType,
+          defaultCurrency: input.defaultCurrency,
+          feeProfileId: feeProfile.id,
+        },
+      });
+      const capabilities = await loadPortfolioCapabilitiesTx(client, input.userId);
+      await client.query("COMMIT");
+      return {
+        account: {
+          id: accountId,
+          userId: input.userId,
+          name,
+          feeProfileId: feeProfile.id,
+          defaultCurrency: input.defaultCurrency,
+          accountType: input.accountType,
+        },
+        feeProfile: toFeeProfileDto(feeProfile),
+        capabilities,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      if (isUniqueViolation(error)) {
+        throw routeError(409, "account_name_in_use", "An account with that name already exists.");
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateAccount(
+    input: import("./types.js").UpdateAccountInput,
+  ): Promise<import("./types.js").AccountMutationPersistenceResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [input.userId],
+      );
+      const accountLookup = await client.query<{
+        id: string;
+        user_id: string;
+        name: string;
+        fee_profile_id: string;
+        default_currency: string;
+        account_type: string;
+      }>(
+        `SELECT id, user_id, name, fee_profile_id, default_currency, account_type
+         FROM accounts
+         WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+         FOR UPDATE`,
+        [input.accountId, input.userId],
+      );
+      const existingAccount = accountLookup.rows[0];
+      if (!existingAccount) {
+        throw routeError(404, "account_not_found", `Account ${input.accountId} was not found.`);
+      }
+
+      const changedFields: string[] = [];
+      let nextName = existingAccount.name;
+      let nextFeeProfileId = existingAccount.fee_profile_id;
+      let nextDefaultCurrency = existingAccount.default_currency as import("@vakwen/shared-types").AccountDefaultCurrency;
+      let nextAccountType = existingAccount.account_type as import("@vakwen/shared-types").AccountType;
+
+      if (input.feeProfileId !== undefined) {
+        const profileLookup = await client.query<{ id: string; account_id: string }>(
+          `SELECT fp.id, fp.account_id
+           FROM fee_profiles fp
+           INNER JOIN accounts owner_account
+             ON owner_account.id = fp.account_id
+            AND owner_account.user_id = $2
+           WHERE fp.id = $1`,
+          [input.feeProfileId, input.userId],
+        );
+        const profile = profileLookup.rows[0];
+        if (!profile) {
+          throw routeError(404, "fee_profile_not_found", `Fee profile ${input.feeProfileId} was not found.`);
+        }
+        if (profile.account_id !== input.accountId) {
+          throw routeError(
+            400,
+            "invalid_fee_profile",
+            `Fee profile ${input.feeProfileId} is not owned by account ${input.accountId}.`,
+          );
+        }
+        nextFeeProfileId = input.feeProfileId;
+        changedFields.push("feeProfileId");
+      }
+
+      if (input.name !== undefined) {
+        const name = input.name.trim();
+        const nameConflict = await client.query<{ id: string }>(
+          `SELECT id FROM accounts
+           WHERE user_id = $1 AND deleted_at IS NULL AND id <> $2 AND name = $3
+           LIMIT 1`,
+          [input.userId, input.accountId, name],
+        );
+        if ((nameConflict.rowCount ?? 0) > 0) {
+          throw routeError(409, "account_name_in_use", "An account with that name already exists.");
+        }
+        nextName = name;
+        changedFields.push("name");
+      }
+
+      if (input.defaultCurrency !== undefined && input.defaultCurrency !== existingAccount.default_currency) {
+        const [cashEntries, tradeEvents] = await Promise.all([
+          client.query<{ blocked: boolean }>(
+            `SELECT EXISTS(
+               SELECT 1 FROM cash_ledger_entries WHERE account_id = $1
+             ) AS blocked`,
+            [input.accountId],
+          ),
+          client.query<{ blocked: boolean }>(
+            `SELECT EXISTS(
+               SELECT 1 FROM trade_events WHERE account_id = $1
+             ) AS blocked`,
+            [input.accountId],
+          ),
+        ]);
+        if (cashEntries.rows[0]?.blocked || tradeEvents.rows[0]?.blocked) {
+          throw routeError(
+            409,
+            "currency_change_blocked",
+            "Cannot change default currency: account has existing cash entries or trade events. Open a new account or contact support.",
+          );
+        }
+
+        const previousMarketCode = marketCodeFor(existingAccount.default_currency);
+        const nextMarketCode = marketCodeFor(input.defaultCurrency);
+        if (previousMarketCode !== nextMarketCode) {
+          const clearedDividendSettings = await client.query(
+            `UPDATE account_market_dividend_settings
+             SET fallback_par_value = NULL,
+                 version = version + 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE account_id = $1
+               AND market_code = $2
+               AND fallback_par_value IS NOT NULL
+             RETURNING account_id`,
+            [input.accountId, previousMarketCode],
+          );
+          if ((clearedDividendSettings.rowCount ?? 0) > 0) {
+            await this.appendAuditLogTx(client, {
+              ...input.auditInput,
+              action: "account_market_dividend_settings_updated",
+              targetUserId: input.userId,
+              metadata: {
+                ...input.auditInput.metadata,
+                accountId: input.accountId,
+                marketCode: previousMarketCode,
+                fallbackParValue: null,
+              },
+            });
+          }
+        }
+
+        nextDefaultCurrency = input.defaultCurrency;
+        changedFields.push("defaultCurrency");
+      }
+
+      if (input.accountType !== undefined) {
+        nextAccountType = input.accountType;
+        changedFields.push("accountType");
+      }
+
+      await client.query(
+        `UPDATE accounts
+         SET name = $3,
+             fee_profile_id = $4,
+             default_currency = $5,
+             account_type = $6
+         WHERE id = $1 AND user_id = $2`,
+        [input.accountId, input.userId, nextName, nextFeeProfileId, nextDefaultCurrency, nextAccountType],
+      );
+
+      const feeProfile = await loadFeeProfileDtoTx(client, nextFeeProfileId);
+      if (!feeProfile || feeProfile.accountId !== input.accountId) {
+        throw routeError(404, "fee_profile_not_found", `Fee profile ${nextFeeProfileId} was not found.`);
+      }
+
+      await this.appendAuditLogTx(client, {
+        ...input.auditInput,
+        action: "account_updated",
+        targetUserId: input.userId,
+        metadata: {
+          ...input.auditInput.metadata,
+          accountId: input.accountId,
+          accountName: nextName,
+          accountType: nextAccountType,
+          defaultCurrency: nextDefaultCurrency,
+          feeProfileId: nextFeeProfileId,
+          changedFields,
+        },
+      });
+      const capabilities = await loadPortfolioCapabilitiesTx(client, input.userId);
+      if (changedFields.includes("defaultCurrency")) {
+        const prefsBefore = await loadUserPreferencesTx(client, input.userId);
+        const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
+        const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+        const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
+          ? null
+          : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
+            ? reportingCurrencyBefore
+            : capabilities.configuredCurrencies[0]!;
+        if (reportingCurrencyBefore !== reportingCurrencyAfter) {
+          await setStoredReportingCurrencyPreferenceTx(
+            client,
+            input.userId,
+            reportingCurrencyAfter,
+          );
+        }
+      }
+      await client.query("COMMIT");
+      return {
+        account: {
+          id: input.accountId,
+          userId: input.userId,
+          name: nextName,
+          feeProfileId: nextFeeProfileId,
+          defaultCurrency: nextDefaultCurrency,
+          accountType: nextAccountType,
+        },
+        feeProfile,
+        capabilities,
+        changedFields,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      if (isUniqueViolation(error)) {
+        throw routeError(409, "account_name_in_use", "An account with that name already exists.");
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async softDeleteAccount(
     accountId: string,
     userId: string,
     auditInput: Omit<AuditLogInput, "action">,
-  ): Promise<{ deletedAt: string }> {
+  ): Promise<AccountLifecyclePersistenceResult> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      // Serialize capability and reporting-currency changes for this owner.
+      // Lock the owner before account rows to keep mutation lock ordering stable.
+      await client.query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [userId],
+      );
       // Lock row and verify ownership.
       const lookup = await client.query<{
         name: string;
@@ -19947,15 +20343,23 @@ export class PostgresPersistence implements Persistence {
         await client.query("ROLLBACK");
         throw routeError(404, "account_not_found", "Account not found.");
       }
+      const account = await loadAccountIncludingDeletedTx(client, accountId, userId);
+      if (!account) {
+        await client.query("ROLLBACK");
+        throw routeError(404, "account_not_found", "Account not found.");
+      }
       const existingDeletedAt = lookup.rows[0].deleted_at;
       if (existingDeletedAt !== null) {
-        // Idempotent — already soft-deleted.
+        const capabilities = await loadPortfolioCapabilitiesTx(client, userId);
+        const prefs = await loadUserPreferencesTx(client, userId);
         await client.query("COMMIT");
         const iso = existingDeletedAt instanceof Date
           ? existingDeletedAt.toISOString()
           : new Date(existingDeletedAt).toISOString();
-        return { deletedAt: iso };
+        return buildLifecyclePersistenceResult(account, iso, null, capabilities, prefs);
       }
+      const prefsBefore = await loadUserPreferencesTx(client, userId);
+      const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
       const result = await client.query<{ deleted_at: Date | string }>(
         `UPDATE accounts SET deleted_at = NOW()
          WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
@@ -19966,6 +20370,17 @@ export class PostgresPersistence implements Persistence {
       const deletedAt = deletedAtRaw instanceof Date
         ? deletedAtRaw.toISOString()
         : new Date(deletedAtRaw).toISOString();
+      const capabilities = await loadPortfolioCapabilitiesTx(client, userId);
+      const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+      const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
+        ? null
+        : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
+          ? reportingCurrencyBefore
+          : capabilities.configuredCurrencies[0]!;
+      if (reportingCurrencyBefore !== reportingCurrencyAfter) {
+        await setStoredReportingCurrencyPreferenceTx(client, userId, reportingCurrencyAfter);
+      }
+      const prefsAfter = await loadUserPreferencesTx(client, userId);
 
       await this.appendAuditLogTx(client, {
         ...auditInput,
@@ -19977,11 +20392,13 @@ export class PostgresPersistence implements Persistence {
           accountName: lookup.rows[0].name,
           accountType: lookup.rows[0].account_type,
           defaultCurrency: lookup.rows[0].default_currency,
+          reportingCurrencyBefore,
+          reportingCurrencyAfter,
         },
       });
 
       await client.query("COMMIT");
-      return { deletedAt };
+      return buildLifecyclePersistenceResult(account, deletedAt, null, capabilities, prefsAfter);
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       throw error;
@@ -19994,10 +20411,17 @@ export class PostgresPersistence implements Persistence {
     accountId: string,
     userId: string,
     auditInput: Omit<AuditLogInput, "action">,
-  ): Promise<{ accountId: string; finalName: string }> {
+  ): Promise<AccountLifecyclePersistenceResult> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [userId],
+      );
       // Lock + verify soft-deleted state.
       const lookup = await client.query<{ name: string; deleted_at: Date | string | null }>(
         `SELECT name, deleted_at FROM accounts
@@ -20045,6 +20469,25 @@ export class PostgresPersistence implements Persistence {
          WHERE id = $1 AND user_id = $2`,
         [accountId, userId, finalName],
       );
+      const restoredAccount = await loadAccountIncludingDeletedTx(client, accountId, userId);
+      if (!restoredAccount) {
+        await client.query("ROLLBACK");
+        throw routeError(404, "account_not_found", "Account not found.");
+      }
+      const capabilities = await loadPortfolioCapabilitiesTx(client, userId);
+      const prefsBefore = await loadUserPreferencesTx(client, userId);
+      const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
+      const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+      const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
+        ? null
+        : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
+          ? reportingCurrencyBefore
+          : capabilities.configuredCurrencies[0]!;
+      if (reportingCurrencyBefore !== reportingCurrencyAfter) {
+        await setStoredReportingCurrencyPreferenceTx(client, userId, reportingCurrencyAfter);
+      }
+      const prefsAfter = await loadUserPreferencesTx(client, userId);
+      const feeConfig = await loadAccountFeeConfigTx(client, accountId);
 
       await this.appendAuditLogTx(client, {
         ...auditInput,
@@ -20054,7 +20497,14 @@ export class PostgresPersistence implements Persistence {
       });
 
       await client.query("COMMIT");
-      return { accountId, finalName };
+      return buildLifecyclePersistenceResult(
+        restoredAccount,
+        null,
+        finalName,
+        capabilities,
+        prefsAfter,
+        feeConfig,
+      );
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       throw error;
@@ -20068,11 +20518,18 @@ export class PostgresPersistence implements Persistence {
     userId: string,
     auditInput: Omit<AuditLogInput, "action">,
     options: { mustBeSoftDeleted?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<AccountLifecyclePersistenceResult> {
     const mustBeSoftDeleted = options.mustBeSoftDeleted ?? true;
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [userId],
+      );
       // 1. Lock + verify ownership and state.
       const lookup = await client.query<{
         name: string;
@@ -20091,6 +20548,13 @@ export class PostgresPersistence implements Persistence {
         throw routeError(404, "account_not_found", "Account not found.");
       }
       const { name, account_type, default_currency, deleted_at } = lookup.rows[0];
+      const account = await loadAccountIncludingDeletedTx(client, accountId, userId);
+      if (!account) {
+        await client.query("ROLLBACK");
+        throw routeError(404, "account_not_found", "Account not found.");
+      }
+      const prefsBefore = await loadUserPreferencesTx(client, userId);
+      const reportingCurrencyBefore = getStoredReportingCurrencyPreference(prefsBefore);
       if (mustBeSoftDeleted && deleted_at === null) {
         await client.query("ROLLBACK");
         throw routeError(
@@ -20129,6 +20593,10 @@ export class PostgresPersistence implements Persistence {
       // adds zero user-observable benefit; reaped on user hard-purge or remain
       // harmless. Same orphan tolerance pattern as fee_profiles).
       await client.query("DELETE FROM daily_holding_snapshots WHERE account_id = $1", [accountId]);
+      await client.query(
+        "DELETE FROM position_action_migration_audit WHERE account_id = $1",
+        [accountId],
+      );
       await client.query("DELETE FROM currency_wallet_snapshots WHERE account_id = $1", [accountId]);
       await client.query("DELETE FROM cash_ledger_entries WHERE account_id = $1", [accountId]);
       await client.query(
@@ -20156,7 +20624,25 @@ export class PostgresPersistence implements Persistence {
       // automatically via ON DELETE CASCADE on fee_profiles.account_id.
       await client.query("DELETE FROM accounts WHERE id = $1 AND user_id = $2", [accountId, userId]);
 
+      const capabilities = await loadPortfolioCapabilitiesTx(client, userId);
+      const effectiveReportingCurrencyBefore = reportingCurrencyBefore ?? "TWD";
+      const reportingCurrencyAfter = capabilities.configuredCurrencies.length === 0
+        ? null
+        : capabilities.configuredCurrencies.includes(effectiveReportingCurrencyBefore)
+          ? reportingCurrencyBefore
+          : capabilities.configuredCurrencies[0]!;
+      if (reportingCurrencyBefore !== reportingCurrencyAfter) {
+        await setStoredReportingCurrencyPreferenceTx(client, userId, reportingCurrencyAfter);
+      }
+      const prefsAfter = await loadUserPreferencesTx(client, userId);
       await client.query("COMMIT");
+      return buildLifecyclePersistenceResult(
+        account,
+        deletedAtIso,
+        null,
+        capabilities,
+        prefsAfter,
+      );
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       throw error;
@@ -23897,6 +24383,263 @@ function hydrateTradeFeeSnapshot(row: Record<string, unknown>, taxRuleRows: Reco
     ...base,
     ...legacyTaxFields,
     taxRules,
+  };
+}
+
+function toFeeProfileDto(profile: FeeProfile): FeeProfileDto {
+  return {
+    id: profile.id,
+    accountId: profile.accountId,
+    name: profile.name,
+    boardCommissionRate: profile.boardCommissionRate,
+    commissionDiscountPercent: profile.commissionDiscountPercent,
+    minimumCommissionAmount: profile.minimumCommissionAmount,
+    commissionCurrency: profile.commissionCurrency,
+    commissionRoundingMode: profile.commissionRoundingMode,
+    taxRoundingMode: profile.taxRoundingMode,
+    stockSellTaxRateBps: profile.stockSellTaxRateBps,
+    stockDayTradeTaxRateBps: profile.stockDayTradeTaxRateBps,
+    etfSellTaxRateBps: profile.etfSellTaxRateBps,
+    bondEtfSellTaxRateBps: profile.bondEtfSellTaxRateBps,
+    commissionChargeMode: profile.commissionChargeMode,
+  };
+}
+
+async function loadPortfolioCapabilitiesTx(
+  client: PoolClient,
+  userId: string,
+): Promise<PortfolioCapabilitiesDto> {
+  const result = await client.query<{ default_currency: string }>(
+    `SELECT default_currency
+     FROM accounts
+     WHERE user_id = $1
+       AND deleted_at IS NULL
+     ORDER BY id ASC`,
+    [userId],
+  );
+  const capabilities = derivePortfolioCapabilities(
+    result.rows.map((row) => ({ defaultCurrency: row.default_currency })),
+  );
+  return {
+    configuredMarkets: capabilities.configuredMarkets as PortfolioCapabilitiesDto["configuredMarkets"],
+    configuredCurrencies: capabilities.configuredCurrencies as PortfolioCapabilitiesDto["configuredCurrencies"],
+  };
+}
+
+function getStoredReportingCurrencyPreference(
+  prefs: Record<string, unknown>,
+): AccountDefaultCurrency | null {
+  const value = prefs.reportingCurrency;
+  return typeof value === "string" && (ACCOUNT_DEFAULT_CURRENCIES as readonly string[]).includes(value)
+    ? value as AccountDefaultCurrency
+    : null;
+}
+
+function buildReportingCurrencyNormalization(
+  configuredCurrencies: readonly AccountDefaultCurrency[],
+  requested: AccountDefaultCurrency | null,
+): PortfolioSelectionNormalizationResult<AccountDefaultCurrency> {
+  if (configuredCurrencies.length === 0) {
+    return { requested, effective: null, reason: "no_configured_currencies" };
+  }
+  if (requested === null) {
+    return { requested: null, effective: configuredCurrencies[0]!, reason: null };
+  }
+  if (configuredCurrencies.includes(requested)) {
+    return { requested, effective: requested, reason: null };
+  }
+  return {
+    requested,
+    effective: configuredCurrencies[0]!,
+    reason: "unconfigured_currency",
+  };
+}
+
+async function loadUserPreferencesTx(
+  client: PoolClient,
+  userId: string,
+): Promise<Record<string, unknown>> {
+  const result = await client.query<{ preferences: Record<string, unknown> | null }>(
+    `SELECT preferences
+     FROM public.user_preferences
+     WHERE user_id = $1
+     FOR UPDATE`,
+    [userId],
+  );
+  return result.rows[0]?.preferences ?? {};
+}
+
+async function setStoredReportingCurrencyPreferenceTx(
+  client: PoolClient,
+  userId: string,
+  reportingCurrency: AccountDefaultCurrency | null,
+): Promise<void> {
+  if (reportingCurrency === null) {
+    await client.query(
+      `UPDATE public.user_preferences
+       SET preferences = preferences - 'reportingCurrency',
+           updated_at = NOW()
+       WHERE user_id = $1`,
+      [userId],
+    );
+    return;
+  }
+
+  await client.query(
+    `INSERT INTO public.user_preferences (user_id, preferences, updated_at)
+     VALUES ($1, jsonb_build_object('reportingCurrency', $2::text), NOW())
+     ON CONFLICT (user_id) DO UPDATE
+       SET preferences = jsonb_set(
+         COALESCE(public.user_preferences.preferences, '{}'::jsonb),
+         '{reportingCurrency}',
+         to_jsonb($2::text),
+         true
+       ),
+       updated_at = NOW()`,
+    [userId, reportingCurrency],
+  );
+}
+
+function buildLifecyclePersistenceResult(
+  account: import("@vakwen/shared-types").AccountDto,
+  deletedAt: string | null,
+  finalName: string | null,
+  capabilities: PortfolioCapabilitiesDto,
+  prefs: Record<string, unknown>,
+  feeConfig?: {
+    feeProfiles: FeeProfileDto[];
+    feeProfileBindings: FeeProfileBindingDto[];
+  },
+): AccountLifecyclePersistenceResult {
+  return {
+    account,
+    deletedAt,
+    finalName,
+    capabilities,
+    reportingCurrency: buildReportingCurrencyNormalization(
+      capabilities.configuredCurrencies,
+      getStoredReportingCurrencyPreference(prefs),
+    ),
+    ...feeConfig,
+  };
+}
+
+async function loadAccountFeeConfigTx(
+  client: PoolClient,
+  accountId: string,
+): Promise<{
+  feeProfiles: FeeProfileDto[];
+  feeProfileBindings: FeeProfileBindingDto[];
+}> {
+  const profilesResult = await client.query<Record<string, unknown>>(
+    `SELECT id,
+            account_id,
+            name,
+            commission_rate_bps,
+            board_commission_rate,
+            commission_discount_percent,
+            commission_discount_bps,
+            minimum_commission_amount,
+            commission_currency,
+            commission_rounding_mode,
+            tax_rounding_mode,
+            stock_sell_tax_rate_bps,
+            stock_day_trade_tax_rate_bps,
+            etf_sell_tax_rate_bps,
+            bond_etf_sell_tax_rate_bps,
+            commission_charge_mode
+     FROM fee_profiles
+     WHERE account_id = $1
+     ORDER BY id`,
+    [accountId],
+  );
+  const bindingsResult = await client.query<{
+    account_id: string;
+    ticker: string;
+    fee_profile_id: string;
+  }>(
+    `SELECT account_id, ticker, fee_profile_id
+     FROM account_fee_profile_overrides
+     WHERE account_id = $1
+     ORDER BY ticker`,
+    [accountId],
+  );
+  return {
+    feeProfiles: profilesResult.rows.map((row) =>
+      toFeeProfileDto(buildFeeProfileFromRow(row, "id", "name", String(row.account_id))),
+    ),
+    feeProfileBindings: bindingsResult.rows.map((row) => ({
+      accountId: row.account_id,
+      ticker: row.ticker,
+      feeProfileId: row.fee_profile_id,
+    })),
+  };
+}
+
+async function loadFeeProfileDtoTx(
+  client: PoolClient,
+  feeProfileId: string,
+): Promise<FeeProfileDto | null> {
+  const result = await client.query<Record<string, unknown>>(
+    `SELECT id,
+            account_id,
+            name,
+            commission_rate_bps,
+            board_commission_rate,
+            commission_discount_percent,
+            commission_discount_bps,
+            minimum_commission_amount,
+            commission_currency,
+            commission_rounding_mode,
+            tax_rounding_mode,
+            stock_sell_tax_rate_bps,
+            stock_day_trade_tax_rate_bps,
+            etf_sell_tax_rate_bps,
+            bond_etf_sell_tax_rate_bps,
+            commission_charge_mode
+     FROM fee_profiles
+     WHERE id = $1
+     LIMIT 1`,
+    [feeProfileId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return toFeeProfileDto(buildFeeProfileFromRow(row, "id", "name", String(row.account_id)));
+}
+
+async function loadAccountIncludingDeletedTx(
+  client: PoolClient,
+  accountId: string,
+  userId: string,
+): Promise<(import("@vakwen/shared-types").AccountDto & { deletedAt: string | null }) | null> {
+  const result = await client.query<{
+    id: string;
+    user_id: string;
+    name: string;
+    fee_profile_id: string;
+    default_currency: AccountDefaultCurrency;
+    account_type: import("@vakwen/shared-types").AccountType;
+    deleted_at: Date | string | null;
+  }>(
+    `SELECT id, user_id, name, fee_profile_id, default_currency, account_type, deleted_at
+     FROM accounts
+     WHERE id = $1 AND user_id = $2`,
+    [accountId, userId],
+  );
+  if (!result.rows[0]) return null;
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    feeProfileId: row.fee_profile_id,
+    defaultCurrency: row.default_currency,
+    accountType: row.account_type,
+    deletedAt: row.deleted_at === null
+      ? null
+      : row.deleted_at instanceof Date
+        ? row.deleted_at.toISOString()
+        : new Date(row.deleted_at).toISOString(),
   };
 }
 

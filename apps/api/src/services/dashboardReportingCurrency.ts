@@ -400,20 +400,25 @@ export function buildOverviewMarketValues(
   holdingGroups: ReadonlyArray<DashboardOverviewHoldingGroupDto>,
   reportingCurrency: AccountDefaultCurrency,
 ): DashboardOverviewMarketValueDto[] {
-  const values = new Map<string, number>();
+  const values = new Map<string, number | null>();
   for (const group of holdingGroups) {
-    if (group.reportingCurrency !== reportingCurrency || group.reportingMarketValueAmount === null) continue;
-    values.set(group.marketCode, (values.get(group.marketCode) ?? 0) + group.reportingMarketValueAmount);
+    if (group.reportingCurrency !== reportingCurrency) continue;
+    if (group.reportingMarketValueAmount === null) {
+      values.set(group.marketCode, null);
+      continue;
+    }
+    const current = values.get(group.marketCode);
+    if (current === null) continue;
+    values.set(group.marketCode, (current ?? 0) + group.reportingMarketValueAmount);
   }
   return [...values.entries()]
     .map(([marketCode, value]) => ({
       marketCode: marketCode as DashboardOverviewMarketValueDto["marketCode"],
-      value: roundToDecimal(value, 2),
+      value: value === null ? null : roundToDecimal(value, 2),
       reportingCurrency,
     }))
-    .filter((entry) => entry.value > 0)
     .sort((left, right) =>
-      right.value - left.value
+      (right.value ?? Number.NEGATIVE_INFINITY) - (left.value ?? Number.NEGATIVE_INFINITY)
       || left.marketCode.localeCompare(right.marketCode),
     );
 }

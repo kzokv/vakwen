@@ -29,7 +29,7 @@ export default async function CashLedgerPage() {
         isDemo={session.isDemo}
         localeOverride={locale}
         initialProfile={profile}
-        portfolioConfigMode="lazy"
+        portfolioConfigMode="eager"
         initialSidebarOpen={sidebarOpen}
       >
         <CashLedgerClient

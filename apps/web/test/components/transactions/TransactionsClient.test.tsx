@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { getDictionary } from "../../../lib/i18n";
 import { AppShellDataProvider, type AppShellData } from "../../../components/layout/AppShellDataContext";
@@ -8,31 +8,46 @@ import { deriveSharedContextPermissions } from "../../../features/sharing/capabi
 
 const replaceMock = vi.fn();
 const refreshMock = vi.fn();
+const routerMock = { replace: replaceMock };
 const historyRefreshMock = vi.hoisted(() => vi.fn());
 const searchParamsValue = vi.hoisted(() => ({ value: "" }));
+const transactionHistoryBrowserProps = vi.hoisted(() => ({ last: null as Record<string, unknown> | null }));
+const addTransactionCardProps = vi.hoisted(() => ({ last: null as Record<string, unknown> | null }));
+const transactionsPrimaryDataMock = vi.hoisted(() => vi.fn(() => ({
+  data: {
+    recentTransactions: [],
+    accountOptions: [],
+    capabilities: {
+      configuredMarkets: ["TW", "US"],
+      configuredCurrencies: ["TWD", "USD"],
+    },
+  },
+  isBootstrapping: false,
+  restoredAt: null,
+  restoredFromCache: false,
+  isRefreshing: false,
+  refresh: refreshMock,
+  errorMessage: "",
+})));
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: replaceMock }),
+  useRouter: () => routerMock,
   useSearchParams: () => new URLSearchParams(searchParamsValue.value),
 }));
 
 vi.mock("../../../features/portfolio/hooks/useTransactionsPrimaryData", () => ({
-  useTransactionsPrimaryData: () => ({
-    data: {
-      recentTransactions: [],
-      accountOptions: [],
-    },
-    isBootstrapping: false,
-    restoredAt: null,
-    restoredFromCache: false,
-    isRefreshing: false,
-    refresh: refreshMock,
-    errorMessage: "",
-  }),
+  useTransactionsPrimaryData: transactionsPrimaryDataMock,
 }));
 
 vi.mock("../../../components/layout/CardLayoutResetContext", () => ({
   useCardLayoutResetCount: () => 0,
+}));
+
+vi.mock("../../../components/ui/Tabs", () => ({
+  TabsRoot: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  TabsList: ({ children, ...props }: { children: ReactNode }) => <div {...props}>{children}</div>,
+  TabsTrigger: ({ children, ...props }: { children: ReactNode }) => <button type="button" {...props}>{children}</button>,
+  TabsContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
 vi.mock("../../../components/layout/SortableCardGrid", () => ({
@@ -54,7 +69,10 @@ vi.mock("../../../components/transactions/AiInboxPanel", () => ({
 }));
 
 vi.mock("../../../components/portfolio/AddTransactionCard", () => ({
-  AddTransactionCard: () => <div data-testid="mock-add-transaction-card" />,
+  AddTransactionCard: (props: Record<string, unknown>) => {
+    addTransactionCardProps.last = props;
+    return <div data-testid="mock-add-transaction-card" />;
+  },
 }));
 
 vi.mock("../../../features/portfolio/hooks/useTransactionHistory", () => ({
@@ -75,7 +93,10 @@ vi.mock("../../../features/portfolio/hooks/useTransactionHistory", () => ({
 }));
 
 vi.mock("../../../components/transactions/TransactionHistoryBrowser", () => ({
-  TransactionHistoryBrowser: () => <div data-testid="mock-transaction-history-browser" />,
+  TransactionHistoryBrowser: (props: Record<string, unknown>) => {
+    transactionHistoryBrowserProps.last = props;
+    return <div data-testid="mock-transaction-history-browser" />;
+  },
 }));
 
 beforeAll(() => {
@@ -95,8 +116,10 @@ function buildShellData(capabilities: AppShellData["currentSharedCapabilities"],
     sharedContextPermissions: deriveSharedContextPermissions(capabilities),
     canUseGlobalQuickActions: false,
     openQuickActions: vi.fn(),
+    portfolioCapabilities: null,
     reportingCurrency: "TWD",
     saveReportingCurrency: vi.fn(),
+    applyAccountMutationResponse: vi.fn(),
     isReportingCurrencySaving: false,
     reportingCurrencyError: "",
     transactionSubmission: {
@@ -119,6 +142,7 @@ function buildShellData(capabilities: AppShellData["currentSharedCapabilities"],
     feeProfileBindings: [],
     refreshPortfolioConfig: vi.fn(),
     isPortfolioConfigLoading: false,
+    portfolioConfigError: "",
     integrityIssue: null,
     showIntegrityDialog: false,
     setShowIntegrityDialog: vi.fn(),
@@ -135,6 +159,25 @@ describe("TransactionsClient shared AI Inbox visibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     historyRefreshMock.mockReset();
+    transactionsPrimaryDataMock.mockReset();
+    transactionsPrimaryDataMock.mockReturnValue({
+      data: {
+        recentTransactions: [],
+        accountOptions: [],
+        capabilities: {
+          configuredMarkets: ["TW", "US"],
+          configuredCurrencies: ["TWD", "USD"],
+        },
+      },
+      isBootstrapping: false,
+      restoredAt: null,
+      restoredFromCache: false,
+      isRefreshing: false,
+      refresh: refreshMock,
+      errorMessage: "",
+    });
+    transactionHistoryBrowserProps.last = null;
+    addTransactionCardProps.last = null;
     searchParamsValue.value = "";
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -227,5 +270,82 @@ describe("TransactionsClient shared AI Inbox visibility", () => {
 
     expect(refreshMock).toHaveBeenCalledTimes(1);
     expect(historyRefreshMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes configured markets to the history browser and add transaction card", () => {
+    act(() => {
+      root.render(
+        <AppShellDataProvider value={buildShellData(["transaction:write"])}>
+          <TransactionsClient initialTab="posted" />
+        </AppShellDataProvider>,
+      );
+    });
+
+    expect(transactionHistoryBrowserProps.last?.availableMarkets).toEqual(["TW", "US"]);
+    expect(addTransactionCardProps.last?.availableMarkets).toEqual(["TW", "US"]);
+  });
+
+  it("shows the readonly zero-account gate on transactions when no configured markets exist", () => {
+    transactionsPrimaryDataMock.mockReturnValue({
+      data: {
+        recentTransactions: [],
+        accountOptions: [],
+        capabilities: {
+          configuredMarkets: [],
+          configuredCurrencies: [],
+        },
+      },
+      isBootstrapping: false,
+      restoredAt: null,
+      restoredFromCache: false,
+      isRefreshing: false,
+      refresh: refreshMock,
+      errorMessage: "",
+    } as never);
+
+    act(() => {
+      root.render(
+        <AppShellDataProvider value={buildShellData([])}>
+          <TransactionsClient initialTab="posted" />
+        </AppShellDataProvider>,
+      );
+    });
+
+    expect(document.querySelector("[data-testid='portfolio-capabilities-zero-account-gate']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='portfolio-capabilities-zero-account-cta']")).toBeNull();
+    expect(document.querySelector("[data-testid='portfolio-capabilities-zero-account-readonly']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='mock-transaction-history-browser']")).toBeNull();
+    expect(document.querySelector("[data-testid='mock-add-transaction-card']")).toBeNull();
+  });
+
+  it("normalizes stale market filters and renders the market capability notice", () => {
+    transactionsPrimaryDataMock.mockReturnValue({
+      data: {
+        recentTransactions: [],
+        accountOptions: [],
+        capabilities: {
+          configuredMarkets: ["TW"],
+          configuredCurrencies: ["TWD"],
+        },
+      },
+      isBootstrapping: false,
+      restoredAt: null,
+      restoredFromCache: false,
+      isRefreshing: false,
+      refresh: refreshMock,
+      errorMessage: "",
+    } as never);
+    searchParamsValue.value = "marketCode=US";
+
+    act(() => {
+      root.render(
+        <AppShellDataProvider value={buildShellData(["account:manage"])}>
+          <TransactionsClient initialTab="posted" />
+        </AppShellDataProvider>,
+      );
+    });
+
+    expect(replaceMock).toHaveBeenCalledWith("/transactions?marketCode=TW", { scroll: false });
+    expect(document.querySelector("[data-testid='portfolio-capabilities-normalization-notice-market']")).not.toBeNull();
   });
 });

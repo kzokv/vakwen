@@ -41,7 +41,11 @@ export interface TSettingsDrawerElements extends TElementLocatorHelpers {
   };
 
   accountCreate: {
+    trigger: Locator;
     form: Locator;
+    portfolioConfigLoading: Locator;
+    continueButton: Locator;
+    backButton: Locator;
     nameInput: Locator;
     typePill: (type: "broker" | "bank" | "wallet") => Locator;
     currencyCard: (currency: "TWD" | "USD" | "AUD" | "KRW" | "JPY") => Locator;
@@ -187,7 +191,15 @@ export class SettingsDrawerPage extends BasePage<TSettingsDrawerElements> {
       },
 
       accountCreate: {
+        trigger: this.locate("accounts-add-account-trigger", "Add Account Trigger"),
         form: this.locate("account-create-form", "Account Create Form"),
+        portfolioConfigLoading: this.withinByCss(
+          section("accounts"),
+          '[aria-busy="true"]',
+          "Accounts Portfolio Config Loading",
+        ),
+        continueButton: this.locate("account-create-continue", "Account Create Continue"),
+        backButton: this.locate("account-create-back", "Account Create Back"),
         nameInput: this.locate("account-create-name-input", "Account Create Name Input"),
         typePill: (type) =>
           this.locate(`account-create-type-${type}`, `Account Create Type Pill (${type})`),

@@ -5,6 +5,7 @@ import { AppShell } from "../../components/layout/AppShell";
 import { getRouteLoadingLabels } from "../../components/layout/i18n";
 import { ReportsClient } from "../../components/reports/ReportsClient";
 import { parseReportRouteState } from "../../features/reports/reportState";
+import { fetchReport } from "../../features/reports/services/reportService";
 import { requireSession } from "../../lib/auth";
 import { getJson } from "../../lib/api";
 import { readSidebarStateCookie } from "../../lib/sidebar-cookie";
@@ -16,12 +17,17 @@ interface ReportsPageProps {
 
 export default async function ReportsPage({ searchParams }: ReportsPageProps) {
   const rawSearchParams = await searchParams;
-  const initialState = parseReportRouteState(rawSearchParams);
-  const [session, profile, sidebarOpen, settings] = await Promise.all([
+  const parsedInitialState = parseReportRouteState(rawSearchParams);
+  const initialState = parsedInitialState.tab === "daily-review"
+    && rawSearchParams.range === undefined
+    ? { ...parsedInitialState, useServerDefaultRange: true }
+    : parsedInitialState;
+  const [session, profile, sidebarOpen, settings, initialReport] = await Promise.all([
     requireSession(),
     getJson<ProfileWithImpersonationDto>("/profile", { contextScope: "session" }),
     readSidebarStateCookie(),
     getJson<UserSettings>("/settings", { contextScope: "session" }).catch(() => null),
+    fetchReport(initialState.tab, initialState).catch(() => null),
   ]);
 
   const locale = settings?.locale ?? "en";
@@ -38,7 +44,7 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
         initialSidebarOpen={sidebarOpen}
         portfolioConfigMode="lazy"
       >
-        <ReportsClient initialReport={null} initialState={initialState} />
+        <ReportsClient initialReport={initialReport} initialState={initialState} />
       </AppShell>
     </Suspense>
   );

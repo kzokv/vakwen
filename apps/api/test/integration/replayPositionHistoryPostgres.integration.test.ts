@@ -128,7 +128,17 @@ describePostgres("PostgresPersistence replay artifact cleanup", () => {
 
     await expect(
       persistence.hardPurgeAccount(accountId, userId, { actorUserId: userId }, { mustBeSoftDeleted: false }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({
+      account: { id: accountId },
+      capabilities: {
+        configuredMarkets: [],
+        configuredCurrencies: [],
+      },
+      reportingCurrency: {
+        effective: null,
+        reason: "no_configured_currencies",
+      },
+    });
 
     const remaining = await pool.query<{ position_action_count: string; ledger_count: string; account_count: string }>(
       `SELECT

@@ -164,6 +164,10 @@ describe("dividends", () => {
     });
     expect(reviewResponse.statusCode).toBe(200);
     expect(reviewResponse.json()).toMatchObject({
+      capabilities: {
+        configuredMarkets: ["TW"],
+        configuredCurrencies: ["TWD"],
+      },
       reviewRows: [
         expect.objectContaining({
           id: posting.dividendLedgerEntry.id,

@@ -92,25 +92,14 @@ test("[transactions]: multi-currency user can disambiguate BHP via per-market ch
   await transactions.assert.priceCurrencyIs("USD");
 });
 
-test("[transactions]: AU chip on BHP with no AUD account asks user to create a compatible account", async ({
-  settings,
+test("[transactions]: TWD-only account set → AU market chip is hidden", async ({
   transactions,
 }) => {
-  // ── Arrange: default user has only a TWD account; seed one AU instrument ──
-  await settings.arrange.seedInstruments([BHP_AU]);
-
-  // ── Act: choose the AU chip and commit BHP·AU ────────────────────────────
+  // ── Act ─────────────────────────────────────────────────────────────────
   await transactions.actions.navigateToTransactions();
-  await transactions.actions.selectMarketChip("AU");
-  await transactions.actions.typeInTickerSearch("BHP");
-  await transactions.actions.selectTickerOption("BHP", "AU");
 
-  // ── Assert: form-side chip → derived priceCurrency is AUD, but no matching
-  //    account exists so the form blocks submission and offers account create.
-  await transactions.assert.priceCurrencyIs("AUD");
-  await transactions.assert.noAccountErrorContains(/AUD/);
-  await transactions.assert.createAccountLinkHrefContains(/accountsPrefillCurrency=AUD/);
-  await transactions.assert.submitButtonIsDisabled();
+  // ── Assert: AU is not offered until an AUD account enables that market.
+  await transactions.assert.marketChipIsAbsent("AU");
 });
 
 test("[transactions]: JP chip filters Toyota catalog rows and JPY accounts", async ({
@@ -139,22 +128,12 @@ test("[transactions]: JP chip filters Toyota catalog rows and JPY accounts", asy
   await transactions.assert.priceCurrencyIs("JPY");
 });
 
-test("[transactions]: JP chip with no JPY account asks user to create a compatible account", async ({
-  settings,
+test("[transactions]: TWD-only account set → JP market chip is hidden", async ({
   transactions,
 }) => {
-  // ARRANGE: default user has only a TWD account; seed one JP instrument.
-  await settings.arrange.seedInstruments([TOYOTA_JP]);
-
-  // ACT: choose the JP chip and commit 7203/JP.
+  // ACT
   await transactions.actions.navigateToTransactions();
-  await transactions.actions.selectMarketChip("JP");
-  await transactions.actions.typeInTickerSearch("7203");
-  await transactions.actions.selectTickerOption("7203", "JP");
 
-  // ASSERT: JP selection derives JPY but blocks until a matching account exists.
-  await transactions.assert.priceCurrencyIs("JPY");
-  await transactions.assert.noAccountErrorContains(/JPY/);
-  await transactions.assert.createAccountLinkHrefContains(/accountsPrefillCurrency=JPY/);
-  await transactions.assert.submitButtonIsDisabled();
+  // ASSERT: JP is not offered until a JPY account enables that market.
+  await transactions.assert.marketChipIsAbsent("JP");
 });

@@ -6,8 +6,15 @@ import { AddTransactionDialog } from "../../../components/portfolio/AddTransacti
 import { RecordTransactionDialog } from "../../../components/portfolio/RecordTransactionDialog";
 import { getDictionary } from "../../../lib/i18n";
 
+const addTransactionCardPropsMock = vi.hoisted(() => ({
+  current: null as null | Record<string, unknown>,
+}));
+
 vi.mock("../../../components/portfolio/AddTransactionCard", () => ({
-  AddTransactionCard: () => <form data-testid="mock-add-transaction-card"><button type="submit">Submit transaction</button></form>,
+  AddTransactionCard: (props: Record<string, unknown>) => {
+    addTransactionCardPropsMock.current = props;
+    return <form data-testid="mock-add-transaction-card"><button type="submit">Submit transaction</button></form>;
+  },
 }));
 
 vi.mock("../../../components/fx-transfer/AddFxTransferCard", () => ({
@@ -85,6 +92,7 @@ describe("transaction dialog layout", () => {
           onSubmit={vi.fn(async () => undefined)}
           pending={false}
           accountOptions={[]}
+          availableMarkets={["TW"]}
           message=""
           errorMessage=""
           dict={dict}
@@ -101,6 +109,7 @@ describe("transaction dialog layout", () => {
     expect(dialog?.className).toContain("overflow-y-auto");
     expect(dialog?.className).toContain("max-w-[calc(100%_-_2rem)]");
     expect(document.body.querySelector("[data-testid='mock-add-transaction-card']")).not.toBeNull();
+    expect(addTransactionCardPropsMock.current?.availableMarkets).toEqual(["TW"]);
   });
 
   it("keeps the FX transfer dialog viewport-safe on mobile", () => {

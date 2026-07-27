@@ -1,4 +1,7 @@
-import type { AccountDto } from "@vakwen/shared-types";
+import type {
+  AccountDto,
+  AccountLifecycleMutationResponseDto,
+} from "@vakwen/shared-types";
 import { deleteJson, getJson, postJson } from "../../../lib/api";
 
 /**
@@ -13,20 +16,9 @@ import { deleteJson, getJson, postJson } from "../../../lib/api";
  */
 export type SoftDeletedAccountDto = AccountDto & { deletedAt: string };
 
-export interface SoftDeleteAccountResponse {
-  accountId: string;
-  deletedAt: string;
-}
-
-export interface RestoreAccountResponse {
-  accountId: string;
-  /** Final stored name post-collision-resolution. */
-  finalName: string;
-}
-
-export interface PermanentDeleteAccountResponse {
-  accountId: string;
-}
+export type SoftDeleteAccountResponse = AccountLifecycleMutationResponseDto;
+export type RestoreAccountResponse = AccountLifecycleMutationResponseDto;
+export type PermanentDeleteAccountResponse = AccountLifecycleMutationResponseDto;
 
 /**
  * Soft-delete an account. Per architect-design §6, the route stamps

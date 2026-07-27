@@ -76,11 +76,14 @@ describe("ReportsPage", () => {
       return {};
     }) as never);
     vi.mocked(readSidebarStateCookie).mockResolvedValue(false as never);
+    vi.mocked(fetchReport).mockImplementation(async (_tab, state) => ({
+      query: { scope: state.scope },
+    }) as never);
   });
 
   afterEach(() => vi.useRealTimers());
 
-  it("renders the reports shell from validated query state without server-seeding the report", async () => {
+  it("renders the reports shell from validated query state with a server-seeded report", async () => {
     const html = renderToStaticMarkup(await ReportsPage({
       searchParams: Promise.resolve({
         tab: "market",
@@ -96,11 +99,11 @@ describe("ReportsPage", () => {
     expect(html).toContain('data-testid="reports-client"');
     expect(html).toContain('data-state-tab="market"');
     expect(html).toContain('data-state-scope="US"');
-    expect(html).toContain('data-report-scope=""');
-    expect(fetchReport).not.toHaveBeenCalled();
+    expect(html).toContain('data-report-scope="US"');
+    expect(fetchReport).toHaveBeenCalledWith("market", expect.objectContaining({ scope: "US" }));
   });
 
-  it("does not start a report API request for scoped pages before client hydration", async () => {
+  it("server-seeds scoped pages before client hydration", async () => {
     const html = renderToStaticMarkup(await ReportsPage({
       searchParams: Promise.resolve({
         tab: "daily-review",
@@ -111,7 +114,25 @@ describe("ReportsPage", () => {
     expect(html).toContain('data-testid="reports-client"');
     expect(html).toContain('data-state-tab="daily-review"');
     expect(html).toContain('data-state-scope="TW"');
-    expect(html).toContain('data-report-scope=""');
-    expect(fetchReport).not.toHaveBeenCalled();
+    expect(html).toContain('data-report-scope="TW"');
+    expect(fetchReport).toHaveBeenCalledWith("daily-review", expect.objectContaining({
+      scope: "TW",
+      useServerDefaultRange: true,
+    }));
+  });
+
+  it("preserves an explicit daily-review range in the server seed", async () => {
+    await ReportsPage({
+      searchParams: Promise.resolve({
+        tab: "daily-review",
+        scope: "TW",
+        range: "5Y",
+      }),
+    });
+
+    expect(fetchReport).toHaveBeenCalledWith("daily-review", expect.objectContaining({
+      range: "5Y",
+    }));
+    expect(vi.mocked(fetchReport).mock.calls[0]?.[1]).not.toHaveProperty("useServerDefaultRange");
   });
 });

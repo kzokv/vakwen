@@ -54,17 +54,19 @@ test("[settings drawer]: create USD Brokerage → both accounts visible in drawe
   appShell,
   settings,
   cashLedger,
+  page,
 }) => {
   // ── Arrange ───────────────────────────────────────────────────────────────
   await appShell.actions.navigateToRoute("/portfolio");
   await appShell.actions.openSettingsSection("accounts");
-  await settings.assert.accountCreateFormIsVisible();
 
   // Precondition: only the seeded "Main" account exists.
   await settings.assert.accountNameLabelCountIs(1);
   await settings.assert.accountNameLabelContains(/Main/i);
 
   // ── Act ───────────────────────────────────────────────────────────────────
+  await settings.actions.openAccountCreateFlow();
+  await settings.assert.accountCreateFormIsVisible();
   await settings.actions.fillAccountCreateName("USD Brokerage");
   await settings.actions.selectAccountCreateType("bank");
   // KZO-183 E3: currency cards now use market labels (Taiwan / United States / Australia).
@@ -78,8 +80,12 @@ test("[settings drawer]: create USD Brokerage → both accounts visible in drawe
   const newAccount = (await submitResponse.json()) as { id: string };
 
   // ── Assert (drawer) ───────────────────────────────────────────────────────
-  // Form resets after submit (D12).
-  await settings.assert.accountCreateNameInputIsEmpty();
+  // The completed wizard closes back to the account-settings landing state.
+  await appShell.assert.mxAssertEqual(
+    await page.getByTestId("account-create-form").count(),
+    0,
+    "completed account wizard closes",
+  );
 
   // The relocated AccountsListSection now shows both accounts.
   await settings.assert.accountNameLabelCountIs(2);
@@ -110,6 +116,12 @@ test("[settings drawer]: create USD Brokerage → both accounts visible in drawe
   // account did not break a downstream consumer's mount path.
   await cashLedger.assert.filterToolbarIsVisible();
   await cashLedger.assert.filterAccountSelectIsVisible();
+  await page.getByTestId("new-fx-transfer-button").waitFor({ state: "visible" });
+  await appShell.assert.mxAssertEqual(
+    await page.getByTestId("fx-transfer-enablement").count(),
+    0,
+    "creating the second configured currency enables FX transfers",
+  );
 
   // ── Round-trip: re-open drawer, confirm new account persists ─────────────
   await appShell.actions.openSettingsSection("accounts");

@@ -29,6 +29,9 @@ import {
 import { Bar, BarChart, CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from "recharts";
 import { ChevronDown, ExternalLink, RefreshCw, Search } from "lucide-react";
 import { useAppShellData } from "../layout/AppShellDataContext";
+import { CapabilityNormalizationNotice } from "../../features/portfolio-capabilities/components/CapabilityNormalizationNotice";
+import { SingleCapabilityContext } from "../../features/portfolio-capabilities/components/SingleCapabilityContext";
+import { ZeroAccountSetupGate } from "../../features/portfolio-capabilities/components/ZeroAccountSetupGate";
 import { Button } from "../ui/Button";
 import { Alert, AlertDescription, AlertTitle } from "../ui/shadcn/alert";
 import { Badge } from "../ui/shadcn/badge";
@@ -138,6 +141,7 @@ import {
   type ReportHealthQuery,
   type ReportHealthReason,
 } from "../../features/reports/reportHealthDeepLinks";
+import { resolveReportScopeCapabilityState } from "../../features/reports/reportScopeCapabilities";
 import type { AnyReportDto } from "../../features/reports/services/reportService";
 import type { AppDictionary } from "../../lib/i18n";
 import { getRouteDtoContextScope } from "../../lib/routeDtoCache";
@@ -268,12 +272,15 @@ export function ReportsClient({
   const {
     canUseGlobalQuickActions,
     contextRefreshSignal,
+    isSharedContext,
     locale,
     openQuickActions,
+    portfolioCapabilities,
     reportingCurrency,
     routeCachePolicy,
     sessionUserId,
     sessionUserRole,
+    sharedContextPermissions,
     uiDict,
   } = useAppShellData();
   const searchParamsKey = searchParams?.toString() ?? "";
@@ -287,8 +294,39 @@ export function ReportsClient({
       : parseReportRouteState(new URLSearchParams(searchParamsKey)),
     [initialState, searchParamsKey],
   );
-  const [state, setState] = useState(() => routeState);
+  const [initialScopeCapabilities] = useState(
+    () => resolveReportScopeCapabilityState(
+      initialReport?.capabilities ?? portfolioCapabilities,
+      routeState.scope,
+    ),
+  );
+  const [initialNormalizedState] = useState<ReportRouteState>(
+    () => initialScopeCapabilities.normalization
+      ? { ...routeState, scope: initialScopeCapabilities.scope }
+      : routeState,
+  );
+  const initialNormalizationKey = initialScopeCapabilities.normalization
+    ? `${routeState.scope}->${initialScopeCapabilities.scope}:${initialScopeCapabilities.normalization.reason}`
+    : null;
+  const [state, setState] = useState(() => initialNormalizedState);
+  const [scopeNormalizationNotice, setScopeNormalizationNotice] = useState<{
+    id: number;
+    key: string;
+    effectiveLabel: string;
+    normalization: NonNullable<ReturnType<typeof resolveReportScopeCapabilityState>["normalization"]>;
+  } | null>(() => initialScopeCapabilities.normalization?.reason === "unconfigured_market"
+    ? {
+        id: Date.now(),
+        key: initialNormalizationKey ?? "",
+        effectiveLabel: initialScopeCapabilities.scope,
+        normalization: initialScopeCapabilities.normalization,
+      }
+    : null);
   const [timelineMode, setTimelineMode] = useState<TimelineMode>("auto");
+  const handledScopeNormalizationKeyRef = useRef<string | null>(null);
+  const pendingRouteStateRef = useRef<ReportRouteState | null>(
+    reportRouteStatesEqual(routeState, initialNormalizedState) ? null : initialNormalizedState,
+  );
   const { effectiveRanges } = useEffectiveRanges();
   const cacheScope = getRouteDtoContextScope(sessionUserId);
   const report = useReportData({
@@ -299,15 +337,53 @@ export function ReportsClient({
     locale,
     state,
   });
+  const canManageAccounts = !isSharedContext || sharedContextPermissions.canManageAccounts;
+  const reportCapabilities = report.data?.capabilities
+    ?? initialReport?.capabilities
+    ?? (report.isBootstrapping ? portfolioCapabilities : null);
+  const scopeCapabilities = useMemo(
+    () => resolveReportScopeCapabilityState(reportCapabilities, state.scope),
+    [reportCapabilities, state.scope],
+  );
 
   const updateState = useCallback((patch: Partial<ReportRouteState>) => {
     const next = { ...state, ...patch, useServerDefaultRange: false };
     if (reportRouteStatesEqual(state, next)) return;
+    pendingRouteStateRef.current = next;
     setState(next);
     router.replace(`/reports?${reportRouteStateToSearchParams(next).toString()}`, { scroll: false });
   }, [router, state]);
 
+  const normalizeState = useCallback((patch: Partial<ReportRouteState>) => {
+    const next = { ...state, ...patch, useServerDefaultRange: false };
+    if (reportRouteStatesEqual(state, next)) return;
+    pendingRouteStateRef.current = next;
+    setState(next);
+    // Capability normalization is a correction to the current client view,
+    // not a new server navigation. Native history keeps Next's search-param
+    // hooks in sync without remounting controlled Radix collections midway
+    // through their ref lifecycle.
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `/reports?${reportRouteStateToSearchParams(next).toString()}`,
+    );
+  }, [state]);
+
   useEffect(() => {
+    const pending = pendingRouteStateRef.current;
+    if (!pending || reportRouteStatesEqual(routeState, pending)) return;
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `/reports?${reportRouteStateToSearchParams(pending).toString()}`,
+    );
+  }, [routeState]);
+
+  useEffect(() => {
+    const pending = pendingRouteStateRef.current;
+    if (pending && !reportRouteStatesEqual(routeState, pending)) return;
+    if (pending) pendingRouteStateRef.current = null;
     setState((current) => reportRouteStatesEqual(current, routeState) ? current : routeState);
   }, [routeState, searchParamsKey]);
 
@@ -320,6 +396,43 @@ export function ReportsClient({
     if (effectiveRanges.includes(state.range)) return;
     updateState({ range: effectiveRanges[0] });
   }, [effectiveRanges, state.range, state.useServerDefaultRange, updateState]);
+
+  useEffect(() => {
+    if (!reportCapabilities) return;
+
+    const normalizationKey = `${state.scope}->${scopeCapabilities.scope}:${scopeCapabilities.normalization?.reason ?? "none"}`;
+    if (state.scope === scopeCapabilities.scope) {
+      if (handledScopeNormalizationKeyRef.current === normalizationKey) {
+        handledScopeNormalizationKeyRef.current = null;
+      }
+      return;
+    }
+
+    if (handledScopeNormalizationKeyRef.current === normalizationKey) return;
+    handledScopeNormalizationKeyRef.current = normalizationKey;
+
+    const scopeNormalization = scopeCapabilities.normalization;
+    if (scopeNormalization?.reason === "unconfigured_market") {
+      setScopeNormalizationNotice((current) => (
+        current?.key === normalizationKey
+          ? current
+          : {
+              id: Date.now(),
+              key: normalizationKey,
+              effectiveLabel: scopeCapabilities.scope,
+              normalization: scopeNormalization,
+            }
+      ));
+    }
+
+    normalizeState({ scope: scopeCapabilities.scope });
+  }, [
+    normalizeState,
+    reportCapabilities,
+    scopeCapabilities.normalization,
+    scopeCapabilities.scope,
+    state.scope,
+  ]);
 
   const restoredLabel = report.restoredAt
     ? new Intl.DateTimeFormat(locale === "zh-TW" ? "zh-TW" : "en-US", {
@@ -345,6 +458,7 @@ export function ReportsClient({
               <CardDescription className="mt-2 max-w-3xl leading-6">{uiDict.navigation.reportsDescription}</CardDescription>
             </div>
             <ReportControls
+              scopeCapabilities={scopeCapabilities}
               dict={uiDict}
               ranges={effectiveRanges}
               state={state}
@@ -366,98 +480,117 @@ export function ReportsClient({
         </CardContent>
       </Card>
 
-      <Tabs
-        value={state.tab}
-        onValueChange={(value) => updateState({ tab: value as ReportTab })}
-        data-testid="reports-tabs"
-      >
-        <TabsList className="h-auto w-full flex-wrap justify-start">
-          {REPORT_TABS.map((value) => (
-            <TabsTrigger key={value} value={value} data-testid={`reports-tab-${value}`}>
-              {reportTabLabel(uiDict, value)}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+      {reportCapabilities && scopeCapabilities.mode === "zero" ? (
+        <ZeroAccountSetupGate
+          dict={uiDict}
+          canManageAccounts={canManageAccounts}
+          returnTo="/reports"
+        />
+      ) : (
+        <>
+          {scopeNormalizationNotice ? (
+            <CapabilityNormalizationNotice
+              key={`reports-scope-normalization-${scopeNormalizationNotice.id}`}
+              dict={uiDict}
+              kind="reportScope"
+              normalization={scopeNormalizationNotice.normalization}
+              effectiveLabel={scopeNormalizationNotice.effectiveLabel}
+            />
+          ) : null}
+          <Tabs
+            value={state.tab}
+            onValueChange={(value) => updateState({ tab: value as ReportTab })}
+            data-testid="reports-tabs"
+          >
+            <TabsList className="h-auto w-full flex-wrap justify-start">
+              {REPORT_TABS.map((value) => (
+                <TabsTrigger key={value} value={value} data-testid={`reports-tab-${value}`}>
+                  {reportTabLabel(uiDict, value)}
+                </TabsTrigger>
+              ))}
+            </TabsList>
 
-        <TabsContent value="daily-review" className="mt-5">
-          <ReportBody
-            data={report.data}
-            errorMessage={report.errorMessage}
-            isBootstrapping={report.isBootstrapping}
-            isRefreshing={report.isRefreshing}
-            locale={locale}
-            onRefresh={() => { void report.refresh({ bypassCache: true }); }}
-            realizedPnlHref={buildRealizedPnlTransactionsHref({
-              query: report.data?.query ?? initialReport?.query ?? {
-                scope: state.scope,
-                rangeStartDate: new Date().toISOString().slice(0, 10),
-                rangeEndDate: new Date().toISOString().slice(0, 10),
-              },
-              returnTo: `/reports?${reportRouteStateToSearchParams(state).toString()}`,
-            })}
-            unrealizedPnlHref={unrealizedPnlHref}
-            healthQuery={healthQuery}
-            reportState={state}
-            showAdminActions={sessionUserRole === "admin"}
-            tab="daily-review"
-            timelineMode={timelineMode}
-            onTimelineModeChange={setTimelineMode}
-            uiDict={uiDict}
-          />
-        </TabsContent>
-        <TabsContent value="portfolio" className="mt-5">
-          <ReportBody
-            data={report.data}
-            errorMessage={report.errorMessage}
-            isBootstrapping={report.isBootstrapping}
-            isRefreshing={report.isRefreshing}
-            locale={locale}
-            onRefresh={() => { void report.refresh({ bypassCache: true }); }}
-            realizedPnlHref={buildRealizedPnlTransactionsHref({
-              query: report.data?.query ?? initialReport?.query ?? {
-                scope: state.scope,
-                rangeStartDate: new Date().toISOString().slice(0, 10),
-                rangeEndDate: new Date().toISOString().slice(0, 10),
-              },
-              returnTo: `/reports?${reportRouteStateToSearchParams(state).toString()}`,
-            })}
-            unrealizedPnlHref={unrealizedPnlHref}
-            healthQuery={healthQuery}
-            reportState={state}
-            showAdminActions={sessionUserRole === "admin"}
-            tab="portfolio"
-            timelineMode={timelineMode}
-            onTimelineModeChange={setTimelineMode}
-            uiDict={uiDict}
-          />
-        </TabsContent>
-        <TabsContent value="market" className="mt-5">
-          <ReportBody
-            data={report.data}
-            errorMessage={report.errorMessage}
-            isBootstrapping={report.isBootstrapping}
-            isRefreshing={report.isRefreshing}
-            locale={locale}
-            onRefresh={() => { void report.refresh({ bypassCache: true }); }}
-            realizedPnlHref={buildRealizedPnlTransactionsHref({
-              query: report.data?.query ?? initialReport?.query ?? {
-                scope: state.scope,
-                rangeStartDate: new Date().toISOString().slice(0, 10),
-                rangeEndDate: new Date().toISOString().slice(0, 10),
-              },
-              returnTo: `/reports?${reportRouteStateToSearchParams(state).toString()}`,
-            })}
-            unrealizedPnlHref={unrealizedPnlHref}
-            healthQuery={healthQuery}
-            reportState={state}
-            showAdminActions={sessionUserRole === "admin"}
-            tab="market"
-            timelineMode={timelineMode}
-            onTimelineModeChange={setTimelineMode}
-            uiDict={uiDict}
-          />
-        </TabsContent>
-      </Tabs>
+            <TabsContent value="daily-review" className="mt-5">
+              <ReportBody
+                data={report.data}
+                errorMessage={report.errorMessage}
+                isBootstrapping={report.isBootstrapping}
+                isRefreshing={report.isRefreshing}
+                locale={locale}
+                onRefresh={() => { void report.refresh({ bypassCache: true }); }}
+                realizedPnlHref={buildRealizedPnlTransactionsHref({
+                  query: report.data?.query ?? initialReport?.query ?? {
+                    scope: state.scope,
+                    rangeStartDate: new Date().toISOString().slice(0, 10),
+                    rangeEndDate: new Date().toISOString().slice(0, 10),
+                  },
+                  returnTo: `/reports?${reportRouteStateToSearchParams(state).toString()}`,
+                })}
+                unrealizedPnlHref={unrealizedPnlHref}
+                healthQuery={healthQuery}
+                reportState={state}
+                showAdminActions={sessionUserRole === "admin"}
+                tab="daily-review"
+                timelineMode={timelineMode}
+                onTimelineModeChange={setTimelineMode}
+                uiDict={uiDict}
+              />
+            </TabsContent>
+            <TabsContent value="portfolio" className="mt-5">
+              <ReportBody
+                data={report.data}
+                errorMessage={report.errorMessage}
+                isBootstrapping={report.isBootstrapping}
+                isRefreshing={report.isRefreshing}
+                locale={locale}
+                onRefresh={() => { void report.refresh({ bypassCache: true }); }}
+                realizedPnlHref={buildRealizedPnlTransactionsHref({
+                  query: report.data?.query ?? initialReport?.query ?? {
+                    scope: state.scope,
+                    rangeStartDate: new Date().toISOString().slice(0, 10),
+                    rangeEndDate: new Date().toISOString().slice(0, 10),
+                  },
+                  returnTo: `/reports?${reportRouteStateToSearchParams(state).toString()}`,
+                })}
+                unrealizedPnlHref={unrealizedPnlHref}
+                healthQuery={healthQuery}
+                reportState={state}
+                showAdminActions={sessionUserRole === "admin"}
+                tab="portfolio"
+                timelineMode={timelineMode}
+                onTimelineModeChange={setTimelineMode}
+                uiDict={uiDict}
+              />
+            </TabsContent>
+            <TabsContent value="market" className="mt-5">
+              <ReportBody
+                data={report.data}
+                errorMessage={report.errorMessage}
+                isBootstrapping={report.isBootstrapping}
+                isRefreshing={report.isRefreshing}
+                locale={locale}
+                onRefresh={() => { void report.refresh({ bypassCache: true }); }}
+                realizedPnlHref={buildRealizedPnlTransactionsHref({
+                  query: report.data?.query ?? initialReport?.query ?? {
+                    scope: state.scope,
+                    rangeStartDate: new Date().toISOString().slice(0, 10),
+                    rangeEndDate: new Date().toISOString().slice(0, 10),
+                  },
+                  returnTo: `/reports?${reportRouteStateToSearchParams(state).toString()}`,
+                })}
+                unrealizedPnlHref={unrealizedPnlHref}
+                healthQuery={healthQuery}
+                reportState={state}
+                showAdminActions={sessionUserRole === "admin"}
+                tab="market"
+                timelineMode={timelineMode}
+                onTimelineModeChange={setTimelineMode}
+                uiDict={uiDict}
+              />
+            </TabsContent>
+          </Tabs>
+        </>
+      )}
     </div>
   );
 }
@@ -483,6 +616,7 @@ function formatReportMessage(template: string, values: Record<string, string>): 
 }
 
 function ReportControls({
+  scopeCapabilities,
   dict,
   ranges,
   resolvedReportingCurrency,
@@ -491,6 +625,7 @@ function ReportControls({
   state,
   onChange,
 }: {
+  scopeCapabilities: ReturnType<typeof resolveReportScopeCapabilityState>;
   dict: AppDictionary;
   ranges: string[];
   resolvedReportingCurrency: string;
@@ -503,12 +638,29 @@ function ReportControls({
   return (
     <div className="flex min-w-0 flex-col gap-3 lg:max-w-xl" data-testid="reports-controls">
       <div className="grid gap-3 sm:grid-cols-2">
-        <ControlSelect label={dict.reports.controlScope} value={state.scope} onValueChange={(scope) => onChange({ scope: scope as ReportRouteState["scope"] })}>
-          {REPORT_SCOPES.map((scope) => <SelectItem key={scope} value={scope}>{scope === "all" ? dict.reports.allMarkets : scope}</SelectItem>)}
-        </ControlSelect>
-        <ControlSelect label={dict.reports.controlRange} value={state.range} onValueChange={(range) => onChange({ range })}>
-          {rangeOptions.map((range) => <SelectItem key={range} value={range}>{range}</SelectItem>)}
-        </ControlSelect>
+        {scopeCapabilities.mode === "single" ? (
+          <SingleCapabilityContext
+            label={dict.reports.controlScope}
+            value={reportScopeLabel(dict, scopeCapabilities.scope)}
+            testId="portfolio-capabilities-single-context-report-scope"
+          />
+        ) : scopeCapabilities.mode === "zero" ? null : (
+          <ControlSelect label={dict.reports.controlScope} value={state.scope} onValueChange={(scope) => onChange({ scope: scope as ReportRouteState["scope"] })}>
+            {(scopeCapabilities.mode === "multiple" ? scopeCapabilities.configuredReportScopes : REPORT_SCOPES)
+              .map((scope) => <SelectItem key={scope} value={scope}>{reportScopeLabel(dict, scope)}</SelectItem>)}
+          </ControlSelect>
+        )}
+        {scopeCapabilities.normalization?.reason ? (
+          <SingleCapabilityContext
+            label={dict.reports.controlRange}
+            value={state.range}
+            testId="portfolio-capabilities-normalizing-report-range"
+          />
+        ) : (
+          <ControlSelect label={dict.reports.controlRange} value={state.range} onValueChange={(range) => onChange({ range })}>
+            {rangeOptions.map((range) => <SelectItem key={range} value={range}>{range}</SelectItem>)}
+          </ControlSelect>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" data-testid="reports-controls-meta">
         <Badge variant="secondary">{formatReportMessage(dict.reports.resolvedCurrency, { currency: resolvedReportingCurrency })}</Badge>
@@ -528,6 +680,10 @@ function ReportControls({
       </div>
     </div>
   );
+}
+
+function reportScopeLabel(dict: AppDictionary, scope: ReportRouteState["scope"]): string {
+  return scope === "all" ? dict.reports.allMarkets : scope;
 }
 
 function ControlSelect({

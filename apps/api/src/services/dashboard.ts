@@ -13,7 +13,7 @@ import type {
   UserSettings,
 } from "@vakwen/shared-types";
 import { currencyFor, MARKET_CODES, marketCodeFor, type MarketCode } from "@vakwen/shared-types";
-import { roundToDecimal } from "@vakwen/domain";
+import { derivePortfolioCapabilities, roundToDecimal } from "@vakwen/domain";
 import type { QuoteSnapshot } from "@vakwen/domain";
 import { deriveEligibleQuantity, resolveDividendEventMarketCode, resolveDividendTickerName } from "./dividends.js";
 import { listTransactionInstruments } from "./instrumentRegistry.js";
@@ -76,6 +76,7 @@ export function buildDashboardOverview(
     summaryAsOf,
   }: BuildDashboardOverviewOptions,
 ): RawDashboardOverview {
+  const capabilities = derivePortfolioCapabilities(store.accounts);
   const quoteByKey = new Map(quotes.flatMap((quote): Array<[string, QuoteSnapshot | ResolvedQuoteSnapshot]> => {
     const entries: Array<[string, QuoteSnapshot | ResolvedQuoteSnapshot]> = [[quoteSnapshotKey(quote.ticker, quote.marketCode), quote]];
     if (!quote.marketCode) entries.push([quote.ticker, quote]);
@@ -120,6 +121,7 @@ export function buildDashboardOverview(
   // The route handler pipes the summary through `translateOverviewSummary` to
   // produce the final wire shape with FX-translated KPIs.
   return {
+    capabilities,
     settings: withTickerPriceFreshnessSettings(store.settings),
     summary: {
       asOf: summaryAsOf ?? new Date().toISOString().slice(0, 10),

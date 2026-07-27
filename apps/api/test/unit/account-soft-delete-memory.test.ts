@@ -80,6 +80,7 @@ describe("MemoryPersistence — softDeleteAccount", () => {
     const result = await p.softDeleteAccount("acc-soft", userId, baseAudit);
 
     expect(typeof result.deletedAt).toBe("string");
+    if (result.deletedAt === null) throw new Error("Expected deletedAt to be populated");
     expect(new Date(result.deletedAt).getTime()).toBeGreaterThan(0);
   });
 
@@ -108,6 +109,43 @@ describe("MemoryPersistence — softDeleteAccount", () => {
     );
     expect(active.find((a) => a.id === "acc-hide")).toBeUndefined();
   });
+
+  it("falls back the owner's persisted reporting currency to the first remaining configured currency", async () => {
+    await p._setUserPreferences(userId, { reportingCurrency: "TWD" });
+    await seedAccount(p, userId, { id: "acc-us", name: "USD Account", defaultCurrency: "USD" });
+
+    const result = await p.softDeleteAccount("acc-1", userId, baseAudit);
+
+    expect(result.capabilities).toEqual({
+      configuredMarkets: ["US"],
+      configuredCurrencies: ["USD"],
+    });
+    expect(result.reportingCurrency).toEqual({
+      requested: "USD",
+      effective: "USD",
+      reason: null,
+    });
+    await expect(p.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
+  });
+
+  it("clears the stored reporting currency when zero active accounts remain", async () => {
+    await p._setUserPreferences(userId, { reportingCurrency: "TWD", locale: "en" });
+
+    const result = await p.softDeleteAccount("acc-1", userId, baseAudit);
+
+    expect(result.capabilities).toEqual({
+      configuredMarkets: [],
+      configuredCurrencies: [],
+    });
+    expect(result.reportingCurrency).toEqual({
+      requested: null,
+      effective: null,
+      reason: "no_configured_currencies",
+    });
+    await expect(p.getUserPreferences(userId)).resolves.toEqual({ locale: "en" });
+  });
 });
 
 describe("MemoryPersistence — restoreAccount", () => {
@@ -129,7 +167,7 @@ describe("MemoryPersistence — restoreAccount", () => {
 
     const result = await p.restoreAccount("acc-r1", userId, baseAudit);
 
-    expect(result.accountId).toBe("acc-r1");
+    expect(result.account.id).toBe("acc-r1");
     expect(result.finalName).toBe("Restore Me");
   });
 
@@ -163,6 +201,52 @@ describe("MemoryPersistence — restoreAccount", () => {
     await expect(
       p.restoreAccount("acc-active", userId, baseAudit),
     ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("does not restore the previous reporting currency after a fallback-triggering delete", async () => {
+    await p._setUserPreferences(userId, { reportingCurrency: "TWD" });
+    await seedAccount(p, userId, { id: "acc-us", name: "USD Account", defaultCurrency: "USD" });
+    await p.softDeleteAccount("acc-1", userId, baseAudit);
+
+    const result = await p.restoreAccount("acc-1", userId, baseAudit);
+
+    expect(result.capabilities).toEqual({
+      configuredMarkets: ["TW", "US"],
+      configuredCurrencies: ["TWD", "USD"],
+    });
+    expect(result.reportingCurrency).toEqual({
+      requested: "USD",
+      effective: "USD",
+      reason: null,
+    });
+    await expect(p.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
+  });
+
+  it("persists the fallback reporting currency when restoring the sole non-TWD account", async () => {
+    await p.updateAccount({
+      userId,
+      accountId: "acc-1",
+      defaultCurrency: "USD",
+      auditInput: baseAudit,
+    });
+    await p.softDeleteAccount("acc-1", userId, baseAudit);
+
+    const result = await p.restoreAccount("acc-1", userId, baseAudit);
+
+    expect(result.capabilities).toEqual({
+      configuredMarkets: ["US"],
+      configuredCurrencies: ["USD"],
+    });
+    expect(result.reportingCurrency).toEqual({
+      requested: "USD",
+      effective: "USD",
+      reason: null,
+    });
+    await expect(p.getUserPreferences(userId)).resolves.toMatchObject({
+      reportingCurrency: "USD",
+    });
   });
 });
 

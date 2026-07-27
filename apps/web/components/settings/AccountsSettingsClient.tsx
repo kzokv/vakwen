@@ -1,8 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import type { AccountDefaultCurrency } from "@vakwen/shared-types";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Plus } from "lucide-react";
+import type {
+  AccountDefaultCurrency,
+  AccountLifecycleMutationResponseDto,
+  AccountMutationResponseDto,
+  AccountType,
+} from "@vakwen/shared-types";
 import { ACCOUNT_DEFAULT_CURRENCIES } from "@vakwen/shared-types";
 import { useSettingsRouteContext } from "./SettingsRouteProvider";
 import { getDictionary } from "../../lib/i18n";
@@ -10,7 +16,7 @@ import { useAppShellData } from "../layout/AppShellDataContext";
 import { AccountCreateForm } from "../../features/settings/components/AccountCreateForm";
 import { AccountsListSection } from "../../features/settings/components/AccountsListSection";
 import { createAccount } from "../../features/cash-ledger/services/cashLedgerService";
-import { patchFeeProfile, renameAccount } from "../../features/settings/services/settingsService";
+import { patchAccount, patchFeeProfile } from "../../features/settings/services/settingsService";
 import { postJson } from "../../lib/api";
 import type { FeeProfileDto } from "@vakwen/shared-types";
 import type {
@@ -20,6 +26,13 @@ import type {
 } from "../../features/settings/types/settingsUi";
 import { toSettingsFormModel } from "../../features/settings/mappers/settingsMappers";
 import { parseAccountDividendSettingsFocus } from "../../features/dividends/services/dividendCalculationService";
+import { Button } from "../ui/Button";
+import { Drawer } from "../ui/Drawer";
+import { normalizeCapabilityReturnTo } from "../../features/portfolio-capabilities/portfolioCapabilities";
+
+interface AccountSettingsDraft extends SettingsAccountBindingModel {
+  accountType: AccountType;
+}
 
 const PREFILL_CURRENCIES = new Set<AccountDefaultCurrency>(ACCOUNT_DEFAULT_CURRENCIES);
 
@@ -46,6 +59,7 @@ function parsePrefillCurrency(raw: string | null): AccountDefaultCurrency | unde
  * profile-card has its own narrow save action.)
  */
 export function AccountsSettingsClient() {
+  const router = useRouter();
   const { locale, initialSettings } = useSettingsRouteContext();
   const dict = getDictionary(locale);
   const shellData = useAppShellData();
@@ -65,6 +79,7 @@ export function AccountsSettingsClient() {
     () => searchParams ? parseAccountDividendSettingsFocus(searchParams) : null,
     [searchParams],
   );
+  const returnTo = normalizeCapabilityReturnTo(searchParams?.get("returnTo") ?? null);
 
   // Build a local working copy of the settings form model from the
   // shell account config. AccountsListSection still operates on its own
@@ -81,23 +96,102 @@ export function AccountsSettingsClient() {
     );
   }, [initialSettings, shellData.accounts, shellData.feeProfiles, shellData.feeProfileBindings]);
 
-  const [accountDrafts, setAccountDrafts] = useState<SettingsAccountBindingModel[]>([]);
+  const [accountDrafts, setAccountDrafts] = useState<AccountSettingsDraft[]>([]);
   const [profiles, setProfiles] = useState<SettingsProfileModel[]>([]);
   const [bindings, setBindings] = useState<SettingsSecurityBindingModel[]>([]);
+  const [createFlowOpen, setCreateFlowOpen] = useState(false);
+  const [highlightedAccountId, setHighlightedAccountId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!initialModel) return;
-    setAccountDrafts(initialModel.accounts);
+    setAccountDrafts(initialModel.accounts.map((draft) => ({
+      ...draft,
+      accountType: shellData.accounts.find((account) => account.id === draft.id)?.accountType ?? "broker",
+    })));
     setProfiles(initialModel.feeProfiles);
     setBindings(initialModel.feeProfileBindings);
-  }, [initialModel]);
+  }, [initialModel, shellData.accounts]);
+
+  const applyAccountMutation = useCallback((response: AccountMutationResponseDto) => {
+    shellData.applyAccountMutationResponse(response);
+    setAccountDrafts((current) => {
+      const nextDraft: AccountSettingsDraft = {
+        id: response.account.id,
+        feeProfileId: response.account.feeProfileId,
+        accountType: response.account.accountType,
+      };
+      const index = current.findIndex((draft) => draft.id === nextDraft.id);
+      if (index === -1) {
+        return [...current, nextDraft];
+      }
+      const next = [...current];
+      next[index] = nextDraft;
+      return next;
+    });
+    setProfiles((current) => {
+      const nextProfile: SettingsProfileModel = {
+        id: response.feeProfile.id,
+        accountId: response.feeProfile.accountId,
+        name: response.feeProfile.name,
+        boardCommissionRate: response.feeProfile.boardCommissionRate,
+        commissionDiscountPercent: response.feeProfile.commissionDiscountPercent,
+        minimumCommissionAmount: response.feeProfile.minimumCommissionAmount,
+        commissionCurrency: response.feeProfile.commissionCurrency,
+        commissionRoundingMode: response.feeProfile.commissionRoundingMode,
+        taxRoundingMode: response.feeProfile.taxRoundingMode,
+        stockSellTaxRateBps: response.feeProfile.stockSellTaxRateBps,
+        stockDayTradeTaxRateBps: response.feeProfile.stockDayTradeTaxRateBps,
+        etfSellTaxRateBps: response.feeProfile.etfSellTaxRateBps,
+        bondEtfSellTaxRateBps: response.feeProfile.bondEtfSellTaxRateBps,
+        commissionChargeMode: response.feeProfile.commissionChargeMode,
+      };
+      const index = current.findIndex((profile) => profile.id === nextProfile.id);
+      if (index === -1) {
+        return [...current, nextProfile];
+      }
+      const next = [...current];
+      next[index] = nextProfile;
+      return next;
+    });
+  }, [shellData]);
+
+  const applyAccountLifecycleMutation = useCallback((
+    response: AccountLifecycleMutationResponseDto,
+    operation: "soft_delete" | "restore" | "hard_purge",
+  ) => {
+    if (shellData.applyAccountLifecycleMutationResponse) {
+      shellData.applyAccountLifecycleMutationResponse(response, operation);
+    } else {
+      void shellData.refreshPortfolioConfig();
+    }
+    setAccountDrafts((current) => {
+      if (operation !== "restore") {
+        return current.filter((draft) => draft.id !== response.accountId);
+      }
+      const restored = {
+        id: response.account.id,
+        feeProfileId: response.account.feeProfileId,
+        accountType: response.account.accountType,
+      };
+      const index = current.findIndex((draft) => draft.id === response.accountId);
+      if (index === -1) return [...current, restored];
+      const next = [...current];
+      next[index] = restored;
+      return next;
+    });
+    if (operation === "hard_purge") {
+      setProfiles((current) =>
+        current.filter((profile) => profile.accountId !== response.accountId),
+      );
+    }
+  }, [shellData]);
 
   const handleRenameAccount = useCallback(
     async (accountId: string, name: string) => {
-      await renameAccount(accountId, name);
-      await shellData.refreshPortfolioConfig();
+      const response = await patchAccount(accountId, { name });
+      applyAccountMutation(response);
     },
-    [shellData],
+    [applyAccountMutation],
   );
 
   // Local mutators — Accounts tab's fee-profile editing is held in local
@@ -114,6 +208,31 @@ export function AccountsSettingsClient() {
       );
     },
     [],
+  );
+
+  const updateAccountType = useCallback(
+    (accountId: string, accountType: AccountType) => {
+      setAccountDrafts((current) =>
+        current.map((draft) => (draft.id === accountId ? { ...draft, accountType } : draft)),
+      );
+    },
+    [],
+  );
+
+  const saveAccountFeeProfile = useCallback(
+    async (accountId: string, feeProfileId: string) => {
+      const response = await patchAccount(accountId, { feeProfileId });
+      applyAccountMutation(response);
+    },
+    [applyAccountMutation],
+  );
+
+  const saveAccountType = useCallback(
+    async (accountId: string, accountType: AccountType) => {
+      const response = await patchAccount(accountId, { accountType });
+      applyAccountMutation(response);
+    },
+    [applyAccountMutation],
   );
 
   const updateProfileField = useCallback(
@@ -279,6 +398,21 @@ export function AccountsSettingsClient() {
     setBindings((current) => current.filter((_, idx) => idx !== index));
   }, []);
 
+  const handleAccountsRefresh = useCallback(
+    async (response?: AccountMutationResponseDto | undefined) => {
+      if (response) {
+        const shouldReturn = shellData.accounts.length === 0 && returnTo !== null;
+        applyAccountMutation(response);
+        setHighlightedAccountId(response.account.id);
+        setCreateFlowOpen(false);
+        if (shouldReturn) {
+          router.replace(returnTo);
+        }
+      }
+    },
+    [applyAccountMutation, returnTo, router, shellData.accounts.length],
+  );
+
   if (!initialSettings) {
     return (
       <div data-testid="settings-section-accounts" className="text-sm text-muted-foreground">
@@ -288,50 +422,128 @@ export function AccountsSettingsClient() {
   }
 
   const hasShellAccountConfig = shellData.accounts.length > 0 || shellData.feeProfiles.length > 0;
+  const hasAccounts = shellData.accounts.length > 0;
+
+  if (shellData.isPortfolioConfigLoading && !hasShellAccountConfig) {
+    return (
+      <div
+        className="rounded-xl border border-border bg-card px-4 py-6 text-sm text-muted-foreground shadow-sm"
+        data-testid="settings-section-accounts"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        {dict.feedback.loadingSettings}
+      </div>
+    );
+  }
+
+  if (shellData.portfolioConfigError && !hasShellAccountConfig) {
+    return (
+      <div
+        className="space-y-3 rounded-xl border border-destructive/40 bg-card px-4 py-6 shadow-sm"
+        data-testid="settings-section-accounts"
+        role="alert"
+      >
+        <p className="text-sm text-destructive">{shellData.portfolioConfigError}</p>
+        <Button
+          type="button"
+          variant="secondary"
+          data-testid="accounts-config-retry"
+          onClick={() => {
+            void shellData.refreshPortfolioConfig().catch(() => undefined);
+          }}
+        >
+          {dict.actions.retry}
+        </Button>
+      </div>
+    );
+  }
+
+  const accountCreateForm = (
+    <AccountCreateForm
+      onCreate={createAccount}
+      onAccountsRefresh={handleAccountsRefresh}
+      prefillCurrency={prefillCurrency}
+      dict={dict}
+      disabled={!canManageAccounts}
+      existingAccounts={shellData.accounts}
+      isFirstAccount={!hasAccounts}
+    />
+  );
 
   return (
     <div className="space-y-4" data-testid="settings-section-accounts">
-      <AccountCreateForm
-        onCreate={createAccount}
-        onAccountsRefresh={shellData.refreshPortfolioConfig}
-        prefillCurrency={prefillCurrency}
-        dict={dict}
-        disabled={!canManageAccounts}
-      />
-      {shellData.isPortfolioConfigLoading && !hasShellAccountConfig ? (
-        <div
-          className="rounded-xl border border-border bg-card px-4 py-6 text-sm text-muted-foreground shadow-sm"
-          role="status"
-          aria-live="polite"
-          aria-busy="true"
-        >
-          {dict.feedback.loadingSettings}
-        </div>
+      {!hasAccounts ? (
+        <section className="space-y-4 rounded-xl border border-border bg-card p-4">
+          <div className="space-y-1">
+            <h2 className="text-xl font-semibold text-foreground">{dict.settings.accountsZeroStateTitle}</h2>
+            <p className="text-sm text-muted-foreground">{dict.settings.accountsZeroStateDescription}</p>
+          </div>
+          {canManageAccounts ? accountCreateForm : (
+            <div
+              className="rounded-lg border border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground"
+              data-testid="accounts-shared-readonly-note"
+            >
+              {dict.switcher.readonlyDescription}
+            </div>
+          )}
+        </section>
       ) : (
-        <AccountsListSection
-          accounts={shellData.accounts}
-          accountDrafts={accountDrafts}
-          profiles={profiles}
-          feeProfileBindings={bindings}
-          activeLocale={initialSettings.locale ?? locale}
-          onUpdateAccountProfile={updateAccountProfile}
-          onRenameAccount={handleRenameAccount}
-          onAddProfileForAccount={addProfileForAccount}
-          onUpdateProfileField={updateProfileField}
-          onSaveProfile={saveProfile}
-          onRemoveProfileFromAccount={removeProfileFromAccount}
-          onDuplicateProfilesFromAccount={duplicateProfilesFromAccount}
-          onAddBinding={addBinding}
-          onUpdateBinding={updateBinding}
-          onRemoveBinding={removeBinding}
-          onAccountsChanged={shellData.refreshPortfolioConfig}
-          effectiveAccountHardPurgeDays={initialSettings.effectiveAccountHardPurgeDays}
-          dict={dict}
-          canManage={canManageAccounts}
-          allowHardPurge={allowHardPurge}
-          focusedDividendSettings={focusedDividendSettings}
-        />
+        <>
+          <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
+            <div className="space-y-1">
+              <h2 className="text-xl font-semibold text-foreground">{dict.settings.accountsListSectionTitle}</h2>
+              <p className="text-sm text-muted-foreground">{dict.settings.accountsCreateAdditionalDescription}</p>
+            </div>
+            {canManageAccounts ? (
+              <Button
+                type="button"
+                onClick={() => setCreateFlowOpen(true)}
+                data-testid="accounts-add-account-trigger"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                {dict.settings.accountsAddAccountTrigger}
+              </Button>
+            ) : null}
+          </section>
+          <Drawer
+            open={createFlowOpen}
+            onOpenChange={setCreateFlowOpen}
+            title={dict.settings.accountsAddAccountTrigger}
+            closeLabel={dict.actions.cancel}
+          >
+            {accountCreateForm}
+          </Drawer>
+        </>
       )}
+      <AccountsListSection
+        accounts={shellData.accounts}
+        accountDrafts={accountDrafts}
+        profiles={profiles}
+        feeProfileBindings={bindings}
+        activeLocale={initialSettings.locale ?? locale}
+        onUpdateAccountProfile={updateAccountProfile}
+        onSaveAccountProfile={saveAccountFeeProfile}
+        onUpdateAccountType={updateAccountType}
+        onSaveAccountType={saveAccountType}
+        onRenameAccount={handleRenameAccount}
+        onAddProfileForAccount={addProfileForAccount}
+        onUpdateProfileField={updateProfileField}
+        onSaveProfile={saveProfile}
+        onRemoveProfileFromAccount={removeProfileFromAccount}
+        onDuplicateProfilesFromAccount={duplicateProfilesFromAccount}
+        onAddBinding={addBinding}
+        onUpdateBinding={updateBinding}
+        onRemoveBinding={removeBinding}
+        onLifecycleMutation={applyAccountLifecycleMutation}
+        effectiveAccountHardPurgeDays={initialSettings.effectiveAccountHardPurgeDays}
+        dict={dict}
+        canManage={canManageAccounts}
+        allowHardPurge={allowHardPurge}
+        focusedDividendSettings={focusedDividendSettings}
+        highlightedAccountId={highlightedAccountId}
+      />
     </div>
   );
 }

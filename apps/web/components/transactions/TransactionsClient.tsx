@@ -19,11 +19,14 @@ import { useCardLayoutResetCount } from "../layout/CardLayoutResetContext";
 import { SortableCardGrid } from "../layout/SortableCardGrid";
 import { buildRouteDtoCacheKey, getRouteDtoContextScope } from "../../lib/routeDtoCache";
 import { AddTransactionCard } from "../portfolio/AddTransactionCard";
+import { CapabilityNormalizationNotice } from "../../features/portfolio-capabilities/components/CapabilityNormalizationNotice";
+import { ZeroAccountSetupGate } from "../../features/portfolio-capabilities/components/ZeroAccountSetupGate";
 import { Card } from "../ui/Card";
 import { Button } from "../ui/Button";
 import { TabsContent, TabsList, TabsRoot, TabsTrigger } from "../ui/Tabs";
 import { AiInboxPanel } from "./AiInboxPanel";
 import { TransactionHistoryBrowser } from "./TransactionHistoryBrowser";
+import { resolveTransactionMarketCapabilityState } from "../../features/portfolio/transactionMarketCapabilities";
 
 interface TransactionsClientProps {
   initialTab?: "posted" | "ai-inbox";
@@ -76,11 +79,24 @@ export function TransactionsClient({
   }), [historyState]);
   const history = useTransactionHistory(historyQuery, { enabled: activeTab === "posted" });
   const addPanelRef = useRef<HTMLDivElement | null>(null);
+  const [marketNormalizationNotice, setMarketNormalizationNotice] = useState<{
+    id: number;
+    key: string;
+    effectiveLabel: string;
+    normalization: NonNullable<ReturnType<typeof resolveTransactionMarketCapabilityState>["normalization"]>;
+  } | null>(null);
+  const handledMarketNormalizationKeyRef = useRef<string | null>(null);
   const effectiveTransactionAccountOptions = transactionAccountOptions.length > 0
     ? transactionAccountOptions
     : primary.data.accountOptions;
   const canWriteTransactions = !isSharedContext || sharedContextPermissions.canWriteTransactions;
   const canReadAiDrafts = !isSharedContext || sharedContextPermissions.canReadAiDrafts;
+  const canManageAccounts = !isSharedContext || sharedContextPermissions.canManageAccounts;
+  const transactionCapabilities = primary.isBootstrapping ? null : primary.data.capabilities ?? null;
+  const marketCapabilities = useMemo(
+    () => resolveTransactionMarketCapabilityState(transactionCapabilities, historyState.marketCode),
+    [historyState.marketCode, transactionCapabilities],
+  );
 
   const updateHistoryState = useCallback((
     patch: Partial<TransactionHistoryRouteState>,
@@ -110,6 +126,45 @@ export function TransactionsClient({
       router.replace(query ? `/transactions?${query}` : "/transactions", { scroll: false });
     }
   }, [historyState, router, searchParamsKey]);
+
+  useEffect(() => {
+    if (primary.isBootstrapping) return;
+
+    const normalizationKey = `${historyState.marketCode}->${marketCapabilities.filterMarketCode}:${marketCapabilities.normalization?.reason ?? "none"}`;
+    if (historyState.marketCode === marketCapabilities.filterMarketCode) {
+      if (handledMarketNormalizationKeyRef.current === normalizationKey) {
+        handledMarketNormalizationKeyRef.current = null;
+      }
+      return;
+    }
+
+    if (handledMarketNormalizationKeyRef.current === normalizationKey) {
+      return;
+    }
+    handledMarketNormalizationKeyRef.current = normalizationKey;
+
+    const marketNormalization = marketCapabilities.normalization;
+    if (marketNormalization?.reason === "unconfigured_market" && marketCapabilities.filterMarketCode !== "ALL") {
+      setMarketNormalizationNotice((current) => (
+        current?.key === normalizationKey
+          ? current
+          : {
+              id: Date.now(),
+              key: normalizationKey,
+              effectiveLabel: marketCapabilities.filterMarketCode,
+              normalization: marketNormalization,
+            }
+      ));
+    }
+
+    updateHistoryState({ marketCode: marketCapabilities.filterMarketCode }, { resetOffset: true });
+  }, [
+    historyState.marketCode,
+    marketCapabilities.filterMarketCode,
+    marketCapabilities.normalization,
+    primary.isBootstrapping,
+    updateHistoryState,
+  ]);
 
   // Re-fetch when AppShell signals a context/data change (shared-context
   // switch, transaction submit, retry click). Initial mount skipped.
@@ -277,17 +332,35 @@ export function TransactionsClient({
         </TabsList>
 
         <TabsContent value="posted">
-          <TransactionHistoryBrowser
-            accountOptions={effectiveTransactionAccountOptions}
-            data={history.data}
-            dict={dict}
-            errorMessage={history.errorMessage}
-            isLoading={history.isLoading}
-            locale={locale}
-            onChange={updateHistoryState}
-            onSort={handleHistorySort}
-            state={historyState}
-          />
+          {transactionCapabilities && marketCapabilities.configuredMarkets.length === 0 ? (
+            <ZeroAccountSetupGate
+              dict={dict}
+              canManageAccounts={canManageAccounts}
+              returnTo="/transactions"
+            />
+          ) : (
+            <>
+              {marketNormalizationNotice ? (
+                <CapabilityNormalizationNotice
+                  key={`transactions-market-normalization-${marketNormalizationNotice.id}`}
+                  dict={dict}
+                  kind="market"
+                  normalization={marketNormalizationNotice.normalization}
+                  effectiveLabel={marketNormalizationNotice.effectiveLabel}
+                />
+              ) : null}
+              <TransactionHistoryBrowser
+                accountOptions={effectiveTransactionAccountOptions}
+                availableMarkets={marketCapabilities.configuredMarkets}
+                data={history.data}
+                dict={dict}
+                errorMessage={history.errorMessage}
+                isLoading={history.isLoading}
+                locale={locale}
+                onChange={updateHistoryState}
+                onSort={handleHistorySort}
+                state={historyState}
+              />
           {/*
             KZO-162 — Add/status cards render through one SortableCardGrid.
             The full transaction history browser is fixed above this grid so
@@ -355,6 +428,7 @@ export function TransactionsClient({
                       <AddTransactionCard
                         value={transactionSubmission.draftTransaction}
                         accountOptions={effectiveTransactionAccountOptions}
+                        availableMarkets={marketCapabilities.configuredMarkets}
                         pending={transactionSubmission.isSubmitting}
                         onChange={(next) => {
                           transactionSubmission.setMessage("");
@@ -383,6 +457,8 @@ export function TransactionsClient({
               }
             }}
           </SortableCardGrid>
+            </>
+          )}
         </TabsContent>
 
         {canReadAiDrafts ? (

@@ -6,7 +6,11 @@ import {
   postTransactionDraftRows,
   preflightTransactionDraftCandidates,
 } from "../../src/services/mcpDrafts.js";
-import { getAccountManagerComponent } from "../../src/services/mcpAccounts.js";
+import {
+  createAccount as createMcpAccount,
+  getAccountManagerComponent,
+  updateAccount as updateMcpAccount,
+} from "../../src/services/mcpAccounts.js";
 import { BACKFILL_QUEUE, getBackfillSingletonKey } from "../../src/services/market-data/backfillWorker.js";
 import type { McpRequestContext } from "../../src/mcp/types.js";
 
@@ -113,6 +117,35 @@ describe("mcp draft services", () => {
       softDeleteAccount: null,
       restoreAccount: "restore_account",
     });
+  });
+
+  it("uses bounded account persistence for MCP create and update without loading the full store", async () => {
+    const loadStore = vi
+      .spyOn(app.persistence, "loadStore")
+      .mockRejectedValue(new Error("MCP account mutation must not load the aggregate store"));
+    const saveStore = vi
+      .spyOn(app.persistence, "saveStore")
+      .mockRejectedValue(new Error("MCP account mutation must not save the aggregate store"));
+    const deps = { app, requestContext: createRequestContext() };
+
+    const created = await createMcpAccount(deps, {
+      name: "MCP bounded account",
+      defaultCurrency: "USD",
+      accountType: "broker",
+    });
+    const updated = await updateMcpAccount(deps, {
+      accountId: created.account.id,
+      name: "MCP bounded account renamed",
+      accountType: "bank",
+    });
+
+    expect(updated.account).toMatchObject({
+      id: created.account.id,
+      name: "MCP bounded account renamed",
+      accountType: "bank",
+    });
+    expect(loadStore).not.toHaveBeenCalled();
+    expect(saveStore).not.toHaveBeenCalled();
   });
 
   it("blocks same-day collisions against posted transactions when ordering data is missing", async () => {

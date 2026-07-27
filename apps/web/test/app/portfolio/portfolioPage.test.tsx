@@ -24,13 +24,19 @@ vi.mock("../../../components/layout/AppShell", () => ({
     portfolioConfigMode,
   }: {
     children: React.ReactNode;
-    initialPortfolioConfig?: { accounts?: unknown[] } | null;
+    initialPortfolioConfig?: {
+      accounts?: unknown[];
+      capabilities?: { configuredCurrencies?: unknown[] };
+    } | null;
     portfolioConfigMode?: string;
   }) => (
     <div
       data-testid="mock-app-shell"
       data-portfolio-config-mode={portfolioConfigMode ?? ""}
       data-portfolio-config-accounts={String(initialPortfolioConfig?.accounts?.length ?? 0)}
+      data-portfolio-config-currencies={String(
+        initialPortfolioConfig?.capabilities?.configuredCurrencies?.length ?? 0,
+      )}
     >
       {children}
     </div>
@@ -75,6 +81,10 @@ const primaryData = {
   feeProfiles: [{ id: "fee-1" }],
   feeProfileBindings: [],
   integrityIssue: null,
+  capabilities: {
+    configuredMarkets: ["TW", "US"],
+    configuredCurrencies: ["TWD", "USD"],
+  },
 };
 
 describe("PortfolioPage", () => {
@@ -103,6 +113,7 @@ describe("PortfolioPage", () => {
     expect(html).toContain('data-has-initial-primary="true"');
     expect(html).toContain('data-holdings-count="1"');
     expect(html).toContain('data-portfolio-config-accounts="1"');
+    expect(html).toContain('data-portfolio-config-currencies="2"');
   });
 
   it("falls back to lazy client bootstrap when server primary load fails", async () => {
