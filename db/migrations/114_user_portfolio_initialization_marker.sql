@@ -1,5 +1,30 @@
-ALTER TABLE users
-  ADD COLUMN IF NOT EXISTS portfolio_initialized BOOLEAN NOT NULL DEFAULT false;
+DO $$
+DECLARE
+  marker_already_exists BOOLEAN;
+BEGIN
+  SELECT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'users'
+      AND column_name = 'portfolio_initialized'
+  )
+  INTO marker_already_exists;
+
+  ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS portfolio_initialized BOOLEAN NOT NULL DEFAULT false;
+
+  -- Existing users have already crossed the one-time bootstrap boundary, even
+  -- when they currently have no accounts because they intentionally removed
+  -- them. Only the first application may mark this pre-migration population;
+  -- a rerun must preserve new users still awaiting their one-time bootstrap.
+  IF NOT marker_already_exists THEN
+    UPDATE users
+    SET portfolio_initialized = true
+    WHERE portfolio_initialized = false;
+  END IF;
+END
+$$;
 
 -- Before configured-currency controls existed, a stored reporting currency
 -- could outlive every matching account. Preserve valid preferences, otherwise
@@ -55,10 +80,3 @@ SET preferences = CASE
     updated_at = NOW()
 FROM normalized_preferences normalized
 WHERE normalized.user_id = up.user_id;
-
--- Existing users have already crossed the one-time bootstrap boundary, even
--- when they currently have no accounts because they intentionally removed
--- them. Marking them initialized prevents a later read from recreating Main.
-UPDATE users
-SET portfolio_initialized = true
-WHERE portfolio_initialized = false;

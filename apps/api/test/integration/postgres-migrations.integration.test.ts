@@ -851,7 +851,7 @@ describePostgres("postgres migrations", () => {
     expect(baselineSignature).toEqual(upgradedSignature);
   }, 15_000);
 
-  it("migration 114 normalizes stale reporting currencies and marks existing portfolios initialized", async () => {
+  it("migration 114 preserves uninitialized users created after its first application", async () => {
     await resetDatabase();
     await applyMigrationFiles(await getNumberedMigrationsBefore("114_user_portfolio_initialization_marker.sql"));
     await pool.query(
@@ -899,6 +899,20 @@ describePostgres("postgres migrations", () => {
         preferences: { locale: "en", reportingCurrency: "USD" },
       },
     ]);
+
+    await pool.query(
+      `INSERT INTO users (id, email)
+       VALUES ('migration-114-new', 'migration-114-new@example.com')`,
+    );
+    await applyMigrationFiles(["114_user_portfolio_initialization_marker.sql"]);
+
+    await expect(pool.query<{ portfolio_initialized: boolean }>(
+      `SELECT portfolio_initialized
+         FROM users
+        WHERE id = 'migration-114-new'`,
+    )).resolves.toMatchObject({
+      rows: [{ portfolio_initialized: false }],
+    });
   });
 
   it("converts legacy full-year market calendar rows into exception-only records", async () => {
