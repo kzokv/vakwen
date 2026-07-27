@@ -858,6 +858,8 @@ describePostgres("postgres migrations", () => {
       `INSERT INTO users (id, email)
        VALUES
          ('migration-114-us', 'migration-114-us@example.com'),
+         ('migration-114-us-implicit', 'migration-114-us-implicit@example.com'),
+         ('migration-114-us-no-row', 'migration-114-us-no-row@example.com'),
          ('migration-114-empty', 'migration-114-empty@example.com')`,
     );
     await seedAccountWithFeeProfilePost042({
@@ -867,10 +869,25 @@ describePostgres("postgres migrations", () => {
       feeProfileId: "migration-114-us-profile",
       defaultCurrency: "USD",
     });
+    await seedAccountWithFeeProfilePost042({
+      userId: "migration-114-us-implicit",
+      accountId: "migration-114-us-implicit-account",
+      accountName: "Implicit USD",
+      feeProfileId: "migration-114-us-implicit-profile",
+      defaultCurrency: "USD",
+    });
+    await seedAccountWithFeeProfilePost042({
+      userId: "migration-114-us-no-row",
+      accountId: "migration-114-us-no-row-account",
+      accountName: "No Preferences USD",
+      feeProfileId: "migration-114-us-no-row-profile",
+      defaultCurrency: "USD",
+    });
     await pool.query(
       `INSERT INTO user_preferences (user_id, preferences)
        VALUES
          ('migration-114-us', '{"reportingCurrency":"TWD","locale":"en"}'::jsonb),
+         ('migration-114-us-implicit', '{"locale":"en"}'::jsonb),
          ('migration-114-empty', '{"reportingCurrency":"AUD","locale":"en"}'::jsonb)`,
     );
 
@@ -884,7 +901,12 @@ describePostgres("postgres migrations", () => {
       `SELECT u.id, u.portfolio_initialized, up.preferences
          FROM users u
          JOIN user_preferences up ON up.user_id = u.id
-        WHERE u.id IN ('migration-114-us', 'migration-114-empty')
+        WHERE u.id IN (
+          'migration-114-us',
+          'migration-114-us-implicit',
+          'migration-114-us-no-row',
+          'migration-114-empty'
+        )
         ORDER BY u.id`,
     );
     expect(result.rows).toEqual([
@@ -897,6 +919,16 @@ describePostgres("postgres migrations", () => {
         id: "migration-114-us",
         portfolio_initialized: true,
         preferences: { locale: "en", reportingCurrency: "USD" },
+      },
+      {
+        id: "migration-114-us-implicit",
+        portfolio_initialized: true,
+        preferences: { locale: "en", reportingCurrency: "USD" },
+      },
+      {
+        id: "migration-114-us-no-row",
+        portfolio_initialized: true,
+        preferences: { reportingCurrency: "USD" },
       },
     ]);
 

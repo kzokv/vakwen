@@ -27,56 +27,70 @@ END
 $$;
 
 -- Before configured-currency controls existed, a stored reporting currency
--- could outlive every matching account. Preserve valid preferences, otherwise
--- fall back in canonical capability order; empty portfolios have no effective
--- reporting currency and therefore drop the key.
-WITH normalized_preferences AS (
+-- could outlive every matching account, while lazy preference creation left
+-- some account owners with an implicit TWD default. Include both populations:
+-- preserve valid preferences, otherwise fall back in canonical capability
+-- order; empty portfolios have no effective reporting currency and therefore
+-- drop the key.
+WITH candidate_users AS (
+  SELECT user_id
+  FROM user_preferences
+  UNION
+  SELECT DISTINCT user_id
+  FROM accounts
+  WHERE deleted_at IS NULL
+),
+normalized_preferences AS (
   SELECT
-    up.user_id,
+    candidate.user_id,
+    COALESCE(up.preferences, '{}'::jsonb) AS preferences,
     CASE
       WHEN EXISTS (
         SELECT 1
         FROM accounts a
-        WHERE a.user_id = up.user_id
+        WHERE a.user_id = candidate.user_id
           AND a.deleted_at IS NULL
           AND a.default_currency = up.preferences->>'reportingCurrency'
       ) THEN up.preferences->>'reportingCurrency'
       WHEN EXISTS (
         SELECT 1 FROM accounts a
-        WHERE a.user_id = up.user_id AND a.deleted_at IS NULL AND a.default_currency = 'TWD'
+        WHERE a.user_id = candidate.user_id AND a.deleted_at IS NULL AND a.default_currency = 'TWD'
       ) THEN 'TWD'
       WHEN EXISTS (
         SELECT 1 FROM accounts a
-        WHERE a.user_id = up.user_id AND a.deleted_at IS NULL AND a.default_currency = 'USD'
+        WHERE a.user_id = candidate.user_id AND a.deleted_at IS NULL AND a.default_currency = 'USD'
       ) THEN 'USD'
       WHEN EXISTS (
         SELECT 1 FROM accounts a
-        WHERE a.user_id = up.user_id AND a.deleted_at IS NULL AND a.default_currency = 'AUD'
+        WHERE a.user_id = candidate.user_id AND a.deleted_at IS NULL AND a.default_currency = 'AUD'
       ) THEN 'AUD'
       WHEN EXISTS (
         SELECT 1 FROM accounts a
-        WHERE a.user_id = up.user_id AND a.deleted_at IS NULL AND a.default_currency = 'KRW'
+        WHERE a.user_id = candidate.user_id AND a.deleted_at IS NULL AND a.default_currency = 'KRW'
       ) THEN 'KRW'
       WHEN EXISTS (
         SELECT 1 FROM accounts a
-        WHERE a.user_id = up.user_id AND a.deleted_at IS NULL AND a.default_currency = 'JPY'
+        WHERE a.user_id = candidate.user_id AND a.deleted_at IS NULL AND a.default_currency = 'JPY'
       ) THEN 'JPY'
       ELSE NULL
     END AS reporting_currency
-  FROM user_preferences up
-  WHERE up.preferences ? 'reportingCurrency'
+  FROM candidate_users candidate
+  LEFT JOIN user_preferences up ON up.user_id = candidate.user_id
 )
-UPDATE user_preferences up
-SET preferences = CASE
+INSERT INTO user_preferences (user_id, preferences)
+SELECT
+  normalized.user_id,
+  CASE
       WHEN normalized.reporting_currency IS NULL
-        THEN up.preferences - 'reportingCurrency'
+        THEN normalized.preferences - 'reportingCurrency'
       ELSE jsonb_set(
-        up.preferences,
+        normalized.preferences,
         '{reportingCurrency}',
         to_jsonb(normalized.reporting_currency),
         true
       )
-    END,
-    updated_at = NOW()
+  END
 FROM normalized_preferences normalized
-WHERE normalized.user_id = up.user_id;
+ON CONFLICT (user_id) DO UPDATE
+SET preferences = EXCLUDED.preferences,
+    updated_at = NOW();
