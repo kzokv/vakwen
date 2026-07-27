@@ -61,7 +61,7 @@ type LifecycleEventPayload =
       reportingCurrency: AccountLifecycleMutationResponseDto["reportingCurrency"];
     };
 
-function normalizeRequestedReportingCurrency(
+export function normalizeRequestedReportingCurrency(
   configuredCurrencies: readonly AccountDefaultCurrency[],
   requested: AccountDefaultCurrency | null,
 ): PortfolioSelectionNormalizationResult<AccountDefaultCurrency> {

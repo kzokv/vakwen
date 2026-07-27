@@ -93,6 +93,46 @@ describe("account mutation routes", () => {
     );
   });
 
+  it("POST /accounts returns the committed result when reporting-currency enrichment fails", async () => {
+    vi.spyOn(app.persistence, "getUserPreferences").mockRejectedValue(
+      new Error("preferences unavailable"),
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/accounts",
+      headers: {
+        cookie: sessionCookie,
+      },
+      payload: {
+        name: "Committed Create Without Preferences",
+        defaultCurrency: "USD",
+        accountType: "broker",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      account: {
+        name: "Committed Create Without Preferences",
+        defaultCurrency: "USD",
+      },
+      reportingCurrency: {
+        requested: null,
+        effective: "TWD",
+        reason: null,
+      },
+    });
+    await expect(app.persistence.listActiveAccounts(ownerUserId)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Committed Create Without Preferences",
+          defaultCurrency: "USD",
+        }),
+      ]),
+    );
+  });
+
   it("PATCH /accounts/:id uses the specialized persistence write and never falls back to loadStore/saveStore", async () => {
     const loadStoreSpy = vi.spyOn(app.persistence, "loadStore").mockRejectedValue(
       new Error("PATCH /accounts/:id should not call loadStore"),
@@ -138,6 +178,41 @@ describe("account mutation routes", () => {
       account: {
         id: "acc-1",
         accountType: "wallet",
+      },
+    });
+    await expect(app.persistence.listActiveAccounts(ownerUserId)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "acc-1", accountType: "wallet" }),
+      ]),
+    );
+  });
+
+  it("PATCH /accounts/:id returns the committed result when reporting-currency enrichment fails", async () => {
+    vi.spyOn(app.persistence, "getUserPreferences").mockRejectedValue(
+      new Error("preferences unavailable"),
+    );
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/accounts/acc-1",
+      headers: {
+        cookie: sessionCookie,
+      },
+      payload: {
+        accountType: "wallet",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      account: {
+        id: "acc-1",
+        accountType: "wallet",
+      },
+      reportingCurrency: {
+        requested: null,
+        effective: "TWD",
+        reason: null,
       },
     });
     await expect(app.persistence.listActiveAccounts(ownerUserId)).resolves.toEqual(

@@ -199,6 +199,7 @@ import {
   unrealizedPnlAnalysisRouteQuerySchema,
 } from "../services/unrealizedPnlAnalysis.js";
 import {
+  normalizeRequestedReportingCurrency,
   publishAccountMutationEventToOwnerAndActiveGrantees,
   publishLifecycleEventToOwnerAndActiveGrantees,
 } from "../services/accountMutationEvents.js";
@@ -1822,6 +1823,7 @@ async function buildPortfolioAuditInput(
 
 async function buildAccountMutationResponse(
   app: FastifyInstance,
+  req: FastifyRequest,
   sessionUserId: string,
   payload: {
     account: AccountMutationResponseDto["account"];
@@ -1830,29 +1832,24 @@ async function buildAccountMutationResponse(
     changedFields?: string[];
   },
 ): Promise<AccountMutationResponseDto> {
-  const prefs = await app.persistence.getUserPreferences(sessionUserId);
-  const requested = resolveReportingCurrency(prefs);
+  let requested: AccountDefaultCurrency | null = null;
+  try {
+    const prefs = await app.persistence.getUserPreferences(sessionUserId);
+    requested = resolveReportingCurrency(prefs);
+  } catch (error) {
+    req.log.warn(
+      { error, sessionUserId, accountId: payload.account.id },
+      "account mutation reporting-currency enrichment failed",
+    );
+  }
   const configuredCurrencies = payload.capabilities.configuredCurrencies;
-  const effective = configuredCurrencies.includes(requested)
-    ? requested
-    : configuredCurrencies[0] ?? null;
-  const reason =
-    effective === requested
-      ? null
-      : configuredCurrencies.length === 0
-        ? "no_configured_currencies"
-        : "unconfigured_currency";
 
   return {
     ...payload.account,
     account: payload.account,
     feeProfile: payload.feeProfile,
     capabilities: payload.capabilities,
-    reportingCurrency: {
-      requested,
-      effective,
-      reason,
-    },
+    reportingCurrency: normalizeRequestedReportingCurrency(configuredCurrencies, requested),
     ...(payload.changedFields && payload.changedFields.length > 0
       ? { changedFields: payload.changedFields }
       : {}),
@@ -5011,7 +5008,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       accountId: result.account.id,
     });
     await publishAccountMutationEventToOwnerAndActiveGrantees(app, userId, "account_created", result);
-    return buildAccountMutationResponse(app, sessionUserId, result);
+    return buildAccountMutationResponse(app, req, sessionUserId, result);
   });
 
   app.patch("/accounts/:id", async (req) => {
@@ -5050,7 +5047,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       changedFields: result.changedFields ?? Object.keys(body),
     });
     await publishAccountMutationEventToOwnerAndActiveGrantees(app, userId, "account_updated", result);
-    return buildAccountMutationResponse(app, sessionUserId, result);
+    return buildAccountMutationResponse(app, req, sessionUserId, result);
   });
 
   app.get("/accounts/:id/dividend-settings/:marketCode", async (req) => {
