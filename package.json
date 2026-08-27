@@ -14,6 +14,7 @@
   "scripts": {
     "build": "npm run build -w @vakwen/config -w libs/domain -w libs/shared-types -w @vakwen/test-framework -w @vakwen/test-e2e -w @vakwen/test-api && npm run build -w @vakwen/api -w @vakwen/web",
     "dev": "bash scripts/help.sh dev",
+    "prototype:tw-stock-research-v1": "npm run prototype:tw-stock-research-v1 -w @vakwen/api --",
     "dev:local:bypass:mem": "AUTH_MODE=dev_bypass PERSISTENCE_BACKEND=memory bash scripts/dev.sh dev:local:bypass:mem",
     "dev:local:bypass:pg": "AUTH_MODE=dev_bypass PERSISTENCE_BACKEND=postgres bash scripts/dev.sh dev:local:bypass:pg",
     "dev:local:oauth:mem": "AUTH_MODE=oauth PERSISTENCE_BACKEND=memory bash scripts/dev.sh dev:local:oauth:mem",
