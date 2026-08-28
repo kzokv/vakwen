@@ -5,6 +5,7 @@ import {
   resetMcpRateLimitBucketsForTest,
 } from "../../src/mcp/policy.js";
 import type { McpAuthContext } from "../../src/mcp/types.js";
+import { buildMcpPolicyToolScopes } from "../../src/mcp/registerMcpRoutes.js";
 
 function authContext(): McpAuthContext {
   return {
@@ -19,6 +20,7 @@ function authContext(): McpAuthContext {
   };
 }
 
+
 function fakeApp() {
   return {
     persistence: {
@@ -31,7 +33,7 @@ function fakeApp() {
         enabled: true,
         maxActiveConnectionsPerUser: 3,
         allowedProviders: { chatgpt: true, self_hosted: true },
-        groupToggles: { read: true, drafts: true, write: false },
+        groupToggles: { read: true, research: false, drafts: true, write: false },
         inactivityExpiryDays: 90,
         expirationWarningDays: 7,
         freshAuthMaxAgeMs: 600_000,
@@ -45,13 +47,14 @@ function fakeApp() {
   };
 }
 
+
 function fakeAppWithGroupDisabled() {
   const app = fakeApp() as ReturnType<typeof fakeApp>;
   app.persistence.getAiConnectorPolicySettings = async () => ({
     enabled: true,
     maxActiveConnectionsPerUser: 3,
     allowedProviders: { chatgpt: true, self_hosted: true },
-    groupToggles: { read: false, drafts: true, write: false },
+    groupToggles: { read: false, research: false, drafts: true, write: false },
     inactivityExpiryDays: 90,
     expirationWarningDays: 7,
     freshAuthMaxAgeMs: 600_000,
@@ -72,6 +75,13 @@ describe("DefaultMcpPolicyService", () => {
   afterEach(() => {
     vi.useRealTimers();
     resetMcpRateLimitBucketsForTest();
+  });
+
+  it("builds authorization from the complete tool registry independent of startup discovery policy", () => {
+    expect(buildMcpPolicyToolScopes()).toMatchObject({
+      search_instruments: "portfolio:mcp_read",
+      get_portfolio_overview: "portfolio:mcp_read",
+    });
   });
 
   it("rate limits reads by connector, user, IP, and portfolio context", async () => {

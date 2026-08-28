@@ -2,24 +2,48 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AiConnectorScope } from "@vakwen/shared-types";
 import { Env } from "@vakwen/config";
 import { routeError } from "../lib/routeError.js";
-import { ALL_MCP_SCOPES, listMcpToolDefinitions } from "./tools.js";
+import type { AiConnectorPolicySettingsRecord } from "../persistence/types.js";
+import {
+  ALL_MCP_SCOPES,
+  listMcpToolDefinitions,
+  researchScopeAcquisitionAllowed,
+  scopesForListedTool,
+} from "./tools.js";
 import type { McpProtectedResourceMetadata } from "./types.js";
 
-const INITIAL_MCP_SCOPES: AiConnectorScope[] = ["portfolio:mcp_read"];
+function implementedScopesFor(settings?: Pick<AiConnectorPolicySettingsRecord, "groupToggles">): Set<AiConnectorScope> {
+  const implementedScopes = new Set<AiConnectorScope>();
+  for (const tool of listMcpToolDefinitions({ legacyReadGroupEnabled: settings?.groupToggles.read ?? true })) {
+    for (const scope of scopesForListedTool(tool)) {
+      if (scope === "research:read" && !researchScopeAcquisitionAllowed()) continue;
+      implementedScopes.add(scope);
+    }
+  }
+  return implementedScopes;
+}
 
-export function getSupportedMcpScopes(): AiConnectorScope[] {
-  const implementedScopes = new Set(listMcpToolDefinitions().map((tool) => tool.scope));
+export function getSupportedMcpScopes(settings?: Pick<AiConnectorPolicySettingsRecord, "groupToggles">): AiConnectorScope[] {
+  const implementedScopes = implementedScopesFor(settings);
   return ALL_MCP_SCOPES.filter((scope) => implementedScopes.has(scope));
 }
 
-export function getInitialMcpScopes(): AiConnectorScope[] {
-  const supportedScopes = new Set(getSupportedMcpScopes());
-  return INITIAL_MCP_SCOPES.filter((scope) => supportedScopes.has(scope));
+export function getInitialMcpScopes(settings?: Pick<AiConnectorPolicySettingsRecord, "groupToggles">): AiConnectorScope[] {
+  const supportedScopes = new Set(getSupportedMcpScopes(settings));
+  if (settings?.groupToggles.read !== false && supportedScopes.has("portfolio:mcp_read")) {
+    return ["portfolio:mcp_read"];
+  }
+  if (settings?.groupToggles.research === true && supportedScopes.has("research:read")) {
+    return ["research:read"];
+  }
+  return [];
 }
 
-export function withInitialMcpScopes(scopes: AiConnectorScope[]): AiConnectorScope[] {
-  const requested = new Set([...getInitialMcpScopes(), ...scopes]);
-  return getSupportedMcpScopes().filter((scope) => requested.has(scope));
+export function withInitialMcpScopes(
+  scopes: AiConnectorScope[],
+  settings?: Pick<AiConnectorPolicySettingsRecord, "groupToggles">,
+): AiConnectorScope[] {
+  const requested = new Set([...getInitialMcpScopes(settings), ...scopes]);
+  return getSupportedMcpScopes(settings).filter((scope) => requested.has(scope));
 }
 
 export function buildRequestOrigin(req: FastifyRequest): string {
@@ -71,10 +95,11 @@ export async function getMcpProtectedResourceMetadata(
   req: FastifyRequest,
 ): Promise<McpProtectedResourceMetadata> {
   const issuer = await getMcpOAuthIssuer(app, req);
+  const settings = await app.persistence.getAiConnectorPolicySettings();
   return {
     resource: `${issuer}/mcp`,
     authorization_servers: [issuer],
-    scopes_supported: getSupportedMcpScopes(),
+    scopes_supported: getSupportedMcpScopes(settings),
     bearer_methods_supported: ["header"],
     resource_documentation: `${issuer}/mcp/health`,
   };
@@ -93,6 +118,7 @@ export function getAuthorizationResponseIssuer(issuer: string): string | undefin
 export async function getMcpAuthorizationServerMetadata(app: FastifyInstance, req: FastifyRequest) {
   const issuer = await getMcpOAuthIssuer(app, req);
   const authorizationResponseIssuer = getAuthorizationResponseIssuer(issuer);
+  const settings = await app.persistence.getAiConnectorPolicySettings();
   return {
     issuer,
     authorization_endpoint: `${issuer}/oauth/authorize`,
@@ -106,7 +132,7 @@ export async function getMcpAuthorizationServerMetadata(app: FastifyInstance, re
     ...(authorizationResponseIssuer
       ? { authorization_response_iss_parameter_supported: true }
       : {}),
-    scopes_supported: getSupportedMcpScopes(),
+    scopes_supported: getSupportedMcpScopes(settings),
     resource_documentation: `${issuer}/mcp/health`,
   };
 }

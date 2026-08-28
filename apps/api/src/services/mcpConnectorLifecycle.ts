@@ -10,6 +10,12 @@ import type {
 import { Env } from "@vakwen/config";
 import { routeError } from "../lib/routeError.js";
 import { getMcpClientByKind, getMcpClientByLegacyProvider, legacyProviderForClientKind, MCP_CLIENT_REGISTRY } from "../mcp/clientRegistry.js";
+import {
+  researchAcquisitionEnabled,
+  researchMcpExposureEnabled,
+  researchSkillExposureEnabled,
+  researchScopeAcquisitionAllowed,
+} from "../mcp/tools.js";
 import type {
   AiConnectorPolicySettingsRecord,
   AiConnectorConnectionRecord,
@@ -133,8 +139,9 @@ async function createConnectorNotification(
   });
 }
 
-export function connectorGroupForScope(scope: AiConnectorScope): "read" | "drafts" | "write" {
+export function connectorGroupForScope(scope: AiConnectorScope): "read" | "research" | "drafts" | "write" {
   if (scope === "portfolio:mcp_read") return "read";
+  if (scope === "research:read") return "research";
   if (scope === "transaction:write" || scope === "dividend:write" || scope === "account:manage") return "write";
   return "drafts";
 }
@@ -142,7 +149,7 @@ export function connectorGroupForScope(scope: AiConnectorScope): "read" | "draft
 export function buildAiConnectorReadiness(settings: AiConnectorPolicySettingsRecord): AiConnectorReadinessDto {
   const endpoint = settings.oauthPublicIssuer ? `${settings.oauthPublicIssuer.replace(/\/$/, "")}/mcp` : "/mcp";
   const enabledClientKindCount = MCP_CLIENT_REGISTRY.filter((client) => settings.allowedClientKinds[client.clientKind]).length;
-  const anyToolGroupEnabled = settings.groupToggles.read || settings.groupToggles.drafts || settings.groupToggles.write;
+  const anyToolGroupEnabled = settings.groupToggles.read || settings.groupToggles.research || settings.groupToggles.drafts || settings.groupToggles.write;
   const publicIssuerConfigured = Boolean(settings.oauthPublicIssuer);
   const checks: AiConnectorReadinessDto["checks"] = [
     { key: "deployment", status: settings.enabled ? "ok" : "blocked" },
@@ -173,6 +180,11 @@ export function buildAiConnectorReadiness(settings: AiConnectorPolicySettingsRec
 export function toAiConnectorPolicySettingsDto(settings: AiConnectorPolicySettingsRecord): AiConnectorPolicySettingsDto {
   return {
     ...settings,
+    researchRollout: {
+      acquisitionEnabled: researchAcquisitionEnabled(),
+      mcpExposureEnabled: researchMcpExposureEnabled(),
+      skillExposureEnabled: researchSkillExposureEnabled(),
+    },
     readiness: buildAiConnectorReadiness(settings),
   };
 }
@@ -271,7 +283,10 @@ export async function createAiConnectorConnection(
     throw routeError(409, "mcp_connection_limit_exceeded", "AI connector connection limit exceeded");
   }
 
-  const scopes = [...new Set(input.scopes)].filter((scope) => settings.groupToggles[connectorGroupForScope(scope)]);
+  const scopes = [...new Set(input.scopes)].filter((scope) => (
+    settings.groupToggles[connectorGroupForScope(scope)]
+    && (scope !== "research:read" || researchScopeAcquisitionAllowed())
+  ));
   if (scopes.length === 0) {
     throw routeError(403, "mcp_all_requested_scopes_disabled", "All requested AI connector scope groups are disabled");
   }

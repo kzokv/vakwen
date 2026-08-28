@@ -3636,7 +3636,11 @@ export interface Persistence {
     type?: string,
     marketCode?: string,
     userId?: string,
-  ): Promise<Omit<InstrumentCatalogItemDto, "repairAvailableAt">[]>;
+    options?: { includeInactive?: boolean },
+  ): Promise<Array<Omit<InstrumentCatalogItemDto, "repairAvailableAt"> & {
+    delistedAt?: string | null;
+    supportState?: "supported" | "retired_by_admin" | "unsupported_by_provider";
+  }>>;
 
   // Catalog sync
   upsertInstrumentCatalog(

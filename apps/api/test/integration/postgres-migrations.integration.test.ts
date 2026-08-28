@@ -4104,16 +4104,18 @@ describePostgres("postgres migrations", () => {
     const policyRow = await pool.query<{
       enabled: boolean;
       read_tools_enabled: boolean;
+      research_tools_enabled: boolean;
       draft_tools_enabled: boolean;
       oauth_redirect_uri_allowlist: string[];
     }>(
-      `SELECT enabled, read_tools_enabled, draft_tools_enabled, oauth_redirect_uri_allowlist
+      `SELECT enabled, read_tools_enabled, research_tools_enabled, draft_tools_enabled, oauth_redirect_uri_allowlist
        FROM ai_connector_policy_settings
        WHERE id = TRUE`,
     );
     expect(policyRow.rows[0]).toMatchObject({
       enabled: true,
       read_tools_enabled: true,
+      research_tools_enabled: false,
       draft_tools_enabled: true,
       oauth_redirect_uri_allowlist: [],
     });
@@ -4144,8 +4146,10 @@ describePostgres("postgres migrations", () => {
       const shareCapabilityTable = row.table_name === "portfolio_share_capabilities"
         || row.table_name === "pending_share_invite_capabilities";
       if (shareCapabilityTable) {
+        expect(row.def).not.toContain("'research:read'");
         expect(row.def).toContain("'sharing:manage'");
       } else {
+        expect(row.def).toContain("'research:read'");
         expect(row.def).not.toContain("'sharing:manage'");
       }
     }
@@ -4160,6 +4164,12 @@ describePostgres("postgres migrations", () => {
          VALUES ('mig087-share', 'sharing:manage', 'legacy-fifo')`,
       ),
     ).resolves.not.toThrow();
+    await expect(
+      pool.query(
+        `INSERT INTO portfolio_share_capabilities (share_id, capability, granted_by_user_id)
+         VALUES ('mig087-share', 'research:read', 'legacy-fifo')`,
+      ),
+    ).rejects.toThrow();
 
     await pool.query(
       `INSERT INTO invites (code, email, role, expires_at, issued_by_user_id, share_owner_user_id)

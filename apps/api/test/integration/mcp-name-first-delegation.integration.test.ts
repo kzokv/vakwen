@@ -71,7 +71,7 @@ async function callMcpTool(
 
 async function setupDelegatedMcp(options: {
   key: string;
-  shareCapabilities: AiConnectorScope[];
+  shareCapabilities: Array<Exclude<AiConnectorScope, "research:read">>;
   connectionScopes?: AiConnectorScope[];
 }) {
   await app.persistence.saveAiConnectorPolicySettings({ groupToggles: { write: true } });

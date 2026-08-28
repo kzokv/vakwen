@@ -1,20 +1,32 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@vakwen/config", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@vakwen/config")>();
+  return {
+    ...original,
+    Env: {
+      ...original.Env,
+      AUTH_MODE: "dev_bypass" as const,
+    },
+  };
+});
+
 import { buildApp, type AppInstance } from "../../src/app.js";
 import type { MemoryPersistence } from "../../src/persistence/memory.js";
-import { getQuoteFreshness } from "../../src/services/mcpPortfolioRead.js";
+import { getQuoteFreshness, searchInstruments } from "../../src/services/mcpPortfolioRead.js";
 import type { McpRequestContext } from "../../src/mcp/types.js";
 import { transactionPayload } from "../helpers/fixtures.js";
 
 let app: AppInstance;
 
-function createRequestContext(): McpRequestContext {
+function createRequestContext(scopes: Array<"portfolio:mcp_read" | "research:read"> = ["portfolio:mcp_read"]): McpRequestContext {
   return {
     auth: {
       token: "vakwen-dev.test",
       clientId: "vakwen-dev-client",
       sessionUserId: "user-1",
       connection: null,
-      scopes: ["portfolio:mcp_read"],
+      scopes,
       toolToggles: {},
       expiresAt: null,
       authMode: "dev_token",
@@ -120,5 +132,65 @@ describe("mcp portfolio read services", () => {
     }));
     expect(JSON.stringify(result)).not.toContain("freshnessTooltip");
     expect(Object.keys(result.quotes[0]!)).not.toContain("freshness");
+  });
+
+  it("legacy search ignores additive includeInactive and never emits researchIdentity without a research grant", async () => {
+    const persistence = app.persistence as MemoryPersistence;
+    persistence._seedInstrument({
+      ticker: "2330",
+      name: "TSMC",
+      instrumentType: "STOCK",
+      marketCode: "TW",
+      barsBackfillStatus: "ready",
+    });
+    persistence._seedInstrument({
+      ticker: "9105",
+      name: "Delisted TW",
+      instrumentType: "STOCK",
+      marketCode: "TW",
+      barsBackfillStatus: "failed",
+      delistedAt: "2026-08-01T00:00:00.000Z",
+    });
+    persistence._seedInstrument({
+      ticker: "AAPL",
+      name: "Apple",
+      instrumentType: "STOCK",
+      marketCode: "US",
+      barsBackfillStatus: "ready",
+    });
+
+    const defaultResult = await searchInstruments(
+      {
+        app,
+        requestContext: createRequestContext(["portfolio:mcp_read"]),
+        tradingCalendar: {
+          latestSettledTradingDay: async () => "2026-08-28",
+          isTradingDay: async () => true,
+        } as never,
+      },
+      { query: "T", limit: 10, markets: ["TW"] },
+    );
+
+    const resultWithInactive = await searchInstruments(
+      {
+        app,
+        requestContext: createRequestContext(["portfolio:mcp_read"]),
+        tradingCalendar: {
+          latestSettledTradingDay: async () => "2026-08-28",
+          isTradingDay: async () => true,
+        } as never,
+      },
+      { query: "T", limit: 10, markets: ["TW"], includeInactive: true },
+    );
+
+    expect(defaultResult.markets).toEqual(["TW"]);
+    expect(defaultResult.items.map((item) => item.ticker)).toEqual(expect.arrayContaining(["2330"]));
+    expect(defaultResult.items.map((item) => item.ticker)).not.toContain("9105");
+    expect(defaultResult.items.every((item) => !("researchIdentity" in item))).toBe(true);
+
+    expect(resultWithInactive.markets).toEqual(["TW"]);
+    expect(resultWithInactive.items.map((item) => item.ticker)).toEqual(expect.arrayContaining(["2330"]));
+    expect(resultWithInactive.items.map((item) => item.ticker)).not.toContain("9105");
+    expect(resultWithInactive.items.every((item) => !("researchIdentity" in item))).toBe(true);
   });
 });

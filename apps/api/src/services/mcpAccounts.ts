@@ -150,7 +150,7 @@ const ACCOUNT_MANAGER_TOOLS = {
   restoreAccount: "restore_account",
 } as const;
 
-function canUseAccountManageScope(deps: McpDraftServiceDeps, settings: { groupToggles: Record<"read" | "drafts" | "write", boolean> }): boolean {
+function canUseAccountManageScope(deps: McpDraftServiceDeps, settings: { groupToggles: Record<"read" | "research" | "drafts" | "write", boolean> }): boolean {
   if (!settings.groupToggles[connectorGroupForScope("account:manage")]) return false;
   if (!deps.requestContext.auth.scopes.includes("account:manage")) return false;
   const { shareId, shareCapabilities } = deps.requestContext.resolvedContext;

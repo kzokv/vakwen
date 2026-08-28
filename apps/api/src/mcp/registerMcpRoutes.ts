@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AiConnectorScope } from "@vakwen/shared-types";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -312,15 +313,31 @@ export function toReportInput(args: unknown): BuildReportInput {
   };
 }
 
+export function buildMcpPolicyToolScopes(): Record<string, AiConnectorScope> {
+  return Object.fromEntries(
+    listMcpToolDefinitions().map((tool) => [tool.name, tool.scope]),
+  );
+}
+
 export async function registerMcpRoutes(
   app: FastifyInstance,
   options: RegisterMcpRoutesOptions = {},
 ): Promise<void> {
   const authService = options.authService ?? new DefaultMcpAuthService();
   const policyService = options.policyService ?? new DefaultMcpPolicyService(
-    Object.fromEntries(listMcpToolDefinitions().map((tool) => [tool.name, tool.scope])),
+    // Authorization must know the complete registry even when discovery hides a
+    // policy-disabled tool at startup. Admin policy changes take effect without
+    // requiring an API restart.
+    buildMcpPolicyToolScopes(),
   );
   const sessions = new Map<string, StreamableHTTPServerTransport>();
+
+  const challengeScopeForTool = async (toolName: McpToolName) => {
+    if (toolName !== "search_instruments") return getMcpToolDefinition(toolName).scope;
+    const settings = await app.persistence.getAiConnectorPolicySettings();
+    if (!settings.groupToggles.read && settings.groupToggles.research) return "research:read" as const;
+    return "portfolio:mcp_read" as const;
+  };
 
   if (!app.hasContentTypeParser("application/x-www-form-urlencoded")) {
     app.addContentTypeParser(
@@ -347,7 +364,7 @@ export async function registerMcpRoutes(
       return buildToolAuthChallengeResult({
         app,
         req: pending.req,
-        scope: tool.scope,
+        scope: await challengeScopeForTool(toolName),
         error: challengeErrorFor(pending.authError),
         description,
         text: `Authentication required for ${toToolTitle(toolName)}.`,
@@ -983,7 +1000,7 @@ export async function registerMcpRoutes(
         return buildToolAuthChallengeResult({
           app,
           req: pending.req,
-          scope: tool.scope,
+          scope: await challengeScopeForTool(toolName),
           error: challengeErrorFor(error),
           description,
           text: `Authorization required for ${toToolTitle(toolName)}.`,
@@ -996,7 +1013,9 @@ export async function registerMcpRoutes(
     }
   };
 
-  const createServer = () => {
+  const createServer = async () => {
+    const settings = await app.persistence.getAiConnectorPolicySettings();
+    const listedTools = listMcpToolDefinitions({ legacyReadGroupEnabled: settings.groupToggles.read });
     const server = new McpServer(
       {
         name: "vakwen-mcp",
@@ -1011,7 +1030,7 @@ export async function registerMcpRoutes(
 
     registerOpenAiAppsResource(server);
 
-    for (const tool of listMcpToolDefinitions()) {
+    for (const tool of listedTools) {
       server.registerTool(
         tool.name,
         {
@@ -1067,7 +1086,7 @@ export async function registerMcpRoutes(
           id: null,
         });
       }
-      const server = createServer();
+      const server = await createServer();
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         enableJsonResponse: true,
@@ -1123,9 +1142,12 @@ export async function registerMcpRoutes(
     transport: "streamable_http",
     sessionCount: sessions.size,
     protectedResourceMetadata: await authService.getProtectedResourceMetadata(app, req),
-    tools: listMcpToolDefinitions().map((tool) => ({
+    tools: listMcpToolDefinitions({
+      legacyReadGroupEnabled: (await app.persistence.getAiConnectorPolicySettings()).groupToggles.read,
+    }).map((tool) => ({
       name: tool.name,
       scope: tool.scope,
+      alternativeScopes: tool.alternativeScopes,
       accessKind: tool.accessKind,
     })),
   }));

@@ -1,9 +1,11 @@
 import { z } from "zod";
+import { Env } from "@vakwen/config";
 import {
   ACCOUNT_DEFAULT_CURRENCIES,
   MARKET_CODES,
   REPORT_CURRENCY_MODES,
   REPORT_SCOPES,
+  type AiConnectorToolGroup,
   type AiConnectorAccessKind,
   type AiConnectorScope,
 } from "@vakwen/shared-types";
@@ -590,6 +592,7 @@ const toolDefinitions = {
       query: z.string().trim().min(1).max(100),
       markets: z.array(marketCodeSchema).max(MARKET_CODES.length).optional(),
       limit: z.number().int().positive().max(100).default(25),
+      includeInactive: z.boolean().optional(),
     }),
     scope: "portfolio:mcp_read" as const,
     accessKind: "read" as const,
@@ -1184,6 +1187,65 @@ const toolDefinitions = {
 
 export type McpToolName = keyof typeof toolDefinitions;
 export type McpToolDefinition = typeof toolDefinitions[McpToolName];
+type ListedMcpToolDefinition = {
+  name: McpToolName;
+  description: string;
+  inputSchema: McpToolDefinition["inputSchema"];
+  outputSchema: typeof genericMcpToolOutputSchema;
+  annotations: McpToolAnnotations;
+  scope: AiConnectorScope;
+  alternativeScopes?: AiConnectorScope[];
+  accessKind: AiConnectorAccessKind;
+  _meta?: Record<string, unknown>;
+};
+
+let researchRolloutOverrideForTest: {
+  acquisitionEnabled?: boolean;
+  mcpExposureEnabled?: boolean;
+  skillExposureEnabled?: boolean;
+} | null = null;
+
+export function setResearchRolloutOverrideForTest(
+  override: {
+    acquisitionEnabled?: boolean;
+    mcpExposureEnabled?: boolean;
+    skillExposureEnabled?: boolean;
+  } | null,
+): void {
+  researchRolloutOverrideForTest = override;
+}
+
+export function researchAcquisitionEnabled(): boolean {
+  return researchRolloutOverrideForTest?.acquisitionEnabled ?? Env.MCP_RESEARCH_ACQUISITION_ENABLED ?? false;
+}
+
+export function researchMcpExposureEnabled(): boolean {
+  return researchRolloutOverrideForTest?.mcpExposureEnabled ?? Env.MCP_RESEARCH_MCP_ENABLED ?? false;
+}
+
+// Reserved gate for a future Skills-facing surface. KZO-245 does not expose a
+// Skill endpoint yet, but admin/API DTOs need an explicit independently-routed
+// flag so later rollout work does not overload the MCP gate semantics.
+export function researchSkillExposureEnabled(): boolean {
+  return researchRolloutOverrideForTest?.skillExposureEnabled ?? Env.MCP_RESEARCH_SKILL_ENABLED ?? false;
+}
+
+export function researchScopeAcquisitionAllowed(): boolean {
+  return researchAcquisitionEnabled() && researchMcpExposureEnabled();
+}
+
+export function scopesForListedTool(tool: Pick<ListedMcpToolDefinition, "scope" | "alternativeScopes">): AiConnectorScope[] {
+  return tool.alternativeScopes ? [tool.scope, ...tool.alternativeScopes] : [tool.scope];
+}
+
+export function groupsForListedTool(tool: Pick<ListedMcpToolDefinition, "scope" | "alternativeScopes">): AiConnectorToolGroup[] {
+  return scopesForListedTool(tool).map((scope) => (
+    scope === "portfolio:mcp_read" ? "read"
+      : scope === "research:read" ? "research"
+        : scope === "transaction:write" || scope === "dividend:write" || scope === "account:manage" ? "write"
+          : "drafts"
+  ));
+}
 
 function getToolAnnotations(name: McpToolName, accessKind: AiConnectorAccessKind): McpToolAnnotations {
   if (name === "get_admin_market_calendar_status" || name === "list_admin_market_calendar_sources") {
@@ -1208,30 +1270,28 @@ export function getMcpToolDefinition(toolName: McpToolName): McpToolDefinition {
   return toolDefinitions[toolName];
 }
 
-export function listMcpToolDefinitions(): Array<{
-  name: McpToolName;
-  description: string;
-  inputSchema: McpToolDefinition["inputSchema"];
-  outputSchema: typeof genericMcpToolOutputSchema;
-  annotations: McpToolAnnotations;
-  scope: AiConnectorScope;
-  accessKind: AiConnectorAccessKind;
-  _meta?: Record<string, unknown>;
-}> {
-  return Object.entries(toolDefinitions).map(([name, value]) => ({
+export function listMcpToolDefinitions(options: { legacyReadGroupEnabled?: boolean } = {}): ListedMcpToolDefinition[] {
+  const legacyReadGroupEnabled = options.legacyReadGroupEnabled ?? true;
+  return Object.entries(toolDefinitions)
+    .map(([name, value]) => ({
     name: name as McpToolName,
     description: value.description,
     inputSchema: value.inputSchema,
     outputSchema: genericMcpToolOutputSchema,
     annotations: getToolAnnotations(name as McpToolName, value.accessKind),
     scope: value.scope,
+    alternativeScopes: name === "search_instruments" && researchMcpExposureEnabled()
+      ? ["research:read"] as AiConnectorScope[]
+      : undefined,
     accessKind: value.accessKind,
     _meta: "_meta" in value ? value._meta : undefined,
-  }));
+  }))
+    .filter((tool) => tool.name !== "search_instruments" || legacyReadGroupEnabled || researchMcpExposureEnabled());
 }
 
 export const ALL_MCP_SCOPES: AiConnectorScope[] = [
   "portfolio:mcp_read",
+  "research:read",
   "account:manage",
   "transaction_draft:create",
   "transaction_draft:edit",

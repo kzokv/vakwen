@@ -130,6 +130,25 @@ In addition to the configurable session cookie, the API emits two other cookies 
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rolling rate-limit window (ms) |
 | `RATE_LIMIT_MAX_MUTATIONS` | `60` | Max write operations per window |
 
+### MCP additive research rollout
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_RESEARCH_ACQUISITION_ENABLED` | `false` | Allows new OAuth consents and bearer connector creation to acquire the additive `research:read` scope. Existing connectors are not upgraded silently. |
+| `MCP_RESEARCH_MCP_ENABLED` | `false` | Exposes the research authorization path in MCP discovery/tool metadata. When false, `search_instruments` stays on legacy `portfolio:mcp_read` behavior only and `researchIdentity` stays omitted. |
+| `MCP_RESEARCH_SKILL_ENABLED` | `false` | Reserved positive gate for a future Skills-facing research surface. It is reported independently in admin/API rollout state and does not change current MCP discovery or authorization by itself. |
+
+These gates are intentionally independent and default-off. Current connector acquisition requires both the acquisition and MCP gates; the Skill gate is reserved for the future Skills surface. Safe rollback is to turn the gates back off without mutating existing connector rows. OAuth and bearer connectors that need `research:read` must reconnect or be recreated after acquisition is enabled.
+
+Behavior notes:
+
+- `portfolio:mcp_read` remains the legacy multi-market read scope and still backs the pre-rollout `search_instruments` behavior.
+- `research:read` is additive, not a replacement. The only shared tool is `search_instruments`.
+- Research-only `search_instruments` is limited to Taiwan (`marketCode=TW`).
+- When the additive research path is active, `search_instruments.includeInactive=true` widens results without changing legacy error shapes.
+- Each returned item may include `researchIdentity.availability` with `available`, `unavailable`, or `not_applicable`.
+- Stored legacy OAuth and bearer grants remain in place for rollback and are not auto-upgraded. Connectors that need `research:read` must reconnect or be recreated after acquisition is enabled.
+
 ### Data providers
 
 | Variable | Default | Description |

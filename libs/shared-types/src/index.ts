@@ -3249,6 +3249,7 @@ export type AiConnectorCapability = "oauth" | "bearer_fallback" | "widgets" | "i
 export type AiConnectorStatus = "pending" | "active" | "expired" | "revoked";
 export type AiConnectorScope =
   | "portfolio:mcp_read"
+  | "research:read"
   | "account:manage"
   | "transaction_draft:create"
   | "transaction_draft:edit"
@@ -3256,7 +3257,7 @@ export type AiConnectorScope =
   | "transaction_draft:delete"
   | "transaction:write"
   | "dividend:write";
-export type ShareCapability = AiConnectorScope | "sharing:manage";
+export type ShareCapability = Exclude<AiConnectorScope, "research:read"> | "sharing:manage";
 export type AiConnectorAccessKind =
   | "read"
   | "draft_create"
@@ -3265,7 +3266,7 @@ export type AiConnectorAccessKind =
   | "draft_delete"
   | "write";
 export type AiConnectorAccessResult = "ok" | "denied" | "error";
-export type AiConnectorToolGroup = "read" | "drafts" | "write";
+export type AiConnectorToolGroup = "read" | "research" | "drafts" | "write";
 export type AiConnectorToolAvailability = "available" | "unavailable";
 export type AiTransactionDraftBatchStatus = "open" | "archived" | "deleted";
 export type AiTransactionDraftSourceChannel = "mcp" | "web";
@@ -3343,6 +3344,11 @@ export interface AiConnectorPolicySettingsDto {
   maxConnectorLifetimeDays: number;
   oauthPublicIssuer: string | null;
   oauthRedirectUriAllowlist: string[];
+  researchRollout?: {
+    acquisitionEnabled: boolean;
+    mcpExposureEnabled: boolean;
+    skillExposureEnabled: boolean;
+  };
   oauthTokenSecretSet: boolean;
   readiness: AiConnectorReadinessDto;
   updatedAt: string;
@@ -3382,6 +3388,7 @@ export interface AiConnectorToolCatalogEntryDto {
   name: string;
   description: string;
   scope: AiConnectorScope;
+  alternativeScopes?: AiConnectorScope[];
   accessKind: AiConnectorAccessKind;
   group: AiConnectorToolGroup;
   inputSchema: AiConnectorToolInputSchemaDto;

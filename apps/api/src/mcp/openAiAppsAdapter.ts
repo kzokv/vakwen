@@ -6,7 +6,7 @@ import {
   buildMcpWwwAuthenticateHeader,
   getMcpProtectedResourceMetadataUrl,
 } from "./oauth.js";
-import { getMcpToolDefinition, type McpToolName } from "./tools.js";
+import { listMcpToolDefinitions, scopesForListedTool, type McpToolName } from "./tools.js";
 
 interface McpOAuthSecurityScheme {
   type: "oauth2";
@@ -227,7 +227,9 @@ export async function buildToolAuthChallengeResult(input: {
 }
 
 function getToolSecuritySchemes(toolName: McpToolName): McpOAuthSecurityScheme[] {
-  return [{ type: "oauth2", scopes: [getMcpToolDefinition(toolName).scope] }];
+  const listedTool = listMcpToolDefinitions().find((tool) => tool.name === toolName);
+  if (!listedTool) return [];
+  return scopesForListedTool(listedTool).map((scope) => ({ type: "oauth2", scopes: [scope] }));
 }
 
 function getToolOpenAiMeta(tool: McpToolListResult["tools"][number]) {
@@ -245,7 +247,9 @@ function getToolOpenAiMeta(tool: McpToolListResult["tools"][number]) {
 }
 
 function withToolSecurityMetadata(tool: McpToolListResult["tools"][number]) {
-  const securitySchemes = getToolSecuritySchemes(tool.name as McpToolName);
+  const securitySchemes = Array.isArray(tool.securitySchemes)
+    ? tool.securitySchemes as McpOAuthSecurityScheme[]
+    : getToolSecuritySchemes(tool.name as McpToolName);
   const openAiMeta = getToolOpenAiMeta(tool);
   const chatGptTool = { ...tool };
   delete chatGptTool.execution;

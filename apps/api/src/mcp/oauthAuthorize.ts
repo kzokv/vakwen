@@ -13,7 +13,7 @@ import { Env } from "@vakwen/config";
 import { routeError } from "../lib/routeError.js";
 import { connectorGroupForScope } from "../services/mcpConnectorLifecycle.js";
 import { getMcpClientByKind } from "./clientRegistry.js";
-import { ALL_MCP_SCOPES } from "./tools.js";
+import { ALL_MCP_SCOPES, researchScopeAcquisitionAllowed } from "./tools.js";
 import { inspectOAuthClient, type InspectedOAuthClient } from "./oauthClientAuth.js";
 import {
   constantTimeEqual,
@@ -29,7 +29,6 @@ import {
   getInitialMcpScopes,
   getMcpOAuthIssuer,
   getMcpResourceUrl,
-  withInitialMcpScopes,
 } from "./oauthMetadata.js";
 import {
   oauthRedirect,
@@ -170,7 +169,9 @@ function filterScopesByPolicy(
   scopes: AiConnectorScope[],
   settings: Pick<AiConnectorPolicySettingsDto, "groupToggles">,
 ): AiConnectorScope[] {
-  return scopes.filter((scope) => settings.groupToggles[connectorGroupForScope(scope)]);
+  return scopes
+    .filter((scope) => scope !== "research:read" || researchScopeAcquisitionAllowed())
+    .filter((scope) => settings.groupToggles[connectorGroupForScope(scope)]);
 }
 
 export async function handleMcpOAuthAuthorize(
@@ -243,11 +244,10 @@ export async function handleMcpOAuthAuthorize(
 
   let scopes: AiConnectorScope[];
   try {
-    scopes = parseScopes(query.scope);
+    scopes = query.scope ? parseScopes(query.scope) : getInitialMcpScopes(settings);
   } catch {
     return sendOAuthError(reply, 400, "invalid_scope", "OAuth scope contains an unsupported MCP scope");
   }
-  scopes = withInitialMcpScopes(scopes);
   if (scopes.length === 0) {
     return sendOAuthError(reply, 400, "invalid_scope", "OAuth scope must include at least one implemented MCP scope");
   }
@@ -258,9 +258,6 @@ export async function handleMcpOAuthAuthorize(
   const policyScopes = filterScopesByPolicy(scopes, settings);
   if (policyScopes.length === 0) {
     return sendOAuthError(reply, 403, "access_denied", "All requested MCP scope groups are disabled");
-  }
-  if (!policyScopes.includes("portfolio:mcp_read")) {
-    return sendOAuthError(reply, 403, "access_denied", "Portfolio read MCP scope is required");
   }
 
   const requestId = randomUUID();

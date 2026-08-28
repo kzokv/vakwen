@@ -241,6 +241,8 @@ Use the deployed API hostname or put an HTTPS tunnel in front of the API. Produc
 
 The MCP implementation supports Streamable HTTP at `/mcp`, OAuth protected-resource and authorization-server metadata, authorization-code + PKCE consent, refresh-token rotation, connector policy enforcement, connector access logs, and local dev-token bearer authentication for controlled smoke tests. ChatGPT / OpenAI Apps use the shipped OAuth connector path. Claude Code, Codex CLI/IDE, Gemini CLI, VS Code / Copilot MCP, and generic MCP clients use user-generated bearer fallback connector instances when admin policy allows it. Dev tokens are only for local diagnostics and must not be exposed as an end-user credential flow.
 
+Additive research authorization is a separate rollout from the legacy read surface. It uses a dedicated `research` tool group plus `research:read`, while `portfolio:mcp_read` remains the legacy read scope. The only shared tool is `search_instruments`: with `portfolio:mcp_read` it keeps the multi-market legacy behavior, and with `research:read` it narrows to Taiwan research search.
+
 `Claude.ai` is not a separate shipped client kind in this worktree yet. Do not reuse the Claude Code bearer setup as a substitute for Claude.ai OAuth. The repair scope tracks a future dedicated `claude_ai_connector` client with callback `https://claude.ai/api/mcp/auth_callback`.
 
 Client support tiers:
@@ -353,7 +355,7 @@ Before configuring ChatGPT, an admin must configure the Vakwen MCP OAuth setting
 3. Set the encrypted admin-level MCP OAuth token secret in Admin -> Settings -> MCP. The secret signs MCP access tokens and hashes authorization codes and refresh tokens. Use the Generate action in the rotate dialog, or paste a 64-hex value from `openssl rand -hex 32`.
 4. Set the maximum connector lifetime. Users can choose a shorter lifetime during consent, but not a longer one.
 5. Confirm MCP deployment is enabled and ChatGPT is allowed under Admin -> Settings -> MCP.
-6. Confirm the desired tool groups are enabled. Write tools should stay disabled unless intentionally rolled out.
+6. Confirm the desired tool groups are enabled. Write tools should stay disabled unless intentionally rolled out. The additive research rollout is separate: the `research` tool group plus the acquisition and MCP env gates must be enabled intentionally before users can acquire and use `research:read`. The independent Skill gate is reserved for a future Skills-facing surface.
 7. Leave the additional redirect URI allowlist empty unless ChatGPT or another approved MCP client sends a callback that is not covered by the built-in ChatGPT defaults. Custom entries are exact HTTPS redirect URIs, one per line.
 
 Three auth knobs are related but have different blast radii:
@@ -369,6 +371,7 @@ ChatGPT rollout scopes:
 | Scope | Capability | Default state | User-deselectable |
 |---|---|---|---|
 | `portfolio:mcp_read` | Read portfolio, holdings, transaction context, and connector-safe summaries | Enabled when global MCP read tools are enabled | No for the first rollout; ChatGPT needs read context to be useful |
+| `research:read` | Additive Taiwan research search on `search_instruments`, including `includeInactive` support and per-item `researchIdentity.availability` metadata | Disabled until research acquisition and MCP exposure are intentionally enabled | Yes |
 | `transaction_draft:create` | Create draft transaction candidates for user review | Disabled unless admins enable write/draft tools | Yes |
 | `transaction_draft:edit` | Update draft transaction candidates before user review | Disabled unless admins enable write/draft tools | Yes |
 | `transaction_draft:archive` | Archive AI transaction draft batches | Disabled unless admins enable write/draft tools | Yes |
@@ -377,6 +380,15 @@ ChatGPT rollout scopes:
 | `transaction:write` | Create posted transactions directly and post ready AI draft rows | Disabled unless admins enable write tools | Yes |
 
 Advanced write scopes are opt-in. Leave `account:manage` and `transaction:write` disabled unless the user intentionally delegates portfolio management and the admin write policy group is enabled. Owner share approval does not auto-upgrade a delegate's ChatGPT connector; delegates must also reconnect or re-consent with the matching connector scopes before MCP write tools can use them.
+
+Research rollout behavior:
+
+- `MCP_RESEARCH_ACQUISITION_ENABLED=false` means OAuth consent and bearer creation do not offer or persist `research:read`. Existing OAuth and bearer rows keep their stored scopes unchanged; there is no implicit grant.
+- `MCP_RESEARCH_MCP_ENABLED=false` means MCP discovery and tool metadata do not expose the additive research path. Legacy clients continue to see the pre-rollout catalog and `search_instruments` does not advertise `research:read` as an alternative scope.
+- `MCP_RESEARCH_SKILL_ENABLED=false` keeps the reserved future Skills-facing path off. This flag is exposed independently in admin/API rollout state and does not gate today's MCP or connector-settings surfaces.
+- A connector that already has `portfolio:mcp_read` and later gains `research:read` must reconnect or be recreated. Existing rows are preserved for rollback, but they are not auto-upgraded.
+- When the additive research path is active, `search_instruments.includeInactive=true` widens results without changing legacy error shapes, and each result may add `researchIdentity.availability` as `available`, `unavailable`, or `not_applicable`.
+- Research-only search supports Taiwan (`marketCode=TW`) only. Portfolio read continues to support the legacy multi-market search path. A combined connector may still use the legacy read path and receive additive `researchIdentity` metadata when the rollout is on.
 
 Built-in production ChatGPT redirect callbacks are:
 

@@ -15,6 +15,7 @@ import {
 } from "./market-data/quoteSnapshotService.js";
 import { isInstrumentQuoteable } from "./instrumentRegistry.js";
 import { routeError } from "../lib/routeError.js";
+import { hasUsableResearchSearchAccess, resolveSearchInstrumentScopePath } from "../mcp/policy.js";
 import type { McpReadServiceDeps } from "../mcp/types.js";
 import type { Store } from "../types/store.js";
 import { resolveAccountDisplayName } from "./mcpAccountHelpers.js";
@@ -376,24 +377,58 @@ export async function getCashBalanceSummary(
 
 export async function searchInstruments(
   deps: McpReadServiceDeps,
-  input: { query: string; markets?: MarketCode[]; limit: number },
+  input: { query: string; markets?: MarketCode[]; limit: number; includeInactive?: boolean },
 ) {
-  const markets = input.markets && input.markets.length > 0 ? input.markets : [...MARKET_CODES];
+  const policySettings = await deps.app.persistence.getAiConnectorPolicySettings();
+  const searchPath = resolveSearchInstrumentScopePath(deps.requestContext.auth, policySettings);
+  const researchOnly = searchPath?.group === "research";
+  const researchAccess = hasUsableResearchSearchAccess(deps.requestContext.auth, policySettings);
+  const markets = input.markets && input.markets.length > 0
+    ? input.markets
+    : researchOnly
+      ? ["TW"]
+      : [...MARKET_CODES];
+  if (researchOnly && markets.some((market) => market !== "TW")) {
+    throw routeError(400, "mcp_research_market_unsupported", "research-only instrument search only supports marketCode TW");
+  }
   const rows = await Promise.all(
-    markets.map((market) => deps.app.persistence.listInstrumentsCatalog(input.query, undefined, market, deps.requestContext.auth.sessionUserId)),
+    markets.map((market) => deps.app.persistence.listInstrumentsCatalog(
+      input.query,
+      undefined,
+      market,
+      deps.requestContext.auth.sessionUserId,
+      { includeInactive: researchAccess && input.includeInactive === true },
+    )),
   );
   const merged = rows
     .flat()
     .slice(0, input.limit)
-    .map((instrument) => ({
-      ticker: instrument.ticker,
-      marketCode: instrument.marketCode,
-      name: instrument.name,
-      instrumentType: instrument.instrumentType,
-      barsBackfillStatus: instrument.barsBackfillStatus,
-      lastRepairAt: instrument.lastRepairAt,
-      gicsIndustryGroup: instrument.gicsIndustryGroup,
-    }));
+    .map((instrument) => {
+      const baseItem = {
+        ticker: instrument.ticker,
+        marketCode: instrument.marketCode,
+        name: instrument.name,
+        instrumentType: instrument.instrumentType,
+        barsBackfillStatus: instrument.barsBackfillStatus,
+        lastRepairAt: instrument.lastRepairAt,
+        gicsIndustryGroup: instrument.gicsIndustryGroup,
+      };
+      if (!researchAccess) {
+        return baseItem;
+      }
+      return {
+        ...baseItem,
+        researchIdentity: instrument.marketCode === "TW"
+          ? {
+            availability: !instrument.delistedAt && (instrument.supportState ?? "supported") === "supported"
+              ? "available" as const
+              : "unavailable" as const,
+          }
+          : {
+            availability: "not_applicable" as const,
+          },
+      };
+    });
   return {
     query: input.query,
     markets,

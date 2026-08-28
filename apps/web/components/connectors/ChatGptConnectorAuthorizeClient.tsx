@@ -18,13 +18,31 @@ interface ChatGptConnectorAuthorizeClientProps {
   locale?: LocaleCode | string;
 }
 
+type ConsentGroupKey = "read" | "research" | "drafts" | "write";
+
 function normalizeLocale(locale?: LocaleCode | string): LocaleCode {
   return locale === "zh-TW" ? "zh-TW" : "en";
 }
 
+function isResearchScope(scope: string): scope is AiConnectorScope {
+  return scope === "research:read";
+}
+
+function isDraftScope(scope: AiConnectorScope): boolean {
+  return scope === "transaction_draft:create"
+    || scope === "transaction_draft:edit"
+    || scope === "transaction_draft:archive"
+    || scope === "transaction_draft:delete";
+}
+
+function groupTogglesRecord(consent: McpOAuthConsentRequestDto): Record<string, boolean> {
+  return consent.policy.groupToggles as Record<string, boolean>;
+}
+
 function scopeEnabledByPolicy(scope: AiConnectorScope, consent: McpOAuthConsentRequestDto): boolean {
   if (scope === "portfolio:mcp_read") return consent.policy.groupToggles.read;
-  if (scope.startsWith("transaction_draft:")) return consent.policy.groupToggles.drafts;
+  if (isResearchScope(scope)) return groupTogglesRecord(consent).research === true;
+  if (isDraftScope(scope)) return consent.policy.groupToggles.drafts;
   return consent.policy.groupToggles.write;
 }
 
@@ -33,7 +51,7 @@ function isAdvancedFinancialWriteScope(scope: AiConnectorScope): boolean {
 }
 
 function scopeDefaultsGranted(scope: AiConnectorScope): boolean {
-  return !isAdvancedFinancialWriteScope(scope);
+  return !isAdvancedFinancialWriteScope(scope) && !isResearchScope(scope);
 }
 
 function currentRequestId(): string | null {
@@ -53,19 +71,22 @@ function currentAuthorizeParams() {
   };
 }
 
-function scopeGroupKey(scope: AiConnectorScope): "read" | "drafts" | "write" {
+function scopeGroupKey(scope: AiConnectorScope): ConsentGroupKey {
   if (scope === "portfolio:mcp_read") return "read";
-  if (scope.startsWith("transaction_draft:")) return "drafts";
+  if (isResearchScope(scope)) return "research";
+  if (isDraftScope(scope)) return "drafts";
   return "write";
 }
 
-function permissionGroupLabel(locale: LocaleCode, key: "read" | "drafts" | "write"): string {
+function permissionGroupLabel(locale: LocaleCode, key: ConsentGroupKey): string {
   if (locale === "zh-TW") {
     if (key === "read") return "讀取";
+    if (key === "research") return "研究";
     if (key === "drafts") return "草稿流程";
     return "送出與寫入";
   }
   if (key === "read") return "Read";
+  if (key === "research") return "Research";
   if (key === "drafts") return "Draft workflow";
   return "Posting and write";
 }
@@ -188,9 +209,11 @@ export function ChatGptConnectorAuthorizeClient({ locale = "en" }: ChatGptConnec
                   <Button variant="secondary" onClick={() => void load()}>
                     {copy.retryRequest}
                   </Button>
-                  <Button variant="outline" onClick={() => { window.location.href = consentIdentity.reconnectUrl ?? "https://chatgpt.com/"; }}>
-                    {copy.startAgainInClient}
-                  </Button>
+                  {consentIdentity.reconnectUrl ? (
+                    <Button variant="outline" onClick={() => { window.location.href = consentIdentity.reconnectUrl!; }}>
+                      {copy.startAgainInClient}
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -293,6 +316,11 @@ export function ChatGptConnectorAuthorizeClient({ locale = "en" }: ChatGptConnec
                         <span className={disabled ? "text-slate-400" : "text-slate-800"}>
                           {getAiConnectorScopeLabel(resolvedLocale, scope)}
                           {policyDisabled ? <span className="block text-xs text-slate-500">{copy.disabledByPolicy}</span> : null}
+                          {isResearchScope(scope) ? (
+                            <span className="mt-1 block text-xs text-amber-700">
+                              {copy.researchOptIn}
+                            </span>
+                          ) : null}
                           {isAdvancedFinancialWriteScope(scope) ? (
                             <span className="mt-1 block text-xs text-amber-700">
                               {copy.advancedScope}
@@ -309,12 +337,12 @@ export function ChatGptConnectorAuthorizeClient({ locale = "en" }: ChatGptConnec
                     );
                   })}
                 </div>
-                {consent.scopes.some((scope) => isAdvancedFinancialWriteScope(scope)) ? (
+                {scopeRows.some((scope) => isAdvancedFinancialWriteScope(scope) || isResearchScope(scope)) ? (
                   <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
                     <div className="flex items-start gap-2">
                       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                       <span>
-                        {copy.postingOptIn}
+                        {scopeRows.some((scope) => isResearchScope(scope)) ? copy.researchReconnect : copy.postingOptIn}
                       </span>
                     </div>
                   </div>
