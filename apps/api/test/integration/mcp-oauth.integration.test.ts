@@ -8,7 +8,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@vakwen/config", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@vakwen/config")>();
+  return {
+    ...original,
+    Env: {
+      ...original.Env,
+      AUTH_MODE: "dev_bypass" as const,
+    },
+  };
+});
+
 import { buildApp } from "../../src/app.js";
 import {
   hashMcpOAuthToken,
@@ -956,6 +968,29 @@ describe("MCP OAuth for ChatGPT", () => {
         requestedRedirectUri: redirectUri,
         suggestedRedirectUris: [redirectUri],
       },
+    });
+  });
+
+  it("denies research-only OAuth scope requests while research rollout gates stay off", async () => {
+    const authorize = await app.inject({
+      method: "GET",
+      url: `/oauth/authorize?${new URLSearchParams({
+        response_type: "code",
+        client_id: "chatgpt",
+        redirect_uri: "http://localhost:5555/callback",
+        resource: "http://localhost:4000/mcp",
+        scope: "research:read",
+        code_challenge: codeChallenge("research-off-verifier-123456789012345678901234567890123456"),
+        code_challenge_method: "S256",
+        state: "state-123",
+      }).toString()}`,
+      headers: { host: "localhost:4000" },
+    });
+
+    expect(authorize.statusCode).toBe(403);
+    expect(authorize.json()).toMatchObject({
+      error: "access_denied",
+      error_description: "All requested MCP scope groups are disabled",
     });
   });
 

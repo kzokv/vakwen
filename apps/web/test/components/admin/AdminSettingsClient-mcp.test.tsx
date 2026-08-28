@@ -69,7 +69,7 @@ function buildPolicy(overrides: Partial<AiConnectorPolicySettingsDto> = {}): AiC
       copilot_mcp: true,
       generic_mcp: true,
     },
-    groupToggles: { read: false, drafts: false, write: false },
+    groupToggles: { read: false, research: false, drafts: false, write: false },
     bearerFallback: {
       enabled: false,
       allowedClientKinds: ["claude_code", "codex_cli", "gemini_cli", "copilot_mcp", "generic_mcp"],
@@ -160,7 +160,7 @@ describe("AdminSettingsClient — MCP settings", () => {
   });
 
   it("renders MCP tool groups, redirect callback examples, and audit-impact guidance", async () => {
-    mockGetJson.mockResolvedValue(buildPolicy({ groupToggles: { read: true, drafts: true, write: false } }));
+    mockGetJson.mockResolvedValue(buildPolicy({ groupToggles: { read: true, research: false, drafts: true, write: false } }));
 
     await act(async () => root.render(<AdminSettingsClient initial={buildAppConfigDto()} />));
     await flushEffects();
@@ -187,11 +187,41 @@ describe("AdminSettingsClient — MCP settings", () => {
     expect(suggestedCallbacks?.textContent).toContain("https://claude.ai/api/mcp/auth_callback");
   });
 
+  it("renders research rollout visibility only when MCP settings expose additive research state", async () => {
+    mockGetJson.mockResolvedValue({
+      ...buildPolicy({
+        groupToggles: { ...buildPolicy().groupToggles, read: true, research: true },
+        bearerFallback: {
+          ...buildPolicy().bearerFallback,
+          enabled: true,
+          allowedToolGroups: ["read", "research"],
+        },
+      }),
+      researchRollout: {
+        acquisitionEnabled: true,
+        mcpExposureEnabled: true,
+        skillExposureEnabled: false,
+      },
+    });
+
+    await act(async () => root.render(<AdminSettingsClient initial={buildAppConfigDto()} />));
+    await flushEffects();
+
+    const section = document.querySelector("[data-testid='admin-settings-mcp-section']");
+    expect(section?.textContent).toContain("Research rollout");
+    expect(section?.textContent).toContain("Research acquisition");
+    expect(section?.textContent).toContain("Research MCP exposure");
+    expect(section?.textContent).toContain("Research Skill exposure");
+    expect(section?.textContent).toContain("Research");
+    expect(section?.textContent).toContain("search_instruments (TW research path)");
+    expect(section?.textContent).toContain("adding research requires reconnect or recreate");
+  });
+
   it("edits numeric MCP limits locally and saves them explicitly", async () => {
-    mockGetJson.mockResolvedValue(buildPolicy({ groupToggles: { read: true, drafts: true, write: false } }));
+    mockGetJson.mockResolvedValue(buildPolicy({ groupToggles: { read: true, research: false, drafts: true, write: false } }));
     mockPostJson.mockResolvedValue({ freshAuthToken: "fresh-1" });
     mockPatchJson.mockResolvedValue(buildPolicy({
-      groupToggles: { read: true, drafts: true, write: false },
+      groupToggles: { read: true, research: false, drafts: true, write: false },
       maxActiveConnectionsPerUser: 10,
     }));
 
@@ -231,12 +261,12 @@ describe("AdminSettingsClient — MCP settings", () => {
 
   it("shows the posted-transaction batch-limit warning above 200 and still saves the value", async () => {
     mockGetJson.mockResolvedValue(buildPolicy({
-      groupToggles: { read: true, drafts: true, write: true },
+      groupToggles: { read: true, research: false, drafts: true, write: true },
       postedTransactionMutationBatchLimit: 50,
     }));
     mockPostJson.mockResolvedValue({ freshAuthToken: "fresh-batch-limit" });
     mockPatchJson.mockResolvedValue(buildPolicy({
-      groupToggles: { read: true, drafts: true, write: true },
+      groupToggles: { read: true, research: false, drafts: true, write: true },
       postedTransactionMutationBatchLimit: 250,
     }));
 
@@ -294,10 +324,10 @@ describe("AdminSettingsClient — MCP settings", () => {
   });
 
   it("shows redirect allowlist examples and saves exact redirect URI additions", async () => {
-    mockGetJson.mockResolvedValue(buildPolicy({ groupToggles: { read: true, drafts: true, write: false } }));
+    mockGetJson.mockResolvedValue(buildPolicy({ groupToggles: { read: true, research: false, drafts: true, write: false } }));
     mockPostJson.mockResolvedValue({ freshAuthToken: "fresh-allowlist" });
     mockPatchJson.mockResolvedValue(buildPolicy({
-      groupToggles: { read: true, drafts: true, write: false },
+      groupToggles: { read: true, research: false, drafts: true, write: false },
       oauthRedirectUriAllowlist: [
         "https://connector.example.com/oauth/callback",
         "https://chatgpt.com/connector/oauth/custom123",
@@ -352,7 +382,7 @@ describe("AdminSettingsClient — MCP settings", () => {
   it("keeps an invalid redirect allowlist draft resettable and accessible", async () => {
     const savedAllowlist = ["https://connector.example.com/oauth/callback"];
     mockGetJson.mockResolvedValue(buildPolicy({
-      groupToggles: { read: true, drafts: true, write: false },
+      groupToggles: { read: true, research: false, drafts: true, write: false },
       oauthRedirectUriAllowlist: savedAllowlist,
     }));
 
@@ -394,10 +424,10 @@ describe("AdminSettingsClient — MCP settings", () => {
   });
 
   it("generates a 64-hex MCP OAuth token secret before rotating", async () => {
-    mockGetJson.mockResolvedValue(buildPolicy({ groupToggles: { read: true, drafts: true, write: false } }));
+    mockGetJson.mockResolvedValue(buildPolicy({ groupToggles: { read: true, research: false, drafts: true, write: false } }));
     mockPostJson.mockResolvedValue({ freshAuthToken: "fresh-secret" });
     mockPatchJson.mockResolvedValue(buildPolicy({
-      groupToggles: { read: true, drafts: true, write: false },
+      groupToggles: { read: true, research: false, drafts: true, write: false },
       oauthTokenSecretSet: true,
     }));
 

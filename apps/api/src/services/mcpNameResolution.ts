@@ -57,7 +57,9 @@ const AI_CONNECTOR_SCOPE_VALUES = [
 
 const AI_CONNECTOR_SCOPE_SET: ReadonlySet<ShareCapability> = new Set(AI_CONNECTOR_SCOPE_VALUES);
 
-function isAiConnectorShareCapability(capability: ShareCapability): capability is AiConnectorScope {
+function isAiConnectorShareCapability(
+  capability: ShareCapability,
+): capability is Exclude<AiConnectorScope, "research:read"> {
   return AI_CONNECTOR_SCOPE_SET.has(capability);
 }
 

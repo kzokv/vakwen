@@ -1150,7 +1150,7 @@ function auditPreview(aggregate: AiTransactionDraftBatchAggregate): ChatGptTrans
 
 function canUseScope(
   deps: McpDraftServiceDeps,
-  settings: { groupToggles: Record<"read" | "drafts" | "write", boolean> },
+  settings: { groupToggles: Record<"read" | "research" | "drafts" | "write", boolean> },
   scope: "transaction_draft:edit" | "transaction_draft:archive" | "transaction_draft:delete" | "transaction:write",
   toolName: string,
 ): boolean {

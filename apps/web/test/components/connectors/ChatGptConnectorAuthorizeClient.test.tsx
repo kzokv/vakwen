@@ -31,7 +31,7 @@ function buildConsent(overrides: Partial<McpOAuthConsentRequestDto> = {}): McpOA
     policy: {
       maxConnectorLifetimeDays: 90,
       postedTransactionMutationBatchLimit: 50,
-      groupToggles: { read: true, drafts: true, write: true },
+      groupToggles: { read: true, research: false, drafts: true, write: true },
     },
     ...overrides,
   };
@@ -125,7 +125,7 @@ describe("ChatGptConnectorAuthorizeClient", () => {
       policy: {
         maxConnectorLifetimeDays: 90,
         postedTransactionMutationBatchLimit: 50,
-        groupToggles: { read: false, drafts: false, write: false },
+        groupToggles: { read: false, research: false, drafts: false, write: false },
       },
     }));
 
@@ -138,7 +138,7 @@ describe("ChatGptConnectorAuthorizeClient", () => {
     expect(buttonByText("Deny").disabled).toBe(false);
   });
 
-  it("offers recovery actions when an authorization request cannot be loaded", async () => {
+  it("offers safe recovery actions when an authorization request cannot be loaded", async () => {
     mockFetchMcpOAuthConsent
       .mockRejectedValueOnce(new Error("OAuth consent request is no longer pending"))
       .mockResolvedValueOnce(buildConsent());
@@ -147,7 +147,7 @@ describe("ChatGptConnectorAuthorizeClient", () => {
     await flushEffects();
 
     expect(document.querySelector("[role='alert']")?.textContent).toContain("OAuth consent request is no longer pending");
-    expect(buttonByText("Start again in your AI client")).not.toBeNull();
+    expect(document.body.textContent).not.toContain("Start again in your AI client");
 
     await act(async () => {
       buttonByText("Retry request").dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -209,6 +209,46 @@ describe("ChatGptConnectorAuthorizeClient", () => {
     expect(dividendCheckbox?.checked).toBe(false);
     expect(document.body.textContent).toContain("Advanced scope. Off by default");
     expect(document.body.textContent).toContain("preview, post, update, or delete confirmed transactions and dividend actions");
+  });
+
+  it("keeps research:read unchecked and groups it separately when policy exposes research", async () => {
+    mockFetchMcpOAuthConsent.mockResolvedValue({
+      ...buildConsent({
+        scopes: ["portfolio:mcp_read", "research:read" as never],
+      }),
+      policy: {
+        ...buildConsent().policy,
+        groupToggles: { ...buildConsent().policy.groupToggles, research: true },
+      },
+    });
+
+    await act(async () => root.render(<ChatGptConnectorAuthorizeClient />));
+    await flushEffects();
+
+    const researchLabel = Array.from(document.querySelectorAll("label"))
+      .find((candidate) => candidate.textContent?.includes("Research identities for Taiwan additive workflows"));
+    const researchCheckbox = researchLabel?.querySelector("input[type='checkbox']") as HTMLInputElement | null;
+
+    expect(document.body.textContent).toContain("Research");
+    expect(researchCheckbox?.checked).toBe(false);
+    expect(researchLabel?.textContent).toContain("Research access is additive");
+    expect(document.body.textContent).toContain("Existing OAuth connectors keep their current scopes");
+  });
+
+  it("keeps research:read disabled when policy does not expose the research group", async () => {
+    mockFetchMcpOAuthConsent.mockResolvedValue(buildConsent({
+      scopes: ["research:read" as never],
+    }));
+
+    await act(async () => root.render(<ChatGptConnectorAuthorizeClient />));
+    await flushEffects();
+
+    const researchLabel = Array.from(document.querySelectorAll("label"))
+      .find((candidate) => candidate.textContent?.includes("Research identities for Taiwan additive workflows"));
+    const researchCheckbox = researchLabel?.querySelector("input[type='checkbox']") as HTMLInputElement | null;
+
+    expect(researchCheckbox?.disabled).toBe(true);
+    expect(researchLabel?.textContent).toContain("Disabled by admin policy");
   });
 
   it("shows account management consent as a standard checked scope", async () => {

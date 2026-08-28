@@ -674,6 +674,7 @@ function mapAiConnectorPolicySettingsRow(row: {
   allow_copilot_mcp?: boolean;
   allow_generic_mcp?: boolean;
   read_tools_enabled: boolean;
+  research_tools_enabled: boolean;
   draft_tools_enabled: boolean;
   write_tools_enabled: boolean;
   bearer_fallback_enabled?: boolean;
@@ -710,6 +711,7 @@ function mapAiConnectorPolicySettingsRow(row: {
     },
     groupToggles: {
       read: row.read_tools_enabled,
+      research: row.research_tools_enabled,
       drafts: row.draft_tools_enabled,
       write: row.write_tools_enabled,
     },
@@ -3092,6 +3094,7 @@ export class PostgresPersistence implements Persistence {
               allow_copilot_mcp,
               allow_generic_mcp,
               read_tools_enabled,
+              research_tools_enabled,
               draft_tools_enabled,
               write_tools_enabled,
               bearer_fallback_enabled,
@@ -3133,6 +3136,7 @@ export class PostgresPersistence implements Persistence {
                  allow_copilot_mcp,
                  allow_generic_mcp,
                  read_tools_enabled,
+                 research_tools_enabled,
                  draft_tools_enabled,
                  write_tools_enabled,
                  bearer_fallback_enabled,
@@ -3201,6 +3205,7 @@ export class PostgresPersistence implements Persistence {
       },
       groupToggles: {
         read: input.groupToggles?.read ?? current.groupToggles.read,
+        research: input.groupToggles?.research ?? current.groupToggles.research,
         drafts: input.groupToggles?.drafts ?? current.groupToggles.drafts,
         write: input.groupToggles?.write ?? current.groupToggles.write,
       },
@@ -3237,6 +3242,7 @@ export class PostgresPersistence implements Persistence {
          allow_copilot_mcp,
          allow_generic_mcp,
          read_tools_enabled,
+         research_tools_enabled,
          draft_tools_enabled,
          write_tools_enabled,
          bearer_fallback_enabled,
@@ -3253,8 +3259,8 @@ export class PostgresPersistence implements Persistence {
          oauth_redirect_uri_allowlist,
          updated_at
        ) VALUES (
-         TRUE, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-         $15, $16::text[], $17, $18, $19::text[], $20, $21, $22, $23, $24, $25, $26::text[], NOW()
+         TRUE, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+         $16, $17::text[], $18, $19, $20::text[], $21, $22, $23, $24, $25, $26, $27::text[], NOW()
        )
        ON CONFLICT (id) DO UPDATE SET
          enabled = EXCLUDED.enabled,
@@ -3269,6 +3275,7 @@ export class PostgresPersistence implements Persistence {
          allow_copilot_mcp = EXCLUDED.allow_copilot_mcp,
          allow_generic_mcp = EXCLUDED.allow_generic_mcp,
          read_tools_enabled = EXCLUDED.read_tools_enabled,
+         research_tools_enabled = EXCLUDED.research_tools_enabled,
          draft_tools_enabled = EXCLUDED.draft_tools_enabled,
          write_tools_enabled = EXCLUDED.write_tools_enabled,
          bearer_fallback_enabled = EXCLUDED.bearer_fallback_enabled,
@@ -3296,6 +3303,7 @@ export class PostgresPersistence implements Persistence {
                  allow_copilot_mcp,
                  allow_generic_mcp,
                  read_tools_enabled,
+                 research_tools_enabled,
                  draft_tools_enabled,
                  write_tools_enabled,
                  bearer_fallback_enabled,
@@ -3329,6 +3337,7 @@ export class PostgresPersistence implements Persistence {
         next.allowedClientKinds.copilot_mcp,
         next.allowedClientKinds.generic_mcp,
         next.groupToggles.read,
+        next.groupToggles.research,
         next.groupToggles.drafts,
         next.groupToggles.write,
         next.bearerFallback.enabled,
@@ -19354,8 +19363,15 @@ export class PostgresPersistence implements Persistence {
     type?: string,
     marketCode?: string,
     _userId?: string,
-  ): Promise<Omit<InstrumentCatalogItemDto, "repairAvailableAt">[]> {
-    const conditions: string[] = ["i.delisted_at IS NULL"];
+    options?: { includeInactive?: boolean },
+  ): Promise<Array<Omit<InstrumentCatalogItemDto, "repairAvailableAt"> & {
+    delistedAt?: string | null;
+    supportState?: "supported" | "retired_by_admin" | "unsupported_by_provider";
+  }>> {
+    const conditions: string[] = [];
+    if (!options?.includeInactive) {
+      conditions.push("i.delisted_at IS NULL");
+    }
     const params: unknown[] = [];
     let paramIndex = 1;
 
@@ -19388,11 +19404,13 @@ export class PostgresPersistence implements Persistence {
       industry_category_raw: string | null;
       bars_backfill_status: string;
       last_repair_at: string | null;
+      delisted_at: string | null;
+      support_state: "supported" | "retired_by_admin" | "unsupported_by_provider";
       // KZO-196 — GICS industry-group projection.
       gics_industry_group: string | null;
     }>(
       `SELECT ticker, name, instrument_type, market_code, industry_category_raw, bars_backfill_status, last_repair_at::text,
-              gics_industry_group
+              delisted_at::text, support_state, gics_industry_group
        FROM market_data.instruments i ${where}
        ORDER BY ticker, market_code`,
       params,
@@ -19411,6 +19429,8 @@ export class PostgresPersistence implements Persistence {
       marketCode: row.market_code,
       barsBackfillStatus: row.bars_backfill_status,
       lastRepairAt: row.last_repair_at,
+      delistedAt: row.delisted_at,
+      supportState: row.support_state,
       // KZO-196 — null when the GICS sync has not enriched this row yet.
       gicsIndustryGroup: row.gics_industry_group ?? null,
     }));

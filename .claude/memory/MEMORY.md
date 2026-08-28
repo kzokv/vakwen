@@ -78,6 +78,7 @@
 
 ## Promoted to .claude/rules/ (MCP account tools scope, 2026-05-31)
 - `mcp-tool-scope-extension-checklist.md` — New MCP tool families/scopes require shared DTO/scope types, OAuth/MCP metadata, lifecycle policy mapping, service auth, connector consent UI, ChatGPT Apps resources, and API/web/E2E tests in the same PR.
+- 2026-08-28 addendum — Additive gated scopes require one rollout matrix across OAuth metadata/defaults, MCP discovery/challenges, consent, persisted grants, and reconnect/recreate behavior; partial-on gates and stored-grant rollback are mandatory test cases.
 
 ## Promoted to .claude/rules/ (MCP name-first delegation, 2026-06-16)
 - `mcp-name-first-delegation-wrappers.md` — Model-facing delegated MCP write tools must use human selectors, keep internal IDs out of visible payloads, preserve low-level widget handlers as app-visible only, and require confirmation digests before commits.

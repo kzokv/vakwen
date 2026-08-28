@@ -36,7 +36,6 @@ import type {
   AccountLifecycleMutationResponseDto,
   AccountMutationResponseDto,
   AccountDefaultCurrency,
-  AiConnectorAccessKind,
   AiConnectorToolBlockerCode,
   AiConnectorPolicySettingsDto,
   AiConnectorSummaryDto,
@@ -223,7 +222,7 @@ import { enqueueCloseRefresh } from "../services/market-data/closeRefreshWorker.
 import { TwseStockDayCloseProvider, YahooChartCloseProvider } from "../services/market-data/providers/index.js";
 import { MockTwelveDataAuCatalogProvider } from "../services/market-data/providers/mockTwelveDataAu.js";
 import { routeError } from "../lib/routeError.js";
-import { listMcpToolDefinitions } from "../mcp/tools.js";
+import { groupsForListedTool, listMcpToolDefinitions, researchScopeAcquisitionAllowed } from "../mcp/tools.js";
 import { scopesForToolAccess } from "../mcp/policy.js";
 import {
   requireAdminRole,
@@ -307,6 +306,7 @@ const currencyCodeSchema = z
   .regex(/^[A-Z]{3}$/);
 const aiConnectorScopeValues = [
   "portfolio:mcp_read",
+  "research:read",
   "account:manage",
   "transaction_draft:create",
   "transaction_draft:edit",
@@ -316,7 +316,14 @@ const aiConnectorScopeValues = [
   "dividend:write",
 ] as const satisfies readonly AiConnectorScope[];
 const shareCapabilityValues = [
-  ...aiConnectorScopeValues,
+  "portfolio:mcp_read",
+  "account:manage",
+  "transaction_draft:create",
+  "transaction_draft:edit",
+  "transaction_draft:archive",
+  "transaction_draft:delete",
+  "transaction:write",
+  "dividend:write",
   "sharing:manage",
 ] as const satisfies readonly ShareCapability[];
 const shareCapabilitySchema = z.enum(shareCapabilityValues);
@@ -1449,27 +1456,29 @@ function buildAiConnectorToolCatalog(
   policy: Pick<AiConnectorPolicySettingsDto, "enabled" | "allowedClientKinds" | "groupToggles" | "bearerFallback">,
   connections: AiConnectorConnectionRecord[] = [],
 ) {
-  return listMcpToolDefinitions().map((tool) => {
-    const group = connectorGroupForScope(tool.scope);
-    const enabledByPolicy = policy.enabled && policy.groupToggles[group];
+  return listMcpToolDefinitions({ legacyReadGroupEnabled: policy.groupToggles.read }).map((tool) => {
+    const primaryGroup = connectorGroupForScope(tool.scope);
+    const groups = groupsForListedTool(tool);
+    const enabledByPolicy = policy.enabled && groups.some((group) => policy.groupToggles[group]);
     const unavailableReason = !policy.enabled
       ? "AI connector deployment is disabled by admin policy."
-      : !policy.groupToggles[group]
-        ? `${group === "read" ? "Read" : group === "drafts" ? "Draft" : "Write"} MCP tools are disabled by admin policy.`
+      : !groups.some((group) => policy.groupToggles[group])
+        ? `${primaryGroup === "read" ? "Read" : primaryGroup === "research" ? "Research" : primaryGroup === "drafts" ? "Draft" : "Write"} MCP tools are disabled by admin policy.`
         : null;
     return {
       name: tool.name,
       description: tool.description,
       scope: tool.scope,
+      alternativeScopes: tool.alternativeScopes,
       accessKind: tool.accessKind,
-      group,
+      group: primaryGroup,
       inputSchema: summarizeMcpInputSchema(tool.inputSchema),
       enabledByPolicy,
       availability: enabledByPolicy ? "available" as const : "unavailable" as const,
       unavailableReason,
       annotations: tool.annotations,
       effectiveAccess: connections.map((connection) => {
-        const blockerCode = getToolEffectiveAccessBlocker(policy, connection, tool.scope, tool.name, tool.accessKind, enabledByPolicy);
+        const blockerCode = getToolEffectiveAccessBlocker(policy, connection, tool, enabledByPolicy);
         return {
           connectionId: connection.id,
           connectionDisplayName: connection.displayName,
@@ -1553,25 +1562,35 @@ function describeZodSchema(schema: unknown): string {
 function getToolEffectiveAccessBlocker(
   policy: Pick<AiConnectorPolicySettingsDto, "enabled" | "allowedClientKinds" | "groupToggles" | "bearerFallback">,
   connection: AiConnectorConnectionRecord,
-  scope: AiConnectorScope,
-  toolName: string,
-  accessKind: AiConnectorAccessKind,
+  tool: Pick<ReturnType<typeof listMcpToolDefinitions>[number], "scope" | "alternativeScopes" | "name" | "accessKind">,
   enabledByPolicy: boolean,
 ): AiConnectorToolBlockerCode | null {
-  const group = connectorGroupForScope(scope);
+  const groups = groupsForListedTool(tool);
+  const scopeGroupPairs = scopesForToolAccess(tool.accessKind, tool.name, tool.scope).map((scope) => ({
+    scope,
+    group: connectorGroupForScope(scope),
+  }));
   if (!policy.enabled) return "global_mcp_disabled";
   if (!policy.allowedClientKinds[connection.clientKind]) return "client_kind_disabled";
   if (connection.status !== "active") return "connector_inactive";
   if (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now()) return "connector_inactive";
-  const requiredScopes = scopesForToolAccess(accessKind, toolName, scope);
-  if (!requiredScopes.some((requiredScope) => connection.scopes.includes(requiredScope))) return "missing_scope";
-  if (!enabledByPolicy || !policy.groupToggles[group]) return "admin_tool_policy_disabled";
+  const hasEnabledScopedAccess = scopeGroupPairs.some(({ scope, group }) => (
+    connection.scopes.includes(scope) && policy.groupToggles[group]
+  ));
+  if (!hasEnabledScopedAccess && scopeGroupPairs.some(({ scope }) => connection.scopes.includes(scope))) {
+    return "admin_tool_policy_disabled";
+  }
+  if (!scopeGroupPairs.some(({ scope }) => connection.scopes.includes(scope))) return "missing_scope";
+  if (!enabledByPolicy || !groups.some((group) => policy.groupToggles[group])) return "admin_tool_policy_disabled";
   if (connection.authMode === "bearer") {
     if (!policy.bearerFallback.enabled) return "admin_tool_policy_disabled";
     if (!policy.bearerFallback.allowedClientKinds.includes(connection.clientKind)) return "client_kind_disabled";
-    if (!policy.bearerFallback.allowedToolGroups.includes(group)) return "admin_tool_policy_disabled";
+    const hasBearerScopedAccess = scopeGroupPairs.some(({ scope, group }) => (
+      connection.scopes.includes(scope) && policy.bearerFallback.allowedToolGroups.includes(group)
+    ));
+    if (!hasBearerScopedAccess) return "admin_tool_policy_disabled";
   }
-  if (connection.toolToggles[toolName] === false) return "connector_override_disabled";
+  if (connection.toolToggles[tool.name] === false) return "connector_override_disabled";
   return null;
 }
 
@@ -9193,7 +9212,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         "Bearer connector lifetime is fixed at token creation; create a new bearer connector to choose a different lifetime",
       );
     }
-    const allowedScopes = requestedScopes.filter((scope) => settings.groupToggles[connectorGroupForScope(scope)]);
+    const allowedScopes = requestedScopes.filter((scope) => (
+      scope === "research:read" && connection.scopes.includes(scope)
+        ? true
+        : settings.groupToggles[connectorGroupForScope(scope)]
+          && (scope !== "research:read" || researchScopeAcquisitionAllowed())
+    ));
     if (connection.oauthClientId && nextExpiresAt !== connection.expiresAt) {
       throw routeError(
         400,

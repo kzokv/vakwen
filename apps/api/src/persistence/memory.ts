@@ -710,7 +710,7 @@ export class MemoryPersistence implements Persistence {
       copilot_mcp: true,
       generic_mcp: true,
     },
-    groupToggles: { read: true, drafts: true, write: false },
+    groupToggles: { read: true, research: false, drafts: true, write: false },
     bearerFallback: {
       enabled: false,
       allowedClientKinds: ["claude_code", "codex_cli", "gemini_cli", "copilot_mcp", "generic_mcp"],
@@ -7373,8 +7373,12 @@ export class MemoryPersistence implements Persistence {
     type?: string,
     marketCode?: string,
     userId?: string,
-  ): Promise<Omit<InstrumentCatalogItemDto, "repairAvailableAt">[]> {
-    let results = [...this._catalogForUser(userId).values()].filter((instrument) => !instrument.delistedAt);
+    options?: { includeInactive?: boolean },
+  ): Promise<Array<Omit<InstrumentCatalogItemDto, "repairAvailableAt"> & {
+    delistedAt?: string | null;
+    supportState?: "supported" | "retired_by_admin" | "unsupported_by_provider";
+  }>> {
+    let results = [...this._catalogForUser(userId).values()].filter((instrument) => options?.includeInactive || !instrument.delistedAt);
 
     if (search) {
       const q = search.toLowerCase();
@@ -7412,6 +7416,8 @@ export class MemoryPersistence implements Persistence {
       marketCode: i.marketCode,
       barsBackfillStatus: i.barsBackfillStatus,
       lastRepairAt: i.lastRepairAt ?? null,
+      delistedAt: i.delistedAt ?? null,
+      supportState: i.supportState ?? "supported",
       // KZO-196 — GICS industry-group projection. Memory catalog mirrors the
       // Postgres SELECT shape so suite-3/4/6 tests see the same DTO.
       gicsIndustryGroup: i.gicsIndustryGroup ?? null,

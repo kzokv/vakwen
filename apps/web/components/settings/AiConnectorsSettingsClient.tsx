@@ -68,9 +68,12 @@ import {
 } from "../connectors/clientMetadata";
 
 type SectionId = "overview" | "connect" | "connections" | "history" | "permissions" | "tool-catalog" | "activity";
-type ToolGroupFilter = "all" | AiConnectorToolGroup;
+type ExtendedAiConnectorScope = AiConnectorScope | "research:read";
+type ExtendedAiConnectorToolGroup = AiConnectorToolGroup | "research";
+type ScopeGroupKey = "read" | "research" | "accounts" | "drafts" | "posting";
+type ToolGroupFilter = "all" | ExtendedAiConnectorToolGroup;
 type ToolAvailabilityFilter = "all" | AiConnectorToolAvailability;
-type ToolScopeFilter = "all" | AiConnectorScope;
+type ToolScopeFilter = "all" | ExtendedAiConnectorScope;
 type ToolOverrideFilter = "all" | "explicit" | "inherited";
 type ActivityResultFilter = "all" | "ok" | "denied" | "error";
 type HistoryAuthFilter = "all" | "oauth" | "bearer";
@@ -210,6 +213,7 @@ type LocalizedCopy = {
   connected: string;
   inspect: string;
   readGroup: string;
+  researchGroup: string;
   accountsGroup: string;
   draftGroup: string;
   postingGroup: string;
@@ -221,12 +225,16 @@ type LocalizedCopy = {
   readAccess: string;
   toolOverrides: string;
   scopeLabel: string;
+  alternativeScopesLabel: string;
+  alternativeScopesBody: string;
   accessLabel: string;
   noMatchingTools: string;
   noActivity: string;
   hiddenByPolicy: string;
   bearerScopeLocked: string;
   oauthScopeLocked: string;
+  researchScope: string;
+  researchScopeLocked: string;
   advancedWriteScope: string;
   requiresScope: string;
   connectorInactive: string;
@@ -396,6 +404,7 @@ const COPY: Record<"en" | "zh-TW", LocalizedCopy> = {
     connected: "Connected",
     inspect: "Inspect",
     readGroup: "Read",
+    researchGroup: "Research",
     accountsGroup: "Accounts",
     draftGroup: "Drafts",
     postingGroup: "Posting",
@@ -407,12 +416,16 @@ const COPY: Record<"en" | "zh-TW", LocalizedCopy> = {
     readAccess: "Read",
     toolOverrides: "Tool overrides",
     scopeLabel: "Scope",
+    alternativeScopesLabel: "Alternative scopes",
+    alternativeScopesBody: "This tool also authorizes through these additive scopes when the API exposes them.",
     accessLabel: "Access",
     noMatchingTools: "No tools match the current filters.",
     noActivity: "No recent connector activity recorded.",
     hiddenByPolicy: "Blocked by admin MCP policy.",
     bearerScopeLocked: "Bearer token grants are fixed. Create a new bearer connector to add this scope.",
     oauthScopeLocked: "OAuth consent is fixed. Reconnect this connector to add this scope.",
+    researchScope: "Research access is additive and limited to Taiwan research workflows.",
+    researchScopeLocked: "Research access is additive. Reconnect this OAuth connector or recreate this bearer connector to add it.",
     advancedWriteScope: "Advanced financial write. Keep this scope off unless you want preview, post, update, delete, or dividend mutation tools enabled after explicit confirmation.",
     requiresScope: "Requires {scope}.",
     connectorInactive: "Blocked because the connector is {status}.",
@@ -580,6 +593,7 @@ const COPY: Record<"en" | "zh-TW", LocalizedCopy> = {
     connected: "已連線",
     inspect: "檢視",
     readGroup: "讀取",
+    researchGroup: "研究",
     accountsGroup: "帳戶",
     draftGroup: "草稿",
     postingGroup: "送出",
@@ -591,12 +605,16 @@ const COPY: Record<"en" | "zh-TW", LocalizedCopy> = {
     readAccess: "讀取",
     toolOverrides: "工具覆寫",
     scopeLabel: "權限範圍",
+    alternativeScopesLabel: "替代 scope",
+    alternativeScopesBody: "當 API 有明確提供時，這個工具也可透過以下加值 scope 授權。",
     accessLabel: "存取類型",
     noMatchingTools: "目前篩選條件沒有符合的工具。",
     noActivity: "最近沒有連接器活動。",
     hiddenByPolicy: "已被管理員 MCP 策略封鎖。",
     bearerScopeLocked: "Bearer 權杖授權範圍建立後即固定。若要新增此 scope，請建立新的 Bearer 連接器。",
     oauthScopeLocked: "OAuth 同意授權建立後即固定。若要新增此 scope，請重新連線此連接器。",
+    researchScope: "研究權限屬於加值授權，且只適用於台股研究流程。",
+    researchScopeLocked: "研究權限屬於加值授權。若要加入此權限，請重新連線 OAuth 連接器，或重新建立 Bearer 連接器。",
     advancedWriteScope: "進階財務寫入。除非你希望在明確確認後啟用預覽、送出、更新、刪除或股利異動工具，否則請保持關閉。",
     requiresScope: "需要 {scope}。",
     connectorInactive: "因連接器狀態為 {status} 而被封鎖。",
@@ -633,12 +651,76 @@ const COPY: Record<"en" | "zh-TW", LocalizedCopy> = {
   },
 };
 
-const GROUPED_SCOPES: Array<{ key: "read" | "accounts" | "drafts" | "posting"; scopes: AiConnectorScope[] }> = [
+const BASE_GROUPED_SCOPES: Array<{ key: Exclude<ScopeGroupKey, "research">; scopes: ExtendedAiConnectorScope[] }> = [
   { key: "read", scopes: ["portfolio:mcp_read"] },
   { key: "accounts", scopes: ["account:manage"] },
   { key: "drafts", scopes: ["transaction_draft:create", "transaction_draft:edit", "transaction_draft:archive", "transaction_draft:delete"] },
   { key: "posting", scopes: ["transaction:write", "dividend:write"] },
 ];
+
+const RESEARCH_SCOPE = "research:read" as ExtendedAiConnectorScope;
+
+function groupTogglesRecord(policy: AiConnectorSummaryResponse["policy"]): Record<string, boolean> {
+  return policy.groupToggles as Record<string, boolean>;
+}
+
+function bearerAllowedToolGroups(policy: AiConnectorSummaryResponse["policy"]): ExtendedAiConnectorToolGroup[] {
+  return policy.bearerFallback.allowedToolGroups as ExtendedAiConnectorToolGroup[];
+}
+
+function toolGroupValue(tool: AiConnectorToolCatalogEntryDto): ExtendedAiConnectorToolGroup {
+  return tool.group as ExtendedAiConnectorToolGroup;
+}
+
+function toolScopeValue(tool: AiConnectorToolCatalogEntryDto): ExtendedAiConnectorScope {
+  return tool.scope as ExtendedAiConnectorScope;
+}
+
+function toolScopeValues(tool: AiConnectorToolCatalogEntryDto): ExtendedAiConnectorScope[] {
+  return [toolScopeValue(tool), ...(tool.alternativeScopes ?? []) as ExtendedAiConnectorScope[]];
+}
+
+function groupForScope(scope: ExtendedAiConnectorScope): ExtendedAiConnectorToolGroup {
+  if (scope === "portfolio:mcp_read") return "read";
+  if (scope === RESEARCH_SCOPE) return "research";
+  if (isDraftScope(scope)) return "drafts";
+  return "write";
+}
+
+function toolGroupValues(tool: AiConnectorToolCatalogEntryDto): ExtendedAiConnectorToolGroup[] {
+  return [...new Set([toolGroupValue(tool), ...toolScopeValues(tool).map(groupForScope)])];
+}
+
+function isResearchScope(scope: string): scope is ExtendedAiConnectorScope {
+  return scope === RESEARCH_SCOPE;
+}
+
+function isDraftScope(scope: ExtendedAiConnectorScope): boolean {
+  return scope === "transaction_draft:create"
+    || scope === "transaction_draft:edit"
+    || scope === "transaction_draft:archive"
+    || scope === "transaction_draft:delete";
+}
+
+function supportsResearchScopeFromState(input: {
+  connections: AiConnectorConnectionDto[];
+  policy: AiConnectorSummaryResponse["policy"] | null;
+  toolCatalog?: AiConnectorToolCatalogEntryDto[];
+}): boolean {
+  if (input.policy && groupTogglesRecord(input.policy).research === true) return true;
+  if (input.policy && bearerAllowedToolGroups(input.policy).includes("research")) return true;
+  if (input.connections.some((connection) => connection.scopes.includes(RESEARCH_SCOPE as AiConnectorScope))) return true;
+  return (input.toolCatalog ?? []).some((tool) =>
+    toolScopeValues(tool).includes(RESEARCH_SCOPE) || toolGroupValues(tool).includes("research"));
+}
+
+function groupedScopes(summary: AiConnectorSummaryResponse | null): Array<{ key: ScopeGroupKey; scopes: ExtendedAiConnectorScope[] }> {
+  const groups: Array<{ key: ScopeGroupKey; scopes: ExtendedAiConnectorScope[] }> = [...BASE_GROUPED_SCOPES];
+  if (summary && supportsResearchScopeFromState(summary)) {
+    groups.splice(1, 0, { key: "research", scopes: [RESEARCH_SCOPE] });
+  }
+  return groups;
+}
 
 function isAdvancedFinancialWriteScope(scope: AiConnectorScope): boolean {
   return scope === "transaction:write" || scope === "dividend:write";
@@ -659,8 +741,8 @@ function formatMessage(template: string, values: Record<string, string>): string
   return Object.entries(values).reduce((message, [key, value]) => message.replace(`{${key}}`, value), template);
 }
 
-function formatTime(value: string | null, fallback: string): string {
-  return value ? new Date(value).toLocaleString() : fallback;
+function formatTime(value: string | null, copy: LocalizedCopy): string {
+  return value ? new Date(value).toLocaleString(copy === COPY["zh-TW"] ? "zh-TW" : "en-US") : copy.never;
 }
 
 function statusClassName(status: AiConnectorStatus): string {
@@ -670,8 +752,9 @@ function statusClassName(status: AiConnectorStatus): string {
   return "border-slate-200 bg-slate-100 text-slate-700";
 }
 
-function scopeGroupLabel(copy: LocalizedCopy, key: "read" | "accounts" | "drafts" | "posting"): string {
+function scopeGroupLabel(copy: LocalizedCopy, key: ScopeGroupKey): string {
   if (key === "read") return copy.readGroup;
+  if (key === "research") return copy.researchGroup;
   if (key === "accounts") return copy.accountsGroup;
   if (key === "drafts") return copy.draftGroup;
   return copy.postingGroup;
@@ -765,28 +848,35 @@ function toolToggleChecked(connection: AiConnectorConnectionDto, tool: AiConnect
     && connection.toolToggles[tool.name] !== false;
 }
 
-function isGroupEnabled(policy: AiConnectorSummaryResponse["policy"], scope: AiConnectorScope): boolean {
+function isGroupEnabled(policy: AiConnectorSummaryResponse["policy"], scope: ExtendedAiConnectorScope): boolean {
   if (scope === "portfolio:mcp_read") return policy.groupToggles.read;
-  if (scope.startsWith("transaction_draft")) return policy.groupToggles.drafts;
+  if (isResearchScope(scope)) return groupTogglesRecord(policy).research === true;
+  if (isDraftScope(scope)) return policy.groupToggles.drafts;
   return policy.groupToggles.write;
 }
 
-function bearerToolGroupForScope(scope: AiConnectorScope): "read" | "drafts" | "write" {
+function bearerToolGroupForScope(scope: ExtendedAiConnectorScope): ExtendedAiConnectorToolGroup {
   if (scope === "portfolio:mcp_read") return "read";
-  if (scope.startsWith("transaction_draft")) return "drafts";
+  if (isResearchScope(scope)) return "research";
+  if (isDraftScope(scope)) return "drafts";
   return "write";
 }
 
-function isBearerScopeAllowed(policy: AiConnectorSummaryResponse["policy"], scope: AiConnectorScope): boolean {
+function isBearerScopeAllowed(policy: AiConnectorSummaryResponse["policy"], scope: ExtendedAiConnectorScope): boolean {
   return isGroupEnabled(policy, scope)
-    && policy.bearerFallback.allowedToolGroups.includes(bearerToolGroupForScope(scope));
+    && bearerAllowedToolGroups(policy).includes(bearerToolGroupForScope(scope));
 }
 
-function getBearerAllowedScopes(policy: AiConnectorSummaryResponse["policy"] | null): AiConnectorScope[] {
+function getBearerAllowedScopes(policy: AiConnectorSummaryResponse["policy"] | null, summary: AiConnectorSummaryResponse | null): ExtendedAiConnectorScope[] {
   if (!policy) return [];
-  return GROUPED_SCOPES
+  return groupedScopes(summary)
     .flatMap((group) => group.scopes)
     .filter((scope) => isBearerScopeAllowed(policy, scope));
+}
+
+function allVisibleToolGroupsDisabled(summary: AiConnectorSummaryResponse | null): boolean {
+  if (!summary) return false;
+  return groupedScopes(summary).every((group) => group.scopes.every((scope) => !isGroupEnabled(summary.policy, scope)));
 }
 
 function toolBlockerLabel(
@@ -799,7 +889,7 @@ function toolBlockerLabel(
   if (code === null) return null;
   if (code === "global_mcp_disabled" || code === "client_kind_disabled") return copy.hiddenByPolicy;
   if (code === "connector_inactive") return formatMessage(copy.connectorInactive, { status: connection.status });
-  if (code === "missing_scope") return formatMessage(copy.requiresScope, { scope: getAiConnectorScopeLabel(locale, tool.scope) });
+  if (code === "missing_scope") return formatMessage(copy.requiresScope, { scope: getAiConnectorScopeLabel(locale, toolScopeValue(tool)) });
   if (code === "admin_tool_policy_disabled") return tool.unavailableReason ?? copy.hiddenByPolicy;
   if (code === "connector_override_disabled") return copy.disabledByOverride;
   if (code === "delegated_share_capability_blocked") return copy.hiddenByPolicy;
@@ -915,7 +1005,7 @@ function accessLogContextLabel(copy: LocalizedCopy, log: AiConnectorAccessLogDto
 }
 
 function accessLogDetailLabel(copy: LocalizedCopy, log: AiConnectorAccessLogDto): string {
-  return `${accessKindLabel(copy, log.accessKind)} · ${formatTime(log.createdAt, copy.never)} · ${log.portfolioContextUserId ? `user:${log.portfolioContextUserId}` : "global"}`;
+  return `${accessKindLabel(copy, log.accessKind)} · ${formatTime(log.createdAt, copy)} · ${log.portfolioContextUserId ? `user:${log.portfolioContextUserId}` : "global"}`;
 }
 
 function isBearerClientKind(clientKind: AiConnectorClientKind): clientKind is Exclude<AiConnectorClientKind, "chatgpt_app"> {
@@ -1188,10 +1278,7 @@ export function AiConnectorsSettingsClient() {
   useEffect(() => {
     setSelectedHistoryIds((current) => current.filter((id) => historicalConnections.some((connection) => connection.id === id)));
   }, [historicalConnections]);
-  const allScopeGroupsDisabled = summary !== null
-    && !summary.policy.groupToggles.read
-    && !summary.policy.groupToggles.drafts
-    && !summary.policy.groupToggles.write;
+  const allScopeGroupsDisabled = allVisibleToolGroupsDisabled(summary);
   const isAdmin = shellData?.sessionUserRole === "admin";
   const noConnectorHistory = !isLoading && summary !== null && connections.length === 0 && historyConnections.length === 0;
   const needsAdminSetup = summary !== null && (summary.policy.readiness.status !== "ready" || allScopeGroupsDisabled);
@@ -1199,16 +1286,16 @@ export function AiConnectorsSettingsClient() {
   const filteredTools = useMemo(() => {
     const query = toolSearch.trim().toLowerCase();
     return (summary?.toolCatalog ?? []).filter((tool) => {
-      if (toolGroupFilter !== "all" && tool.group !== toolGroupFilter) return false;
+      if (toolGroupFilter !== "all" && !toolGroupValues(tool).includes(toolGroupFilter)) return false;
       if (toolAvailabilityFilter !== "all" && tool.availability !== toolAvailabilityFilter) return false;
-      if (toolScopeFilter !== "all" && tool.scope !== toolScopeFilter) return false;
+      if (toolScopeFilter !== "all" && !toolScopeValues(tool).includes(toolScopeFilter)) return false;
       const hasExplicitOverride = toolHasExplicitOverride(connections, tool.name);
       if (toolOverrideFilter === "explicit" && !hasExplicitOverride) return false;
       if (toolOverrideFilter === "inherited" && hasExplicitOverride) return false;
       if (!query) return true;
       return tool.name.toLowerCase().includes(query)
         || tool.description.toLowerCase().includes(query)
-        || getAiConnectorScopeLabel(locale, tool.scope).toLowerCase().includes(query);
+        || toolScopeValues(tool).some((scope) => getAiConnectorScopeLabel(locale, scope).toLowerCase().includes(query));
     });
   }, [connections, locale, summary?.toolCatalog, toolAvailabilityFilter, toolGroupFilter, toolOverrideFilter, toolScopeFilter, toolSearch]);
   const selectedTool = filteredTools.find((tool) => tool.name === selectedToolName)
@@ -1556,7 +1643,7 @@ export function AiConnectorsSettingsClient() {
                   const bearerClientKind = client.clientKind !== "claude_ai_connector" && isBearerClientKind(client.clientKind)
                     ? client.clientKind
                     : null;
-                  const allowedBearerScopes = getBearerAllowedScopes(summary?.policy ?? null);
+                  const allowedBearerScopes = getBearerAllowedScopes(summary?.policy ?? null, summary);
                   const bearerActiveForClient = bearerClientKind !== null && activeBearerConnections.some((connection) =>
                     connection.clientKind === bearerClientKind);
                   const bearerLimitReached = Boolean(summary?.policy)
@@ -1712,7 +1799,7 @@ export function AiConnectorsSettingsClient() {
                               <div>
                                 <p className="text-sm font-medium text-foreground">{copy.bearerScopes}</p>
                                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                                  {GROUPED_SCOPES.flatMap((group) => group.scopes).map((scope) => {
+                                  {groupedScopes(summary).flatMap((group) => group.scopes).map((scope) => {
                                     const scopeAllowed = summary?.policy ? isBearerScopeAllowed(summary.policy, scope) : false;
                                     return (
                                       <label key={`${client.clientKind}-${scope}`} className="flex items-start gap-2 rounded-lg border border-border px-3 py-2 text-sm">
@@ -1731,7 +1818,10 @@ export function AiConnectorsSettingsClient() {
                                         />
                                         <span className="min-w-0">
                                           <span className="block text-foreground">{getAiConnectorScopeLabel(locale, scope)}</span>
-                                          {isAdvancedFinancialWriteScope(scope) ? (
+                                          {isResearchScope(scope) ? (
+                                            <span className="mt-1 block text-xs text-amber-700">{copy.researchScope}</span>
+                                          ) : null}
+                                          {isAdvancedFinancialWriteScope(scope as AiConnectorScope) ? (
                                             <span className="mt-1 block text-xs text-amber-700">{copy.advancedWriteScope}</span>
                                           ) : null}
                                           {!scopeAllowed ? <span className="text-xs text-amber-700">{copy.hiddenByPolicy}</span> : null}
@@ -1761,7 +1851,7 @@ export function AiConnectorsSettingsClient() {
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div className="min-w-0">
                               <p className="font-semibold">{copy.bearerTokenOneTime}</p>
-                              <p className="mt-1">{copy.expires}: {formatTime(oneTimeBearerToken.expiresAt, copy.never)}</p>
+                              <p className="mt-1">{copy.expires}: {formatTime(oneTimeBearerToken.expiresAt, copy)}</p>
                               <p className="mt-2 break-all font-mono text-xs">{oneTimeBearerToken.token}</p>
                             </div>
                             <Button variant="outline" size="sm" onClick={() => setOneTimeBearerToken(null)}>
@@ -2034,24 +2124,26 @@ export function AiConnectorsSettingsClient() {
                     <Input
                       value={toolSearch}
                       data-testid="ai-connectors-tool-search"
+                      aria-label={copy.searchTools}
                       onChange={(event) => setToolSearch(event.target.value)}
                       placeholder={copy.searchTools}
                       className="pl-9"
                     />
                   </label>
                   <Select value={toolGroupFilter} onValueChange={(value) => setToolGroupFilter(value as ToolGroupFilter)}>
-                    <SelectTrigger data-testid="ai-connectors-tool-group-filter">
+                    <SelectTrigger data-testid="ai-connectors-tool-group-filter" aria-label={copy.filterGroup}>
                       <SelectValue placeholder={copy.filterGroup} />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">{copy.filterAll}</SelectItem>
                       <SelectItem value="read">{copy.readGroup}</SelectItem>
+                      {summary && supportsResearchScopeFromState(summary) ? <SelectItem value="research">{copy.researchGroup}</SelectItem> : null}
                       <SelectItem value="drafts">{copy.draftGroup}</SelectItem>
                       <SelectItem value="write">{copy.postingGroup}</SelectItem>
                     </SelectContent>
                   </Select>
                   <Select value={toolAvailabilityFilter} onValueChange={(value) => setToolAvailabilityFilter(value as ToolAvailabilityFilter)}>
-                    <SelectTrigger data-testid="ai-connectors-tool-availability-filter">
+                    <SelectTrigger data-testid="ai-connectors-tool-availability-filter" aria-label={copy.filterAvailability}>
                       <SelectValue placeholder={copy.filterAvailability} />
                     </SelectTrigger>
                     <SelectContent>
@@ -2061,18 +2153,18 @@ export function AiConnectorsSettingsClient() {
                     </SelectContent>
                   </Select>
                   <Select value={toolScopeFilter} onValueChange={(value) => setToolScopeFilter(value as ToolScopeFilter)}>
-                    <SelectTrigger data-testid="ai-connectors-tool-scope-filter">
+                    <SelectTrigger data-testid="ai-connectors-tool-scope-filter" aria-label={copy.filterScope}>
                       <SelectValue placeholder={copy.filterScope} />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">{copy.filterAll}</SelectItem>
-                      {GROUPED_SCOPES.flatMap((group) => group.scopes).map((scope) => (
+                      {groupedScopes(summary).flatMap((group) => group.scopes).map((scope) => (
                         <SelectItem key={scope} value={scope}>{getAiConnectorScopeLabel(locale, scope)}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                   <Select value={toolOverrideFilter} onValueChange={(value) => setToolOverrideFilter(value as ToolOverrideFilter)}>
-                    <SelectTrigger data-testid="ai-connectors-tool-override-filter">
+                    <SelectTrigger data-testid="ai-connectors-tool-override-filter" aria-label={copy.filterOverride}>
                       <SelectValue placeholder={copy.filterOverride} />
                     </SelectTrigger>
                     <SelectContent>
@@ -2125,11 +2217,11 @@ export function AiConnectorsSettingsClient() {
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="break-all font-mono text-sm font-semibold text-foreground">{tool.name}</span>
                                 <McpStatusChip tone={tool.availability === "available" ? "emerald" : "amber"}>{tool.availability}</McpStatusChip>
-                                <McpStatusChip tone="slate">{tool.group}</McpStatusChip>
+                                <McpStatusChip tone="slate">{toolGroupValue(tool)}</McpStatusChip>
                               </div>
                               <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{tool.description}</p>
                               <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                                <span>{getAiConnectorScopeLabel(locale, tool.scope)}</span>
+                                <span>{getAiConnectorScopeLabel(locale, toolScopeValue(tool))}</span>
                                 <span>{accessKindLabel(copy, tool.accessKind)}</span>
                                 <span>{availableConnections} {copy.canUse.toLowerCase()}</span>
                               </div>
@@ -2205,13 +2297,14 @@ export function AiConnectorsSettingsClient() {
                     <Input
                       value={activitySearch}
                       data-testid="ai-connectors-activity-search"
+                      aria-label={copy.searchActivity}
                       onChange={(event) => setActivitySearch(event.target.value)}
                       placeholder={copy.searchActivity}
                       className="pl-9"
                     />
                   </label>
                   <Select value={activityResultFilter} onValueChange={(value) => setActivityResultFilter(value as ActivityResultFilter)}>
-                    <SelectTrigger>
+                    <SelectTrigger aria-label={copy.filterResult}>
                       <SelectValue placeholder={copy.filterResult} />
                     </SelectTrigger>
                     <SelectContent>
@@ -2357,9 +2450,9 @@ function ConnectionSummaryCard({
           </div>
           <p className="mt-2 text-sm text-muted-foreground">{copy.vendor}: {vendorLabel(connection)} · {copy.authMode}: {authModeLabel(connection)}</p>
           <div className="mt-2 grid gap-1 text-sm text-muted-foreground sm:grid-cols-3">
-            <span>{copy.lastUsed}: {formatTime(connection.lastUsedAt, copy.never)}</span>
-            <span>{copy.expires}: {formatTime(connection.expiresAt, copy.never)}</span>
-            <span>{copy.created}: {formatTime(connection.createdAt, copy.never)}</span>
+            <span>{copy.lastUsed}: {formatTime(connection.lastUsedAt, copy)}</span>
+            <span>{copy.expires}: {formatTime(connection.expiresAt, copy)}</span>
+            <span>{copy.created}: {formatTime(connection.createdAt, copy)}</span>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -2380,15 +2473,17 @@ function ConnectionSummaryCard({
       {connection.authMode === "oauth" ? (
         <div className="mt-4 rounded-2xl border border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
           <p>{copy.reconnectPrompt}</p>
-          <a
-            href={metadata.reconnectUrl ?? "https://chatgpt.com/"}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-3 inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 font-medium text-foreground transition hover:bg-background"
-          >
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            {copy.reconnect}
-          </a>
+          {metadata.reconnectUrl ? (
+            <a
+              href={metadata.reconnectUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 font-medium text-foreground transition hover:bg-background"
+            >
+              <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              {copy.reconnect}
+            </a>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -2473,8 +2568,8 @@ function HistoryConnectionsTable({
                 </td>
                 <td className="px-4 py-4 text-muted-foreground">{authModeLabel(connection)}</td>
                 <td className="px-4 py-4 text-muted-foreground">
-                  <p>{formatTime(connection.lastUsedAt, copy.never)}</p>
-                  <p className="mt-1 text-xs">{copy.expires}: {formatTime(connection.expiresAt, copy.never)}</p>
+                  <p>{formatTime(connection.lastUsedAt, copy)}</p>
+                  <p className="mt-1 text-xs">{copy.expires}: {formatTime(connection.expiresAt, copy)}</p>
                 </td>
                 <td className="max-w-[180px] px-4 py-4">
                   <code className="break-all rounded bg-muted/40 px-1.5 py-1 text-xs text-muted-foreground">{connection.id}</code>
@@ -2521,7 +2616,7 @@ function HistoryConnectionsTable({
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{clientKindLabel(connection)} · {authModeLabel(connection)}</p>
                 <p className="mt-2 break-all text-xs text-muted-foreground">{copy.connectorId}: {connection.id}</p>
-                <p className="mt-2 text-xs text-muted-foreground">{copy.lastUsed}: {formatTime(connection.lastUsedAt, copy.never)}</p>
+                <p className="mt-2 text-xs text-muted-foreground">{copy.lastUsed}: {formatTime(connection.lastUsedAt, copy)}</p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button variant="outline" size="sm" onClick={() => onDetails(connection)}>
                     {copy.details}
@@ -2583,9 +2678,9 @@ function ConnectionDetailPanel({
         <DetailItem label={copy.authMode} value={authModeLabel(connection)} />
         <DetailItem label={copy.clientKind} value={clientKindLabel(connection)} />
         <DetailItem label={copy.statusReason} value={connection.revocationReason ?? "-"} />
-        <DetailItem label={copy.created} value={formatTime(connection.createdAt, copy.never)} />
-        <DetailItem label={copy.lastUsed} value={formatTime(connection.lastUsedAt, copy.never)} />
-        <DetailItem label={copy.expires} value={formatTime(connection.expiresAt, copy.never)} />
+        <DetailItem label={copy.created} value={formatTime(connection.createdAt, copy)} />
+        <DetailItem label={copy.lastUsed} value={formatTime(connection.lastUsedAt, copy)} />
+        <DetailItem label={copy.expires} value={formatTime(connection.expiresAt, copy)} />
         <DetailItem label={copy.scopes} value={connection.scopes.length > 0 ? connection.scopes.join(", ") : "-"} />
       </div>
 
@@ -2698,8 +2793,8 @@ function PermissionRow({
                 <McpStatusChip tone="slate">{authModeLabel(connection)}</McpStatusChip>
               </div>
               <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span>{copy.lastUsed}: {formatTime(connection.lastUsedAt, copy.never)}</span>
-                <span>{copy.expires}: {formatTime(connection.expiresAt, copy.never)}</span>
+                <span>{copy.lastUsed}: {formatTime(connection.lastUsedAt, copy)}</span>
+                <span>{copy.expires}: {formatTime(connection.expiresAt, copy)}</span>
               </div>
             </div>
           </div>
@@ -2719,7 +2814,10 @@ function PermissionRow({
         </div>
 
         <div className="grid gap-3 xl:grid-cols-4">
-          {GROUPED_SCOPES.map((group) => (
+          {(supportsResearchScopeFromState({ connections: [connection], policy, toolCatalog: tools })
+            ? [...BASE_GROUPED_SCOPES.slice(0, 1), { key: "research" as const, scopes: [RESEARCH_SCOPE] }, ...BASE_GROUPED_SCOPES.slice(1)]
+            : BASE_GROUPED_SCOPES
+          ).map((group) => (
             <div key={group.key} className="rounded-2xl border border-border bg-muted/20 px-3 py-3">
               <p className="text-sm font-semibold text-foreground">{scopeGroupLabel(copy, group.key)}</p>
               <div className="mt-3 space-y-2">
@@ -2733,17 +2831,24 @@ function PermissionRow({
                     <label key={scope} className="flex items-start justify-between gap-3 rounded-xl bg-background px-3 py-2 text-sm">
                       <span className="min-w-0">
                         <span className="block text-foreground">{getAiConnectorScopeLabel(locale, scope)}</span>
-                        {isAdvancedFinancialWriteScope(scope) ? (
+                        {isResearchScope(scope) ? (
+                          <span className="mt-1 block text-xs text-amber-700">{copy.researchScope}</span>
+                        ) : null}
+                        {isAdvancedFinancialWriteScope(scope as AiConnectorScope) ? (
                           <span className="mt-1 block text-xs text-amber-700">{copy.advancedWriteScope}</span>
                         ) : null}
                         {disabledByPolicy ? (
                           <span className="mt-1 block text-xs text-amber-700">{copy.hiddenByPolicy}</span>
                         ) : null}
                         {bearerScopeLocked ? (
-                          <span className="mt-1 block text-xs text-muted-foreground">{copy.bearerScopeLocked}</span>
+                          <span className="mt-1 block text-xs text-muted-foreground">
+                            {isResearchScope(scope) ? copy.researchScopeLocked : copy.bearerScopeLocked}
+                          </span>
                         ) : null}
                         {oauthScopeLocked ? (
-                          <span className="mt-1 block text-xs text-muted-foreground">{copy.oauthScopeLocked}</span>
+                          <span className="mt-1 block text-xs text-muted-foreground">
+                            {isResearchScope(scope) ? copy.researchScopeLocked : copy.oauthScopeLocked}
+                          </span>
                         ) : null}
                       </span>
                       <input
@@ -2823,6 +2928,7 @@ function ToolDetailPanel({
   const blockedAccess = tool.effectiveAccess.filter((access) =>
     access.status === "blocked" && connectionById.get(access.connectionId)?.status !== "revoked");
   const recentOutcomes = recentLogsForTool(accessLogs, tool.name, 5);
+  const alternativeScopes = tool.alternativeScopes ?? [];
 
   return (
     <div className="mt-4 space-y-4">
@@ -2830,15 +2936,26 @@ function ToolDetailPanel({
         <div className="flex flex-wrap items-center gap-2">
           <span className="break-all font-mono text-sm font-semibold text-foreground">{tool.name}</span>
           <McpStatusChip tone={tool.availability === "available" ? "emerald" : "amber"}>{tool.availability}</McpStatusChip>
-          <McpStatusChip tone="slate">{tool.group}</McpStatusChip>
+          <McpStatusChip tone="slate">{toolGroupValue(tool)}</McpStatusChip>
         </div>
         <p className="mt-2 text-sm text-muted-foreground">{tool.description}</p>
       </div>
       <div className="grid gap-3">
         <div className="rounded-2xl border border-border bg-muted/20 px-3 py-3 text-sm">
           <p className="font-medium text-foreground">{copy.scopeLabel}</p>
-          <p className="mt-1 text-muted-foreground">{getAiConnectorScopeLabel(locale, tool.scope)}</p>
+          <p className="mt-1 text-muted-foreground">{getAiConnectorScopeLabel(locale, toolScopeValue(tool))}</p>
         </div>
+        {alternativeScopes.length > 0 ? (
+          <div className="rounded-2xl border border-border bg-muted/20 px-3 py-3 text-sm">
+            <p className="font-medium text-foreground">{copy.alternativeScopesLabel}</p>
+            <p className="mt-1 text-muted-foreground">{copy.alternativeScopesBody}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {alternativeScopes.map((scope) => (
+                <McpStatusChip key={scope} tone="slate">{getAiConnectorScopeLabel(locale, scope)}</McpStatusChip>
+              ))}
+            </div>
+          </div>
+        ) : null}
         <div className="rounded-2xl border border-border bg-muted/20 px-3 py-3 text-sm">
           <p className="font-medium text-foreground">{copy.accessLabel}</p>
           <p className="mt-1 text-muted-foreground">{accessKindLabel(copy, tool.accessKind)}</p>

@@ -19,6 +19,7 @@ function authContext(): McpAuthContext {
   };
 }
 
+
 function fakeApp() {
   return {
     persistence: {
@@ -31,7 +32,7 @@ function fakeApp() {
         enabled: true,
         maxActiveConnectionsPerUser: 3,
         allowedProviders: { chatgpt: true, self_hosted: true },
-        groupToggles: { read: true, drafts: true, write: false },
+        groupToggles: { read: true, research: false, drafts: true, write: false },
         inactivityExpiryDays: 90,
         expirationWarningDays: 7,
         freshAuthMaxAgeMs: 600_000,
@@ -45,13 +46,14 @@ function fakeApp() {
   };
 }
 
+
 function fakeAppWithGroupDisabled() {
   const app = fakeApp() as ReturnType<typeof fakeApp>;
   app.persistence.getAiConnectorPolicySettings = async () => ({
     enabled: true,
     maxActiveConnectionsPerUser: 3,
     allowedProviders: { chatgpt: true, self_hosted: true },
-    groupToggles: { read: false, drafts: true, write: false },
+    groupToggles: { read: false, research: false, drafts: true, write: false },
     inactivityExpiryDays: 90,
     expirationWarningDays: 7,
     freshAuthMaxAgeMs: 600_000,

@@ -12,6 +12,7 @@ import type {
 } from "./types.js";
 import { connectorGroupForScope } from "../services/mcpConnectorLifecycle.js";
 import { getMcpClientByLegacyProvider } from "./clientRegistry.js";
+import { researchMcpExposureEnabled } from "./tools.js";
 
 const READ_LIMIT = { windowMs: 60_000, max: 120 };
 const MUTATION_LIMIT = { windowMs: 60_000, max: 60 };
@@ -40,7 +41,12 @@ export function scopesForToolAccess(
   toolName: string,
   toolScope: AiConnectorScope,
 ): AiConnectorScope[] {
-  if (accessKind === "read") return ["portfolio:mcp_read"];
+  if (accessKind === "read") {
+    if (toolName === "search_instruments" && researchMcpExposureEnabled()) {
+      return ["portfolio:mcp_read", "research:read"];
+    }
+    return ["portfolio:mcp_read"];
+  }
   if (toolName === "list_draftable_account_names") {
     return ["transaction_draft:create", "transaction_draft:edit"];
   }
@@ -65,6 +71,32 @@ function requireAnyScope(auth: McpAuthContext, scopes: readonly AiConnectorScope
   if (!scopes.some((scope) => auth.scopes.includes(scope))) {
     throw routeError(403, "mcp_scope_denied", `MCP scope ${scopes.join(" or ")} is not enabled for this connection`);
   }
+}
+
+function toShareCapabilities(requiredScopes: readonly AiConnectorScope[]): ShareCapability[] {
+  return requiredScopes.filter(
+    (scope): scope is Exclude<AiConnectorScope, "research:read"> => scope !== "research:read",
+  );
+}
+
+export function resolveSearchInstrumentScopePath(
+  auth: McpAuthContext,
+  settings: Awaited<ReturnType<FastifyInstance["persistence"]["getAiConnectorPolicySettings"]>>,
+): { group: "read" | "research"; requiredScopes: AiConnectorScope[] } | null {
+  const grantedPaths: Array<{ group: "read" | "research"; requiredScopes: AiConnectorScope[] }> = [];
+  if (auth.scopes.includes("portfolio:mcp_read")) {
+    grantedPaths.push({ group: "read", requiredScopes: ["portfolio:mcp_read"] });
+  }
+  if (auth.scopes.includes("research:read")) {
+    grantedPaths.push({ group: "research", requiredScopes: ["research:read"] });
+  }
+  const usablePath = grantedPaths.find(({ group }) => {
+    if (group === "research" && !researchMcpExposureEnabled()) return false;
+    if (!settings.groupToggles[group]) return false;
+    if (auth.authMode === "bearer" && !settings.bearerFallback.allowedToolGroups.includes(group)) return false;
+    return true;
+  });
+  return usablePath ?? grantedPaths[0] ?? null;
 }
 
 export function assertMcpScopesGranted(auth: McpAuthContext, scopes: readonly AiConnectorScope[]): void {
@@ -138,7 +170,8 @@ function requireShareCapability(
   requiredScopes: readonly AiConnectorScope[],
 ): void {
   if (!resolvedContext.shareId) return;
-  const needed = requiredScopes as readonly ShareCapability[];
+  const needed = toShareCapabilities(requiredScopes);
+  if (needed.length === 0) return;
   if (!needed.some((scope) => resolvedContext.shareCapabilities.includes(scope))) {
     throw routeError(
       403,
@@ -189,14 +222,18 @@ export class DefaultMcpPolicyService implements McpPolicyService {
         throw routeError(403, "mcp_client_kind_disabled", `AI connector client kind ${clientKind} is disabled`);
       }
     }
-    const group = connectorGroupForScope(toolScope);
+    const searchPath = toolName === "search_instruments" ? resolveSearchInstrumentScopePath(auth, settings) : null;
+    const group = searchPath?.group ?? connectorGroupForScope(toolScope);
+    if (group === "research" && !researchMcpExposureEnabled()) {
+      throw routeError(403, "mcp_tool_group_disabled", "MCP tool group research is disabled");
+    }
     if (auth.authMode === "bearer" && !settings.bearerFallback.allowedToolGroups.includes(group)) {
       throw routeError(403, "mcp_bearer_tool_group_disabled", `MCP bearer fallback is disabled for ${group} tools`);
     }
     if (!settings.groupToggles[group]) {
       throw routeError(403, "mcp_tool_group_disabled", `MCP tool group ${group} is disabled`);
     }
-    const requiredScopes = scopesForToolAccess(accessKind, toolName, toolScope);
+    const requiredScopes = searchPath?.requiredScopes ?? scopesForToolAccess(accessKind, toolName, toolScope);
     requireAnyScope(auth, requiredScopes);
     const resolvedContext = await resolveSharedContext(app, auth.sessionUserId, requestedContextUserId);
     requireShareCapability(resolvedContext, requiredScopes);

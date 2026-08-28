@@ -523,7 +523,7 @@ describe("smooth page read paths", () => {
     const originalPolicy = app.persistence.getAiConnectorPolicySettings.bind(app.persistence);
     vi.spyOn(app.persistence, "getAiConnectorPolicySettings").mockImplementation(async () => ({
       ...(await originalPolicy()),
-      groupToggles: { read: false, drafts: true, write: true },
+      groupToggles: { read: false, research: false, drafts: true, write: true },
     }));
 
     const summary = await app.inject({ method: "GET", url: "/ai/connectors/summary" });

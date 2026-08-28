@@ -80,6 +80,7 @@ export class DividendReviewActions extends AppBaseActions {
 
   @Step()
   async blurDateInputs(): Promise<void> {
+    await this.el.dateFrom.blur();
     await this.el.dateTo.blur();
   }
 

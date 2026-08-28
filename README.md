@@ -45,6 +45,7 @@ Use Node `24.13.0` or newer with npm `11.x` for this repo.
 
 Notes:
 - `infra/docker/docker-compose.yml` is a local fallback Postgres/Redis provider and is not required when using memory mode or external DB/Redis URLs.
+- The additive MCP research rollout is controlled by three independent default-off env gates: `MCP_RESEARCH_ACQUISITION_ENABLED`, `MCP_RESEARCH_MCP_ENABLED`, and `MCP_RESEARCH_SKILL_ENABLED`. See `docs/002-operations/runbook.md` for rollout behavior, reconnect/recreate requirements, and legacy-grant rollback semantics.
 
 ## Test
 

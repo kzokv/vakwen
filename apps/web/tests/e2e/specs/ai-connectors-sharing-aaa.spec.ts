@@ -21,13 +21,13 @@ async function mockAiConnectorApi(page: Page): Promise<void> {
       copilot_mcp: true,
       generic_mcp: true,
     },
-    groupToggles: { read: true, drafts: true, write: true },
+    groupToggles: { read: true, research: true, drafts: true, write: true },
     bearerFallback: {
       enabled: true,
       allowedClientKinds: ["claude_code", "codex_cli", "gemini_cli", "copilot_mcp", "generic_mcp"],
       maxLifetimeDays: 30,
       maxActiveConnectorsPerUser: 3,
-      allowedToolGroups: ["read"],
+      allowedToolGroups: ["read", "research"],
     },
     inactivityExpiryDays: 90,
     expirationWarningDays: 7,
@@ -132,7 +132,48 @@ async function mockAiConnectorApi(page: Page): Promise<void> {
       body: JSON.stringify({
         connections: activeConnections,
         policy,
-        toolCatalog: [],
+        toolCatalog: [
+          {
+            name: "search_instruments",
+            description: "Search Taiwan research identities without broadening legacy read access.",
+            scope: "portfolio:mcp_read",
+            alternativeScopes: ["research:read"],
+            accessKind: "read",
+            group: "read",
+            inputSchema: {
+              fields: [
+                { name: "includeInactive", type: "boolean", required: false },
+                { name: "query", type: "string", required: true },
+              ],
+              rawSchema: {
+                type: "object",
+                properties: {
+                  includeInactive: { type: "boolean" },
+                  query: { type: "string" },
+                },
+                required: ["query"],
+              },
+            },
+            enabledByPolicy: true,
+            availability: "available",
+            unavailableReason: null,
+            annotations: {
+              readOnlyHint: true,
+              destructiveHint: false,
+              idempotentHint: true,
+              openWorldHint: false,
+            },
+            effectiveAccess: [
+              {
+                connectionId: "conn-chatgpt-active",
+                connectionDisplayName: "ChatGPT",
+                clientKind: "chatgpt_app",
+                status: "blocked",
+                blockerCode: "missing_scope",
+              },
+            ],
+          },
+        ],
       }),
     });
   });
@@ -175,6 +216,12 @@ test.describe("ai connectors and sharing", () => {
     await page.getByRole("heading", { name: "Claude.ai" }).waitFor({ state: "visible" });
     await page.getByRole("heading", { name: "Claude Code" }).waitFor({ state: "visible" });
     await page.getByRole("heading", { name: "Codex CLI / IDE" }).waitFor({ state: "visible" });
+    await page.getByTestId("ai-connectors-tab-tool-catalog").click();
+    const searchInstrumentsTool = page.getByRole("button", { name: /search_instruments/ });
+    await searchInstrumentsTool.waitFor({ state: "visible" });
+    await searchInstrumentsTool.getByText("Read portfolio data").waitFor({ state: "visible" });
+    await searchInstrumentsTool.click();
+    await page.getByText("includeInactive", { exact: true }).waitFor({ state: "visible" });
   });
 
   test("[admin mcp settings]: settings route renders deployment and policy controls", async ({
@@ -271,5 +318,7 @@ test.describe("ai connectors and sharing", () => {
     await identityHeaders.filter({ hasText: "Claude.ai" }).first().waitFor({ state: "visible" });
     await identityHeaders.first().getByRole("button", { name: "Details" }).waitFor({ state: "visible" });
     await identityHeaders.first().getByRole("button", { name: "Back to connection" }).waitFor({ state: "visible" });
+    await page.getByText("Research identities for Taiwan additive workflows").first().waitFor({ state: "visible" });
+    await page.getByText("Reconnect this OAuth connector or recreate this bearer connector to add it.").first().waitFor({ state: "visible" });
   });
 });

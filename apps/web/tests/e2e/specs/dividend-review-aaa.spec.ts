@@ -397,8 +397,8 @@ test.describe("dividend review — filter auto-apply", () => {
     await dividendReview.actions.navigateToReview();
     await dividendReview.assert.pageLoaded();
     await dividendReview.actions.clickPreset("custom");
-    await dividendReview.actions.fillDateFrom(`${new Date().getUTCFullYear()}-01-01`);
     await dividendReview.actions.fillDateTo(`${new Date().getUTCFullYear()}-01-31`);
+    await dividendReview.actions.fillDateFrom(`${new Date().getUTCFullYear()}-01-01`);
     await dividendReview.actions.blurDateInputs();
 
     // ASSERT
@@ -425,8 +425,9 @@ test.describe("dividend review — filter auto-apply", () => {
     await dividendReview.actions.navigateToReview();
     await dividendReview.assert.pageLoaded();
     await dividendReview.actions.clickPreset("custom");
-    await dividendReview.actions.fillDateFrom(yearStart());
     await dividendReview.actions.clearDateTo();
+    await dividendReview.actions.fillDateFrom(yearStart());
+    await dividendReview.actions.blurDateInputs();
 
     // ASSERT
     await dividendReview.assert.dateErrorIsVisible();

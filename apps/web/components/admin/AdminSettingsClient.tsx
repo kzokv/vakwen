@@ -353,6 +353,7 @@ const MCP_BUILT_IN_REDIRECT_ALLOWLIST_EXAMPLES = [
   "https://chatgpt.com/aip/<gpt-id>/oauth/callback",
 ] as const;
 const CLAUDE_AI_REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback";
+type ResearchAwareToolGroup = "read" | "drafts" | "write" | "research";
 
 function redirectAllowlistDraftFromSettings(settings: AiConnectorPolicySettingsDto): string {
   return settings.oauthRedirectUriAllowlist.join("\n");
@@ -1171,9 +1172,53 @@ function AdminMcpSettingsPanel({ active }: { active: boolean }) {
     );
   }
 
-  const allGroupsDisabled = !settings.groupToggles.read
-    && !settings.groupToggles.drafts
-    && !settings.groupToggles.write;
+  const groupToggles = settings.groupToggles as Record<string, boolean>;
+  const bearerToolGroups = settings.bearerFallback.allowedToolGroups as ResearchAwareToolGroup[];
+  const researchGroupVisible = groupToggles.research === true || bearerToolGroups.includes("research");
+  const visibleToolGroups: Array<{
+    key: ResearchAwareToolGroup;
+    title: string;
+    count: string;
+    risk: string;
+    examples: string;
+  }> = [
+    {
+      key: "read",
+      title: isZhTW ? "讀取" : "Read",
+      count: "28",
+      risk: isZhTW ? "低風險，唯讀。" : "Low risk, read-only.",
+      examples: "get_portfolio_overview, get_daily_review_report",
+    },
+    ...(researchGroupVisible ? [{
+      key: "research" as const,
+      title: isZhTW ? "研究" : "Research",
+      count: isZhTW ? "加值" : "Additive",
+      risk: isZhTW ? "僅限台股研究身分流程；不會擴大既有讀取權限。" : "TW-only additive research path; does not widen legacy read access.",
+      examples: "search_instruments (TW research path)",
+    }] : []),
+    {
+      key: "drafts",
+      title: isZhTW ? "草稿流程" : "Draft workflow",
+      count: "24",
+      risk: isZhTW ? "中風險，可建立或修改草稿。" : "Moderate risk, can create or edit draft workflows.",
+      examples: "create_transaction_draft_batch, update_transaction_draft_row",
+    },
+    {
+      key: "write",
+      title: isZhTW ? "帳戶管理與送出" : "Account management and posting",
+      count: "15",
+      risk: isZhTW ? "高風險，包含帳戶變更與送出。" : "High risk, includes account changes and posting.",
+      examples: "create_account, post_transaction_draft_rows",
+    },
+  ];
+  const allGroupsDisabled = visibleToolGroups.every((group) => groupToggles[group.key] !== true);
+  const researchRollout = (settings as AiConnectorPolicySettingsDto & {
+    researchRollout?: {
+      acquisitionEnabled: boolean;
+      mcpExposureEnabled: boolean;
+      skillExposureEnabled: boolean;
+    };
+  }).researchRollout ?? null;
   const currentNumericDrafts = numericDrafts ?? numericDraftsFromSettings(settings);
   let numericValidation: string | null = null;
   let numericPatch: Pick<AiConnectorPolicySettingsDto, McpNumericSettingKey> | null = null;
@@ -1279,9 +1324,38 @@ function AdminMcpSettingsPanel({ active }: { active: boolean }) {
                   ? "需要新增 scope 或更換 OAuth 回呼的客戶端，必須重新連線或重新同意。"
                   : "Clients that need broader scopes or a repaired OAuth callback must reconnect and re-consent."}
               </p>
+              {researchGroupVisible ? (
+                <p>
+                  {isZhTW
+                    ? "研究權限是加值授權。現有 OAuth 或 Bearer 連接器不會被靜默升級；若要加入研究權限，必須重新連線或重新建立。"
+                    : "Research access is additive. Existing OAuth and bearer connectors are not upgraded silently; adding research requires reconnect or recreate."}
+                </p>
+              ) : null}
             </div>
           </div>
         </div>
+
+        {researchRollout ? (
+          <div className="rounded-xl border border-slate-200 px-4 py-4">
+            <h3 className="text-sm font-semibold text-slate-900">{isZhTW ? "研究功能推出狀態" : "Research rollout"}</h3>
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              {[
+                { key: "acquisitionEnabled", label: isZhTW ? "研究授權取得" : "Research acquisition" },
+                { key: "mcpExposureEnabled", label: isZhTW ? "研究 MCP 曝光" : "Research MCP exposure" },
+                { key: "skillExposureEnabled", label: isZhTW ? "研究 Skill 曝光" : "Research Skill exposure" },
+              ].map((item) => (
+                <div key={item.key} className="rounded-xl border border-slate-200 px-3 py-3 text-sm">
+                  <p className="font-medium text-slate-900">{item.label}</p>
+                  <p className="mt-1 text-slate-600">
+                    {researchRollout[item.key as keyof typeof researchRollout]
+                      ? (isZhTW ? "已啟用" : "Enabled")
+                      : (isZhTW ? "停用" : "Disabled")}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         <div id="client-kind-allowlist" className="scroll-mt-24 rounded-xl border border-slate-200 px-4 py-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1407,11 +1481,11 @@ function AdminMcpSettingsPanel({ active }: { active: boolean }) {
               <div id="bearer-tool-groups" className="scroll-mt-24 rounded-xl border border-slate-200 px-3 py-3">
                 <p className="text-sm font-medium text-slate-700">{isZhTW ? "允許 Bearer 工具群組" : "Allowed bearer tool groups"}</p>
                 <div className="mt-2 space-y-2">
-                  {(["read", "drafts", "write"] as const).map((group) => {
-                    const checked = settings.bearerFallback.allowedToolGroups.includes(group);
+                  {(researchGroupVisible ? (["read", "research", "drafts", "write"] as const) : (["read", "drafts", "write"] as const)).map((group) => {
+                    const checked = bearerToolGroups.includes(group);
                     const label = isZhTW
-                      ? group === "read" ? "讀取" : group === "drafts" ? "草稿" : "寫入"
-                      : group;
+                      ? group === "read" ? "讀取" : group === "research" ? "研究" : group === "drafts" ? "草稿" : "寫入"
+                      : group === "research" ? "research" : group;
                     return (
                       <label key={`bearer-group-${group}`} className="flex items-center justify-between gap-3 text-sm">
                         <span className="capitalize text-slate-700">{label}</span>
@@ -1420,8 +1494,8 @@ function AdminMcpSettingsPanel({ active }: { active: boolean }) {
                           disabled={saving || !settings.bearerFallback.enabled}
                           onCheckedChange={(nextChecked) => {
                             const nextGroups = nextChecked
-                              ? [...new Set([...settings.bearerFallback.allowedToolGroups, group])]
-                              : settings.bearerFallback.allowedToolGroups.filter((item) => item !== group);
+                              ? [...new Set([...bearerToolGroups, group])]
+                              : bearerToolGroups.filter((item) => item !== group);
                             void save({ bearerFallback: { ...settings.bearerFallback, allowedToolGroups: nextGroups } });
                           }}
                           aria-label={`${label} ${isZhTW ? "Bearer 工具群組" : "bearer tool group"}`}
@@ -1459,29 +1533,7 @@ function AdminMcpSettingsPanel({ active }: { active: boolean }) {
             </div>
           </div>
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
-            {([
-              {
-                key: "read" as const,
-                title: isZhTW ? "讀取" : "Read",
-                count: 28,
-                risk: isZhTW ? "低風險，唯讀。" : "Low risk, read-only.",
-                examples: "get_portfolio_overview, get_daily_review_report",
-              },
-              {
-                key: "drafts" as const,
-                title: isZhTW ? "草稿流程" : "Draft workflow",
-                count: 24,
-                risk: isZhTW ? "中風險，可建立或修改草稿。" : "Moderate risk, can create or edit draft workflows.",
-                examples: "create_transaction_draft_batch, update_transaction_draft_row",
-              },
-              {
-                key: "write" as const,
-                title: isZhTW ? "帳戶管理與送出" : "Account management and posting",
-                count: 15,
-                risk: isZhTW ? "高風險，包含帳戶變更與送出。" : "High risk, includes account changes and posting.",
-                examples: "create_account, post_transaction_draft_rows",
-              },
-            ]).map((group) => (
+            {visibleToolGroups.map((group) => (
               <label key={group.key} className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 px-4 py-3 text-sm">
                 <span className="min-w-0">
                   <span className="block font-medium text-slate-900">{group.title}</span>
@@ -1489,7 +1541,7 @@ function AdminMcpSettingsPanel({ active }: { active: boolean }) {
                   <span className="mt-1 block break-all text-xs text-slate-500">{group.examples}</span>
                 </span>
                 <Switch
-                  checked={settings.groupToggles[group.key]}
+                  checked={groupToggles[group.key] === true}
                   disabled={saving}
                   onCheckedChange={(checked) => void save({ groupToggles: { ...settings.groupToggles, [group.key]: checked } })}
                   aria-label={`${group.title} ${isZhTW ? "工具群組" : "tool group"}`}

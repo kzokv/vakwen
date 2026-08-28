@@ -430,6 +430,7 @@ const aiConnectorPolicySettingsPatchSchema = z
     groupToggles: z
       .object({
         read: z.boolean().optional(),
+        research: z.boolean().optional(),
         drafts: z.boolean().optional(),
         write: z.boolean().optional(),
       })
@@ -446,8 +447,8 @@ const aiConnectorPolicySettingsPatchSchema = z
         maxLifetimeDays: z.number().int().min(1).max(365).optional(),
         maxActiveConnectorsPerUser: z.number().int().min(1).max(25).optional(),
         allowedToolGroups: z
-          .array(z.enum(["read", "drafts", "write"]))
-          .max(3)
+          .array(z.enum(["read", "research", "drafts", "write"]))
+          .max(4)
           .transform((values) => [...new Set(values)])
           .optional(),
       })

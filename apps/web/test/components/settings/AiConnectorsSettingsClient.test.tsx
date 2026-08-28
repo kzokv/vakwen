@@ -52,7 +52,7 @@ function buildPolicy(overrides: Partial<AiConnectorPolicySettingsDto> = {}): AiC
       copilot_mcp: true,
       generic_mcp: true,
     },
-    groupToggles: { read: true, drafts: true, write: true },
+    groupToggles: { read: true, research: false, drafts: true, write: true },
     bearerFallback: {
       enabled: false,
       allowedClientKinds: ["claude_code", "codex_cli", "gemini_cli", "copilot_mcp", "generic_mcp"],
@@ -201,7 +201,7 @@ describe("AiConnectorsSettingsClient", () => {
   it("renders responsive section controls and policy recovery messaging", async () => {
     mockFetchAiConnectorSummary.mockResolvedValue({
       connections: [buildConnection()],
-      policy: buildPolicy({ groupToggles: { read: false, drafts: false, write: false } }),
+      policy: buildPolicy({ groupToggles: { read: false, research: false, drafts: false, write: false } }),
     } satisfies AiConnectorSummaryResponse);
 
     await act(async () => root.render(<AiConnectorsSettingsClient />));
@@ -754,6 +754,103 @@ describe("AiConnectorsSettingsClient", () => {
     expect(mockUpdateAiConnector).not.toHaveBeenCalled();
   });
 
+  it("renders additive research scope guidance only when the API exposes it", async () => {
+    mockFetchAiConnectorSummary.mockResolvedValue({
+      connections: [
+        buildConnection({
+          id: "oauth-research",
+          provider: "chatgpt",
+          vendor: "openai",
+          clientKind: "chatgpt_app",
+          authMode: "oauth",
+          displayName: "ChatGPT",
+          scopes: ["portfolio:mcp_read"],
+        }),
+      ],
+      policy: {
+        ...buildPolicy(),
+        groupToggles: { ...buildPolicy().groupToggles, research: true },
+        bearerFallback: {
+          ...buildPolicy().bearerFallback,
+          allowedToolGroups: [...buildPolicy().bearerFallback.allowedToolGroups, "research"],
+        },
+      },
+      toolCatalog: [
+        buildToolCatalogEntry(),
+        buildToolCatalogEntry({
+          name: "search_instruments",
+          alternativeScopes: ["research:read"],
+          description: "Search Taiwan research identities without broadening legacy read access.",
+          inputSchema: {
+            fields: [
+              { name: "includeInactive", type: "boolean", required: false },
+              { name: "query", type: "string", required: true },
+            ],
+            rawSchema: {
+              type: "object",
+              properties: {
+                includeInactive: { type: "boolean" },
+                query: { type: "string" },
+              },
+              required: ["query"],
+            },
+          },
+          effectiveAccess: [
+            {
+              connectionId: "oauth-research",
+              connectionDisplayName: "ChatGPT",
+              clientKind: "chatgpt_app",
+              status: "blocked",
+              blockerCode: "missing_scope",
+            },
+          ],
+        }),
+      ],
+    } satisfies AiConnectorSummaryResponse);
+
+    await act(async () => root.render(<AiConnectorsSettingsClient />));
+    await flushEffects();
+
+    await act(async () => {
+      (document.querySelector("[data-testid='ai-connectors-tab-permissions']") as HTMLButtonElement | null)?.click();
+    });
+    await flushEffects();
+
+    const researchLabel = Array.from(document.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("Research identities for Taiwan additive workflows"));
+    const researchInput = researchLabel?.querySelector("input[type='checkbox']") as HTMLInputElement | null;
+
+    expect(document.body.textContent).toContain("Research");
+    expect(researchInput?.checked).toBe(false);
+    expect(researchInput?.disabled).toBe(true);
+    expect(researchLabel?.textContent).toContain("Reconnect this OAuth connector");
+    expect(researchLabel?.textContent).toContain("Taiwan research workflows");
+
+    await act(async () => {
+      (document.querySelector("[data-testid='ai-connectors-tab-tool-catalog']") as HTMLButtonElement | null)?.click();
+    });
+    await flushEffects();
+
+    expect(document.querySelector("[aria-label='Search tools']")).not.toBeNull();
+    expect(document.querySelector("[aria-label='Group']")).not.toBeNull();
+    expect(document.querySelector("[aria-label='Required scope']")).not.toBeNull();
+    const researchSearch = document.querySelector("[data-testid='ai-connectors-tool-search']") as HTMLInputElement;
+    setInputValue(researchSearch, "Research identities for Taiwan additive workflows");
+    expect(document.body.textContent).toContain("search_instruments");
+    setInputValue(researchSearch, "");
+    await act(async () => {
+      Array.from(document.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("search_instruments"))
+        ?.click();
+    });
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Alternative scopes");
+    expect(document.body.textContent).toContain("This tool also authorizes through these additive scopes");
+    expect(document.body.textContent).toContain("Read portfolio data");
+    expect(document.body.textContent).toContain("Research identities for Taiwan additive workflows");
+  });
+
   it("groups dividend write with posting permissions and marks it as advanced", async () => {
     mockFetchAiConnectorSummary.mockResolvedValue({
       connections: [
@@ -1057,7 +1154,7 @@ describe("AiConnectorsSettingsClient", () => {
       expiresAt: "2026-07-23T12:00:00.000Z",
     });
     const policy = buildPolicy({
-      groupToggles: { read: false, drafts: true, write: true },
+      groupToggles: { read: false, research: false, drafts: true, write: true },
       bearerFallback: {
         enabled: true,
         allowedClientKinds: ["claude_code", "codex_cli"],
@@ -1154,7 +1251,7 @@ describe("AiConnectorsSettingsClient", () => {
     mockFetchAiConnectorSummary.mockResolvedValue({
       connections: [],
       policy: buildPolicy({
-        groupToggles: { read: true, drafts: true, write: true },
+        groupToggles: { read: true, research: false, drafts: true, write: true },
         bearerFallback: {
           enabled: true,
           allowedClientKinds: ["codex_cli"],

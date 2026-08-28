@@ -39,7 +39,7 @@ async function seedDividendUiScope({
     ticker: TEST_TICKER,
     eventType: "CASH",
     exDividendDate: "2026-07-16",
-    paymentDate: "2026-07-31",
+    paymentDate: null,
     cashDividendPerShare: 0.11,
   });
 

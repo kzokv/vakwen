@@ -1,14 +1,27 @@
 import { Buffer } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@vakwen/config", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@vakwen/config")>();
+  return {
+    ...original,
+    Env: {
+      ...original.Env,
+      AUTH_MODE: "dev_bypass" as const,
+    },
+  };
+});
+
 import { buildApp } from "../../src/app.js";
 import {
   createAiConnectorConnection,
   hashGeneratedBearerToken,
 } from "../../src/services/mcpConnectorLifecycle.js";
+import type { MemoryPersistence } from "../../src/persistence/memory.js";
 import { createTransactionDraftBatch } from "../../src/services/mcpDrafts.js";
 import type { McpRequestContext } from "../../src/mcp/types.js";
 import { mcpDevTokenAllowedForRuntime } from "../../src/mcp/auth.js";
-import { listMcpToolDefinitions } from "../../src/mcp/tools.js";
+import { listMcpToolDefinitions, setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
 import { resetMcpRateLimitBucketsForTest } from "../../src/mcp/policy.js";
 import { createDividendEvent } from "../../src/services/dividends.js";
 import { replayPositionHistory } from "../../src/services/replayPositionHistory.js";
@@ -264,6 +277,7 @@ describe("mcp routes", () => {
   });
 
   afterEach(async () => {
+    setResearchRolloutOverrideForTest(null);
     await app.close();
   });
 
@@ -546,7 +560,8 @@ describe("mcp routes", () => {
     const toolsByName = new Map(body.result.tools.map((tool) => [tool.name, tool]));
     for (const tool of listMcpToolDefinitions()) {
       const listedTool = toolsByName.get(tool.name);
-      const expectedSecuritySchemes = [{ type: "oauth2", scopes: [tool.scope] }];
+      const expectedSecuritySchemes = (tool.alternativeScopes ? [tool.scope, ...tool.alternativeScopes] : [tool.scope])
+        .map((scope) => ({ type: "oauth2", scopes: [scope] }));
       expect(listedTool?.securitySchemes).toEqual(expectedSecuritySchemes);
       expect(listedTool?.execution).toBeUndefined();
       expect(listedTool?._meta?.securitySchemes).toEqual(expectedSecuritySchemes);
@@ -608,6 +623,178 @@ describe("mcp routes", () => {
       connectDomains: [],
       resourceDomains: [],
     });
+  });
+
+  it("keeps legacy search_instruments discovery unchanged when the research MCP gate is off", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: false,
+      mcpExposureEnabled: false,
+      skillExposureEnabled: false,
+    });
+    const sessionId = await initializeMcpSession({
+      authorization: `Bearer ${devToken({ userId: "user-1", scopes: ["portfolio:mcp_read"] })}`,
+      accept: "application/json, text/event-stream",
+    });
+
+    const listTools = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        authorization: `Bearer ${devToken({ userId: "user-1", scopes: ["portfolio:mcp_read"] })}`,
+        accept: "application/json, text/event-stream",
+        "mcp-session-id": sessionId,
+      },
+      payload: { jsonrpc: "2.0", id: "legacy-search-list", method: "tools/list" },
+    });
+    expect(listTools.statusCode).toBe(200);
+    const body = parseMcpJson<{ result: { tools: Array<{ name: string; securitySchemes?: unknown }> } }>(listTools.body);
+    expect(body.result.tools.find((tool) => tool.name === "search_instruments")?.securitySchemes).toEqual([
+      { type: "oauth2", scopes: ["portfolio:mcp_read"] },
+    ]);
+  });
+
+  it("advertises additive research scope metadata for search_instruments when the research MCP gate is on", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: true,
+      mcpExposureEnabled: true,
+      skillExposureEnabled: false,
+    });
+    await app.persistence.saveAiConnectorPolicySettings({
+      groupToggles: { research: true },
+    });
+    const sessionId = await initializeMcpSession({
+      authorization: `Bearer ${devToken({ userId: "user-1", scopes: ["research:read"] })}`,
+      accept: "application/json, text/event-stream",
+    });
+
+    const listTools = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        authorization: `Bearer ${devToken({ userId: "user-1", scopes: ["research:read"] })}`,
+        accept: "application/json, text/event-stream",
+        "mcp-session-id": sessionId,
+      },
+      payload: { jsonrpc: "2.0", id: "research-search-list", method: "tools/list" },
+    });
+    expect(listTools.statusCode).toBe(200);
+    const body = parseMcpJson<{ result: { tools: Array<{ name: string; securitySchemes?: unknown }> } }>(listTools.body);
+    expect(body.result.tools.find((tool) => tool.name === "search_instruments")?.securitySchemes).toEqual([
+      { type: "oauth2", scopes: ["portfolio:mcp_read"] },
+      { type: "oauth2", scopes: ["research:read"] },
+    ]);
+  });
+
+  it("rejects mixed-market search_instruments requests through MCP when authorized only by research:read", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: true,
+      mcpExposureEnabled: true,
+      skillExposureEnabled: false,
+    });
+    await app.persistence.saveAiConnectorPolicySettings({
+      groupToggles: { research: true },
+    });
+
+    const headers = {
+      authorization: `Bearer ${devToken({ userId: "user-1", scopes: ["research:read"] })}`,
+      accept: "application/json, text/event-stream",
+    };
+    const sessionId = await initializeMcpSession(headers);
+    const response = await callMcpTool(headers, sessionId, "search_instruments", {
+      query: "Tesla",
+      markets: ["TW", "US"],
+      limit: 10,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = parseMcpJson<{
+      result: { isError?: boolean; structuredContent: { code: string; statusCode: number } };
+    }>(response.body);
+    expect(body.result.isError).toBe(true);
+    expect(body.result.structuredContent).toMatchObject({
+      code: "mcp_research_market_unsupported",
+      statusCode: 400,
+    });
+  });
+
+  it("returns combined multi-market search results with additive researchIdentity through MCP", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: true,
+      mcpExposureEnabled: true,
+      skillExposureEnabled: false,
+    });
+    await app.persistence.saveAiConnectorPolicySettings({
+      groupToggles: { research: true },
+    });
+    const persistence = app.persistence as MemoryPersistence;
+    persistence._seedInstrument({
+      ticker: "2330",
+      name: "Tesla Taiwan",
+      instrumentType: "STOCK",
+      marketCode: "TW",
+      barsBackfillStatus: "ready",
+    });
+    persistence._seedInstrument({
+      ticker: "TSLA",
+      name: "Tesla",
+      instrumentType: "STOCK",
+      marketCode: "US",
+      barsBackfillStatus: "ready",
+    });
+    persistence._seedInstrument({
+      ticker: "9105",
+      name: "Tesla Delisted TW",
+      instrumentType: "STOCK",
+      marketCode: "TW",
+      barsBackfillStatus: "failed",
+      delistedAt: "2026-08-01T00:00:00.000Z",
+    });
+
+    const headers = {
+      authorization: `Bearer ${devToken({ userId: "user-1", scopes: ["portfolio:mcp_read", "research:read"] })}`,
+      accept: "application/json, text/event-stream",
+    };
+    const sessionId = await initializeMcpSession(headers);
+    const response = await callMcpTool(headers, sessionId, "search_instruments", {
+      query: "Tesla",
+      markets: ["TW", "US"],
+      limit: 10,
+      includeInactive: true,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = parseMcpJson<{
+      result: {
+        isError?: boolean;
+        structuredContent: {
+          markets: string[];
+          items: Array<{
+            ticker: string;
+            marketCode: string;
+            researchIdentity?: { availability: string };
+          }>;
+        };
+      };
+    }>(response.body);
+    expect(body.result.isError).not.toBe(true);
+    expect(body.result.structuredContent.markets).toEqual(["TW", "US"]);
+    expect(body.result.structuredContent.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        ticker: "2330",
+        marketCode: "TW",
+        researchIdentity: { availability: "available" },
+      }),
+      expect.objectContaining({
+        ticker: "9105",
+        marketCode: "TW",
+        researchIdentity: { availability: "unavailable" },
+      }),
+      expect.objectContaining({
+        ticker: "TSLA",
+        marketCode: "US",
+        researchIdentity: { availability: "not_applicable" },
+      }),
+    ]));
   });
 
   it("constrains posted transaction mutation quantities and prices at the MCP boundary", () => {
@@ -1289,6 +1476,47 @@ describe("mcp routes", () => {
     expect(reduced.json()).toMatchObject({ scopes: [] });
   });
 
+  it("rejects bearer connector expansion to research:read after token creation", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: true,
+      mcpExposureEnabled: true,
+      skillExposureEnabled: false,
+    });
+    await app.persistence.saveAiConnectorPolicySettings({
+      bearerFallback: {
+        enabled: true,
+        allowedClientKinds: ["codex_cli"],
+        allowedToolGroups: ["read", "research"],
+        maxLifetimeDays: 14,
+        maxActiveConnectorsPerUser: 2,
+      },
+      groupToggles: { research: true },
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/ai/connectors/bearer",
+      payload: {
+        clientKind: "codex_cli",
+        displayName: "Codex CLI",
+        scopes: ["portfolio:mcp_read"],
+        lifetimeDays: 7,
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const connectionId = created.json<{ connection: { id: string } }>().connection.id;
+
+    const expanded = await app.inject({
+      method: "PATCH",
+      url: `/ai/connectors/${connectionId}`,
+      payload: { scopes: ["portfolio:mcp_read", "research:read"] },
+    });
+    expect(expanded.statusCode).toBe(400);
+    expect(expanded.json()).toMatchObject({
+      error: "mcp_bearer_scope_expansion_requires_recreate",
+    });
+  });
+
   it("rejects OAuth connector scope expansion after consent", async () => {
     const connection = await app.persistence.saveAiConnectorConnection({
       id: "chatgpt-oauth-scope-lock",
@@ -1322,6 +1550,69 @@ describe("mcp routes", () => {
     });
     expect(reduced.statusCode).toBe(200);
     expect(reduced.json()).toMatchObject({ scopes: [] });
+  });
+
+  it("rejects OAuth connector expansion to research:read after consent", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: true,
+      mcpExposureEnabled: true,
+      skillExposureEnabled: false,
+    });
+    await app.persistence.saveAiConnectorPolicySettings({
+      groupToggles: { research: true },
+    });
+    const connection = await app.persistence.saveAiConnectorConnection({
+      id: "chatgpt-oauth-research-lock",
+      userId: "user-1",
+      provider: "chatgpt",
+      displayName: "ChatGPT",
+      status: "active",
+      oauthClientId: "chatgpt",
+      oauthSubject: "chatgpt-user-1",
+      scopes: ["portfolio:mcp_read"],
+      toolToggles: {},
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+
+    const expanded = await app.inject({
+      method: "PATCH",
+      url: `/ai/connectors/${connection.id}`,
+      payload: { scopes: ["portfolio:mcp_read", "research:read"] },
+    });
+    expect(expanded.statusCode).toBe(400);
+    expect(expanded.json()).toMatchObject({
+      error: "mcp_oauth_scope_expansion_requires_reconnect",
+    });
+  });
+
+  it("preserves an existing research grant when rollout policy is disabled during an unrelated connector edit", async () => {
+    const connection = await app.persistence.saveAiConnectorConnection({
+      id: "chatgpt-oauth-research-rollback",
+      userId: "user-1",
+      provider: "chatgpt",
+      displayName: "ChatGPT",
+      status: "active",
+      oauthClientId: "chatgpt",
+      oauthSubject: "chatgpt-user-1",
+      scopes: ["portfolio:mcp_read", "research:read"],
+      toolToggles: {},
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    await app.persistence.saveAiConnectorPolicySettings({
+      groupToggles: { research: false },
+    });
+
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/ai/connectors/${connection.id}`,
+      payload: { toolToggles: { search_instruments: false } },
+    });
+
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json()).toMatchObject({
+      scopes: ["portfolio:mcp_read", "research:read"],
+      toolToggles: { search_instruments: false },
+    });
   });
 
   it("rejects bearer connector lifetime edits after token creation", async () => {

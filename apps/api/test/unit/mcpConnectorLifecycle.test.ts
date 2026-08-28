@@ -11,18 +11,27 @@ import {
   createAiConnectorBearerFallback,
   hashGeneratedBearerToken,
   isGeneratedBearerToken,
+  createAiConnectorConnection,
   toAiConnectorPolicySettingsDto,
 } from "../../src/services/mcpConnectorLifecycle.js";
+import {
+  researchAcquisitionEnabled,
+  researchMcpExposureEnabled,
+  researchSkillExposureEnabled,
+  setResearchRolloutOverrideForTest,
+} from "../../src/mcp/tools.js";
 
 let app: Awaited<ReturnType<typeof buildApp>>;
 
 describe("MCP connector registry and lifecycle", () => {
   beforeEach(async () => {
+    setResearchRolloutOverrideForTest(null);
     app = await buildApp({ persistenceBackend: "memory" });
   });
 
   afterEach(async () => {
     await app.close();
+    setResearchRolloutOverrideForTest(null);
   });
 
   it("maps supported client kinds and legacy providers through the shared registry", () => {
@@ -60,7 +69,7 @@ describe("MCP connector registry and lifecycle", () => {
         copilot_mcp: false,
         generic_mcp: false,
       },
-      groupToggles: { read: false, drafts: false, write: false },
+      groupToggles: { read: false, research: false, drafts: false, write: false },
       bearerFallback: { enabled: true },
     });
     const dto = toAiConnectorPolicySettingsDto(settings);
@@ -134,6 +143,102 @@ describe("MCP connector registry and lifecycle", () => {
       tokenHint: result.tokenHint,
       scopes: ["portfolio:mcp_read"],
     });
+  });
+
+  it("does not mint research:read on new OAuth-style connector creation when research acquisition is disabled", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: false,
+      mcpExposureEnabled: true,
+      skillExposureEnabled: false,
+    });
+    const authUser = await app.persistence.resolveOrCreateUser("google", "mcp-unit-oauth-user", {
+      email: "mcp-unit-oauth-user@example.com",
+      name: "MCP Unit OAuth User",
+    });
+    await app.persistence.saveAiConnectorPolicySettings({
+      groupToggles: { read: true, research: true },
+    });
+
+    const connection = await createAiConnectorConnection(
+      app,
+      {
+        userId: authUser.userId,
+        provider: "chatgpt",
+        vendor: "openai",
+        clientKind: "chatgpt_app",
+        authMode: "oauth",
+        capabilities: ["oauth", "widgets", "interactive_ops", "deep_link_fallback"],
+        displayName: "ChatGPT",
+        scopes: ["portfolio:mcp_read", "research:read"],
+        oauthClientId: "chatgpt",
+        oauthSubject: "oauth-user-1",
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+      { actorUserId: authUser.userId, ipAddress: "127.0.0.1" },
+    );
+
+    expect(connection.scopes).toEqual(["portfolio:mcp_read"]);
+  });
+
+  it("does not mint research:read on new bearer connectors when research MCP exposure is disabled", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: true,
+      mcpExposureEnabled: false,
+      skillExposureEnabled: false,
+    });
+    const authUser = await app.persistence.resolveOrCreateUser("google", "mcp-unit-research-bearer-user", {
+      email: "mcp-unit-research-bearer-user@example.com",
+      name: "MCP Unit Research Bearer User",
+    });
+    await app.persistence.saveAiConnectorPolicySettings({
+      maxConnectorLifetimeDays: 10,
+      groupToggles: { read: true, research: true },
+      bearerFallback: {
+        enabled: true,
+        allowedClientKinds: ["claude_code"],
+        maxLifetimeDays: 5,
+        maxActiveConnectorsPerUser: 1,
+        allowedToolGroups: ["read", "research"],
+      },
+    });
+
+    const result = await createAiConnectorBearerFallback(
+      app,
+      {
+        userId: authUser.userId,
+        clientKind: "claude_code",
+        displayName: "Claude Code laptop",
+        scopes: ["portfolio:mcp_read", "research:read"],
+        lifetimeDays: 90,
+      },
+      { actorUserId: authUser.userId, ipAddress: "127.0.0.1" },
+    );
+
+    expect(result.connection.scopes).toEqual(["portfolio:mcp_read"]);
+    const credential = await app.persistence.getAiConnectorCredentialByHash(hashGeneratedBearerToken(result.bearerToken));
+    expect(credential?.scopes).toEqual(["portfolio:mcp_read"]);
+  });
+
+  it("keeps the three research rollout helpers independent and defaulted off", () => {
+    setResearchRolloutOverrideForTest(null);
+    expect(researchAcquisitionEnabled()).toBe(false);
+    expect(researchMcpExposureEnabled()).toBe(false);
+    expect(researchSkillExposureEnabled()).toBe(false);
+
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    expect(researchAcquisitionEnabled()).toBe(true);
+    expect(researchMcpExposureEnabled()).toBe(false);
+    expect(researchSkillExposureEnabled()).toBe(false);
+
+    setResearchRolloutOverrideForTest({ mcpExposureEnabled: true });
+    expect(researchAcquisitionEnabled()).toBe(false);
+    expect(researchMcpExposureEnabled()).toBe(true);
+    expect(researchSkillExposureEnabled()).toBe(false);
+
+    setResearchRolloutOverrideForTest({ skillExposureEnabled: true });
+    expect(researchAcquisitionEnabled()).toBe(false);
+    expect(researchMcpExposureEnabled()).toBe(false);
+    expect(researchSkillExposureEnabled()).toBe(true);
   });
 
   it("rejects duplicate active bearer fallback connectors for the same client identity", async () => {

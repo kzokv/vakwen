@@ -3,6 +3,7 @@ import type { AiConnectorScope, LocaleCode } from "@vakwen/shared-types";
 export const aiConnectorScopeLabels: Record<LocaleCode, Record<string, string>> = {
   en: {
     "portfolio:mcp_read": "Read portfolio data",
+    "research:read": "Research identities for Taiwan additive workflows",
     "account:manage": "Manage accounts",
     "transaction_draft:create": "Create transaction drafts",
     "transaction_draft:edit": "Edit transaction drafts",
@@ -13,6 +14,7 @@ export const aiConnectorScopeLabels: Record<LocaleCode, Record<string, string>> 
   },
   "zh-TW": {
     "portfolio:mcp_read": "讀取投資組合資料",
+    "research:read": "讀取台股研究身分與加值研究流程",
     "account:manage": "管理帳戶",
     "transaction_draft:create": "建立交易草稿",
     "transaction_draft:edit": "編輯交易草稿",
@@ -49,6 +51,8 @@ export const chatGptConnectorAuthorizeCopy: Record<LocaleCode, {
   disabledByPolicy: string;
   advancedScope: string;
   postingOptIn: string;
+  researchOptIn: string;
+  researchReconnect: string;
   requiresManageReconsent: string;
   consentIdentity: string;
   redirectRepairTitle: string;
@@ -82,6 +86,8 @@ export const chatGptConnectorAuthorizeCopy: Record<LocaleCode, {
     disabledByPolicy: "Disabled by admin policy",
     advancedScope: "Advanced scope. Off by default and requires fresh auth or re-consent to grant.",
     postingOptIn: "Financial writes are advanced opt-in scopes. Leave them unchecked unless you want this AI client to preview, post, update, or delete confirmed transactions and dividend actions after explicit confirmation.",
+    researchOptIn: "Research access is additive. Leave it unchecked unless you want Taiwan research identity lookups; existing connectors do not gain it silently.",
+    researchReconnect: "Research access is additive and off by default. Existing OAuth connectors keep their current scopes; reconnect and re-consent later if you want to add research access.",
     requiresManageReconsent: "Reconnect in ChatGPT and grant `account:manage` before this widget can create or change accounts.",
     consentIdentity: "Authorization request",
     redirectRepairTitle: "This callback is not allowlisted yet",
@@ -115,6 +121,8 @@ export const chatGptConnectorAuthorizeCopy: Record<LocaleCode, {
     disabledByPolicy: "已被管理員策略停用",
     advancedScope: "進階權限。預設關閉，需重新授權或重新同意後才能啟用。",
     postingOptIn: "財務寫入屬於進階自選權限。除非你希望此 AI 客戶端在明確確認後預覽、送出、更新或刪除已確認交易與股利動作，否則請保持未勾選。",
+    researchOptIn: "研究權限屬於加值授權。只有在你要啟用台股研究身分查詢時才勾選；現有連接器不會被靜默升級。",
+    researchReconnect: "研究權限屬於加值且預設關閉。現有 OAuth 連接器會維持原本 scope；若之後要加入研究權限，請重新連線並重新同意。",
     requiresManageReconsent: "請在 ChatGPT 重新連線並授權 `account:manage`，此元件才能建立或修改帳戶。",
     consentIdentity: "授權請求",
     redirectRepairTitle: "此回呼網址尚未加入允許清單",

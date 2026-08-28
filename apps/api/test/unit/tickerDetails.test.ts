@@ -1506,6 +1506,7 @@ describe("buildTickerDetails", () => {
       reportingCurrency: "AUD",
       loadChart: false,
       fundamentalsRecord: null,
+      now: new Date("2026-06-18T06:30:00.000Z"),
     });
 
     expect(details.dividends.upcoming).toHaveLength(50);
