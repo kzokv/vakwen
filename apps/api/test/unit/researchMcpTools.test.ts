@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { listMcpToolDefinitions, setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
+import { researchToolErrorOutputSchema } from "../../src/services/research/contracts.js";
 
 describe("Taiwan research MCP tool contracts", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
@@ -16,7 +17,14 @@ describe("Taiwan research MCP tool contracts", () => {
       const tool = tools.find((item) => item.name === toolName)!;
       expect(tool.scope).toBe("research:read");
       expect(tool.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
-      expect(tool.outputSchema.safeParse({}).success).toBe(false);
+      expect(tool.outputSchema.safeParse("not-structured-content").success).toBe(false);
+      const structuredError = {
+        code: "research_subject_not_found",
+        message: "No canonical research identity matched the selector",
+        statusCode: 404,
+      };
+      expect(researchToolErrorOutputSchema.parse(structuredError)).toEqual(structuredError);
+      expect(tool.outputSchema.safeParse(structuredError).success).toBe(true);
     }
   });
 });

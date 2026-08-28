@@ -54,6 +54,19 @@ const tpexDelistingResponseSchema = z.object({
   }).passthrough()).min(1),
 }).passthrough();
 
+const tpexEtnRetirementResponseSchema = z.object({
+  stat: z.literal("ok"),
+  tables: z.array(z.object({
+    data: z.array(z.tuple([
+      z.string(),
+      z.string(),
+      z.string(),
+      z.string(),
+      z.string(),
+    ])),
+  }).passthrough()).min(1),
+}).passthrough();
+
 interface SnapshotMetadata {
   retrievedAt: string;
   contentHash: string;
@@ -185,6 +198,19 @@ export function parseTpexEtnIdentitySnapshot(
       noteType: "ETN",
       listedAt: parseTaiwanOfficialDate(listedAt.replaceAll("/", "")),
     },
+  }));
+}
+
+export function parseTpexEtnRetirementSnapshot(response: unknown) {
+  const parsed = tpexEtnRetirementResponseSchema.parse(response);
+  return parsed.tables.flatMap((table) => table.data).map(([
+    inactiveAt,
+    ticker,
+    displayName,
+  ]) => ({
+    ticker,
+    displayName: displayName.trim(),
+    inactiveAt: parseTaiwanOfficialDate(inactiveAt.replaceAll("/", "")),
   }));
 }
 

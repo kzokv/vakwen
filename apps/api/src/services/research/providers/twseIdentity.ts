@@ -38,6 +38,17 @@ const twseEtnResponseSchema = z.object({
   ])),
 }).passthrough();
 
+const twseEtnRetirementResponseSchema = z.object({
+  stat: z.literal("ok"),
+  data: z.array(z.tuple([
+    z.string(),
+    z.string(),
+    z.string(),
+    z.string(),
+    z.string(),
+  ])),
+}).passthrough();
+
 const twseDelistingRowSchema = z.object({
   DelistingDate: z.string(),
   Company: z.string(),
@@ -191,6 +202,15 @@ export function parseTwseEtnIdentitySnapshot(
       noteType: "ETN",
       listedAt: parseTaiwanOfficialDate(listedAt.replaceAll("/", "")),
     },
+  }));
+}
+
+export function parseTwseEtnRetirementSnapshot(response: unknown) {
+  const parsed = twseEtnRetirementResponseSchema.parse(response);
+  return parsed.data.map(([inactiveAt, ticker, displayName]) => ({
+    ticker,
+    displayName: normalizedText(displayName),
+    inactiveAt: parseTaiwanOfficialDate(inactiveAt.replaceAll("/", "")),
   }));
 }
 

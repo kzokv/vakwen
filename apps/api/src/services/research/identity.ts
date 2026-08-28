@@ -91,7 +91,8 @@ export interface ResearchIdentityRecordQuery {
   subject:
     | { kind: "listing_id"; listingId: string }
     | { kind: "ticker_venue"; ticker: string; venue: ResearchListingVenue }
-    | { kind: "security_id"; securityId: string };
+    | { kind: "security_id"; securityId: string }
+    | { kind: "venue"; venue: ResearchListingVenue };
   effectiveAt: string;
   knowledgeAt: string;
 }
@@ -300,6 +301,7 @@ interface OfficialListingStatusRevisionInput {
     contentHash: string;
     sourceUrl: string;
     publisherDataset: string;
+    accessProvider?: "TWSE_OPENAPI" | "TPEX_OPENAPI" | "TWSE_WEB_JSON" | "TPEX_WEB_JSON";
   };
 }
 
@@ -346,7 +348,8 @@ export function appendOfficialListingStatusRevision(
     provenance: {
       id: provenanceId,
       publisher: previous.listing.venue,
-      accessProvider: previous.listing.venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI",
+      accessProvider: input.artifact.accessProvider
+        ?? (previous.listing.venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI"),
       authorityRole: "authoritative",
       canonicalDatasetId: "research_identity",
       publisherDataset: input.artifact.publisherDataset,

@@ -1296,12 +1296,16 @@ export class PostgresPersistence implements Persistence {
       ? "listing_id = $1"
       : query.subject.kind === "security_id"
         ? "security_id = $1"
-        : "ticker = $1 AND venue = $2";
+        : query.subject.kind === "ticker_venue"
+          ? "ticker = $1 AND venue = $2"
+          : "venue = $1";
     const selectorValues = query.subject.kind === "listing_id"
       ? [query.subject.listingId]
       : query.subject.kind === "security_id"
         ? [query.subject.securityId]
-        : [query.subject.ticker, query.subject.venue];
+        : query.subject.kind === "ticker_venue"
+          ? [query.subject.ticker, query.subject.venue]
+          : [query.subject.venue];
     const effectiveAtIndex = selectorValues.length + 1;
     const knowledgeAtIndex = selectorValues.length + 2;
     const result = await this.pool.query<{ record: ResearchIdentityRecord }>(

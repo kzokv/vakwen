@@ -263,6 +263,67 @@ describe("Taiwan research store-only service", () => {
 
     expect(result.selector.listingId).toBe(original.listing.id);
     expect(result.history.items.map((record) => record.listing.ticker)).toEqual(["1234", "1234A"]);
+
+    await expect(getResearchIdentity(persistence, {
+      subject: { kind: "ticker_venue", ticker: "1234", listingVenue: "TWSE" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      history: { limit: 25 },
+    })).rejects.toMatchObject({ code: "research_subject_not_found" });
+  });
+
+  it("ticker correction and reassignment: query the effective ticker → resolve only its new immutable listing", async () => {
+    const persistence = new MemoryPersistence();
+    const original = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-26",
+      retrievedAt: "2026-08-26T02:00:00.000Z",
+      artifact: { contentHash: "sha256:reassigned-old", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company", ticker: "1234", legalName: "原測試股份有限公司", displayName: "原測試",
+        unifiedBusinessNumber: "11112222", industryCode: "24", listedAt: "2020-01-01",
+      },
+    });
+    const corrected = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:reassigned-corrected", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company", ticker: "1234A", legalName: "原測試股份有限公司", displayName: "原測試",
+        unifiedBusinessNumber: "11112222", industryCode: "24", listedAt: "2020-01-01",
+      },
+    });
+    const successor = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T03:00:00.000Z",
+      artifact: { contentHash: "sha256:reassigned-successor", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company", ticker: "1234", legalName: "新測試股份有限公司", displayName: "新測試",
+        unifiedBusinessNumber: "33334444", industryCode: "24", listedAt: "2026-08-27",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([original, corrected, successor]);
+
+    const result = await getResearchIdentity(persistence, {
+      subject: { kind: "ticker_venue", ticker: "1234", listingVenue: "TWSE" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      history: { limit: 25 },
+    });
+
+    expect(result.selector.listingId).toBe(successor.listing.id);
+    expect(result.identity.facts.find((fact) => fact.field === "legal_name")?.normalized).toMatchObject({
+      state: "present",
+      value: "新測試股份有限公司",
+    });
   });
 
   it("identity-only manifest: resolve a supported listing → report all eleven dataset statuses without embedding dataset payloads", async () => {

@@ -100,6 +100,32 @@ function resolvableListingIds(records: ResearchIdentityRecord[]): string[] {
   return activeIds.length > 0 ? activeIds : [...latestByListing.keys()];
 }
 
+async function resolveEffectiveTickerListings(
+  persistence: Persistence,
+  query: ResearchIdentityQuery & { subject: { kind: "ticker_venue"; ticker: string; listingVenue: "TWSE" | "TPEX" } },
+  matchedRecords: ResearchIdentityRecord[],
+) {
+  const candidateIds = [...new Set(matchedRecords.map((record) => record.listing.id))];
+  const candidateHistories = await Promise.all(candidateIds.map(async (listingId) => [
+    listingId,
+    await persistence.listResearchIdentityRecords({
+      subject: { kind: "listing_id", listingId },
+      effectiveAt: query.context.effectiveAt,
+      knowledgeAt: query.context.knowledgeAt,
+    }),
+  ] as const));
+  const historiesByListing = new Map(candidateHistories);
+  const effectiveMatches = candidateHistories
+    .map(([, history]) => history.at(-1))
+    .filter((record): record is ResearchIdentityRecord => record !== undefined)
+    .filter((record) => record.listing.ticker === query.subject.ticker
+      && record.listing.venue === query.subject.listingVenue);
+  return {
+    historiesByListing,
+    listingIds: resolvableListingIds(effectiveMatches),
+  };
+}
+
 function latestFacts(records: ResearchIdentityRecord[]): CanonicalIdentityObservation[] {
   const facts = new Map<string, CanonicalIdentityObservation>();
   for (const record of records) {
@@ -125,9 +151,21 @@ export async function getResearchIdentity(
       "No canonical research identity matched the selector and temporal context",
     );
   }
+  const tickerResolution = query.subject.kind === "ticker_venue"
+    ? await resolveEffectiveTickerListings(persistence, {
+        ...query,
+        subject: query.subject,
+      }, matchedRecords)
+    : null;
   const listingIds = query.subject.kind === "listing_id"
     ? [query.subject.listingId]
-    : resolvableListingIds(matchedRecords);
+    : tickerResolution!.listingIds;
+  if (listingIds.length === 0) {
+    throw new ResearchServiceError(
+      "research_subject_not_found",
+      "No canonical research identity matched the selector's effective latest ticker state",
+    );
+  }
   if (listingIds.length !== 1) {
     throw new ResearchServiceError(
       "research_subject_ambiguous",
@@ -137,11 +175,7 @@ export async function getResearchIdentity(
   }
   const records = query.subject.kind === "listing_id"
     ? matchedRecords
-    : await persistence.listResearchIdentityRecords({
-        subject: { kind: "listing_id", listingId: listingIds[0]! },
-        effectiveAt: query.context.effectiveAt,
-        knowledgeAt: query.context.knowledgeAt,
-      });
+    : tickerResolution!.historiesByListing.get(listingIds[0]!)!;
 
   const listingId = listingIds[0]!;
   const latest = records.at(-1)!;

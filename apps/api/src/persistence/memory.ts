@@ -848,8 +848,10 @@ export class MemoryPersistence implements Persistence {
           ? record.listing.id === query.subject.listingId
           : query.subject.kind === "security_id"
             ? record.security.id === query.subject.securityId
-            : record.listing.ticker === query.subject.ticker
-              && record.listing.venue === query.subject.venue;
+            : query.subject.kind === "ticker_venue"
+              ? record.listing.ticker === query.subject.ticker
+                && record.listing.venue === query.subject.venue
+              : record.listing.venue === query.subject.venue;
         const effectiveAt = record.observations[0]?.effectiveAt;
         return subjectMatches
           && effectiveAt !== undefined

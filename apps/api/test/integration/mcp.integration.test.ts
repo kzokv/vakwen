@@ -28,6 +28,7 @@ import { replayPositionHistory } from "../../src/services/replayPositionHistory.
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
 import {
   researchIdentityOutputSchema,
+  researchIdentityToolOutputSchema,
   researchManifestOutputSchema,
 } from "../../src/services/research/contracts.js";
 
@@ -725,7 +726,7 @@ describe("mcp routes", () => {
     const manifestResponse = await callMcpTool(headers, sessionId, "get_research_manifest", query);
     expect(manifestResponse.statusCode).toBe(200);
     const manifest = parseMcpJson<{ result: { content: Array<{ text: string }>; structuredContent: Record<string, unknown>; isError?: boolean } }>(manifestResponse.body);
-    expect(manifest.result.isError).not.toBe(true);
+    expect(manifest.result.isError, manifestResponse.body).not.toBe(true);
     expect(researchManifestOutputSchema.parse(manifest.result.structuredContent)).toEqual(
       manifest.result.structuredContent,
     );
@@ -751,6 +752,21 @@ describe("mcp routes", () => {
       identity: { listing: { ticker: "2330", venue: "TWSE" } },
     });
     expect(identity.result.content[0]?.text).toContain("Research identity for TWSE:2330");
+
+    const missingResponse = await callMcpTool(headers, sessionId, "get_research_identity", {
+      ...query,
+      subject: { kind: "ticker_venue", ticker: "0000", listingVenue: "TWSE" },
+      history: { limit: 25 },
+    });
+    expect(missingResponse.statusCode).toBe(200);
+    const missing = parseMcpJson<{
+      result: { structuredContent: Record<string, unknown>; isError?: boolean };
+    }>(missingResponse.body);
+    expect(missing.result.isError).toBe(true);
+    expect(researchIdentityToolOutputSchema.parse(missing.result.structuredContent)).toMatchObject({
+      code: "research_subject_not_found",
+      statusCode: 422,
+    });
   });
 
   it("rejects mixed-market search_instruments requests through MCP when authorized only by research:read", async () => {

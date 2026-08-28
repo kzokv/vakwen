@@ -12,12 +12,14 @@ import {
   parseTwseCompanyIdentitySnapshot,
   parseTwseDelistingSnapshot,
   parseTwseEtnIdentitySnapshot,
+  parseTwseEtnRetirementSnapshot,
   parseTwseFundIdentitySnapshot,
 } from "./providers/twseIdentity.js";
 import {
   parseTpexCompanyIdentitySnapshot,
   parseTpexDelistingSnapshot,
   parseTpexEtnIdentitySnapshot,
+  parseTpexEtnRetirementSnapshot,
   parseTpexFundIdentitySnapshot,
 } from "./providers/tpexIdentity.js";
 
@@ -28,6 +30,8 @@ export const OFFICIAL_IDENTITY_SOURCES = {
   tpexFunds: "https://info.tpex.org.tw/api/etfFilter",
   twseEtns: "https://www.twse.com.tw/rwd/zh/ETN/list?response=json",
   tpexEtns: "https://www.tpex.org.tw/www/zh-tw/ETN/list?type=listed",
+  twseEtnRetirements: "https://www.twse.com.tw/rwd/zh/ETN/expireEnd?response=json",
+  tpexEtnRetirements: "https://www.tpex.org.tw/www/zh-tw/ETN/list?type=delisted",
   twseDelistings: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
   tpexDelistings: "https://www.tpex.org.tw/www/zh-tw/company/deListed?code=&reason=-1",
 } as const;
@@ -102,6 +106,8 @@ export async function runOfficialIdentityAcquisition(
     tpexFunds,
     twseEtns,
     tpexEtns,
+    twseEtnRetirements,
+    tpexEtnRetirements,
     twseDelistings,
     tpexDelistingArtifacts,
   ] = await Promise.all([
@@ -111,6 +117,8 @@ export async function runOfficialIdentityAcquisition(
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexFunds, { method: "POST" }),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseEtns),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexEtns),
+    fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseEtnRetirements),
+    fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexEtnRetirements),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseDelistings),
     Promise.all(tpexDelistingUrls.map((sourceUrl) => fetchArtifact(fetchImpl, sourceUrl))),
   ]);
@@ -143,6 +151,26 @@ export async function runOfficialIdentityAcquisition(
         publisherDataset: "company/deListed",
       },
     }))),
+    ...parseTwseEtnRetirementSnapshot(twseEtnRetirements.payload).map((delisting) => ({
+      ...delisting,
+      venue: "TWSE" as const,
+      securityType: "etn" as const,
+      artifact: {
+        ...twseEtnRetirements.metadata,
+        publisherDataset: "ETN/expireEnd",
+        accessProvider: "TWSE_WEB_JSON" as const,
+      },
+    })),
+    ...parseTpexEtnRetirementSnapshot(tpexEtnRetirements.payload).map((delisting) => ({
+      ...delisting,
+      venue: "TPEX" as const,
+      securityType: "etn" as const,
+      artifact: {
+        ...tpexEtnRetirements.metadata,
+        publisherDataset: "ETN/list?type=delisted",
+        accessProvider: "TPEX_WEB_JSON" as const,
+      },
+    })),
   ];
   const canonicalRecords = inputs.map(canonicalizeOfficialIdentityRow);
   const records: ResearchIdentityRecord[] = [];
@@ -168,6 +196,7 @@ export async function runOfficialIdentityAcquisition(
     });
     const previous = [...history, ...records, ...statusRevisions]
       .filter((item) => item.listing.venue === delisting.venue && item.listing.ticker === delisting.ticker)
+      .filter((item) => !("securityType" in delisting) || item.security.type === delisting.securityType)
       .filter((item) => item.listing.listedAt <= delisting.inactiveAt)
       .sort(recordOrder)
       .at(-1);
@@ -181,6 +210,40 @@ export async function runOfficialIdentityAcquisition(
         ...delisting.artifact,
       },
     }));
+  }
+
+  const currentEtfListingIds = new Set(canonicalRecords
+    .filter((record) => record.security.type === "etf")
+    .map((record) => record.listing.id));
+  for (const venue of ["TWSE", "TPEX"] as const) {
+    const historical = await persistence.listResearchIdentityRecords({
+      subject: { kind: "venue", venue },
+      effectiveAt: retrievedAt,
+      knowledgeAt: retrievedAt,
+    });
+    const latestByListing = new Map<string, ResearchIdentityRecord>();
+    for (const record of [...historical, ...records, ...statusRevisions]) {
+      if (record.listing.venue === venue) latestByListing.set(record.listing.id, record);
+    }
+    const fundArtifact = venue === "TWSE" ? twseFunds : tpexFunds;
+    for (const previous of latestByListing.values()) {
+      if (
+        previous.security.type !== "etf"
+        || previous.listing.status !== "active"
+        || currentEtfListingIds.has(previous.listing.id)
+      ) continue;
+      statusRevisions.push(appendOfficialListingStatusRevision(previous, {
+        status: "inactive",
+        effectiveDate: retrievedAt.slice(0, 10),
+        retrievedAt,
+        acquisitionRunId,
+        artifact: {
+          ...fundArtifact.metadata,
+          publisherDataset: venue === "TWSE" ? "opendata/t187ap47_L:absence" : "etfFilter:absence",
+          accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_WEB_JSON",
+        },
+      }));
+    }
   }
   await persistence.appendResearchIdentityRecords([...records, ...statusRevisions]);
   return {

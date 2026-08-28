@@ -49,6 +49,15 @@ describe("official Taiwan identity acquisition", () => {
           "112/12/25", "117/12/24", "detail.html?type=domestic&code=020041",
         ]] }],
       }],
+      [OFFICIAL_IDENTITY_SOURCES.twseEtnRetirements, {
+        stat: "ok",
+        fields: ["終止上市日期", "證券代號", "證券簡稱", "發行證券商", "終止上市理由"],
+        data: [["2020/04/30", "020005", "永豐外資50N", "永豐金證券股份有限公司", "到期"]],
+      }],
+      [OFFICIAL_IDENTITY_SOURCES.tpexEtnRetirements, {
+        stat: "ok",
+        tables: [{ data: [["110/06/16", "020017", "永豐富櫃200N", "永豐金證券股份有限公司", "到期"]] }],
+      }],
       [OFFICIAL_IDENTITY_SOURCES.twseDelistings, [{
         DelistingDate: "2026/08/26", Company: "既有下市股份有限公司", Code: "9999",
       }]],
@@ -101,7 +110,70 @@ describe("official Taiwan identity acquisition", () => {
         unifiedBusinessNumber: "11111111", industryCode: "24", listedAt: "2010-01-01",
       },
     });
-    await persistence.appendResearchIdentityRecords([existing, beforeTransfer, retiredTpex]);
+    const absentTwseEtf = (await import("../../src/services/research/identity.js")).canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-25",
+      retrievedAt: "2026-08-25T02:00:00.000Z",
+      artifact: { contentHash: "sha256:absent-twse-etf", sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseFunds },
+      row: {
+        kind: "fund", ticker: "00600", legalName: "舊上市ETF", displayName: "舊上市ETF",
+        identityKey: "twse-etf:00600", fundType: "ETF", listedAt: "2015-01-01",
+      },
+    });
+    const absentTpexEtf = (await import("../../src/services/research/identity.js")).canonicalizeOfficialIdentityRow({
+      venue: "TPEX",
+      snapshotDate: "2026-08-25",
+      retrievedAt: "2026-08-25T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:absent-tpex-etf",
+        sourceUrl: OFFICIAL_IDENTITY_SOURCES.tpexFunds,
+        publisherDataset: "etfFilter",
+        accessProvider: "TPEX_WEB_JSON",
+      },
+      row: {
+        kind: "fund", ticker: "00601", legalName: "舊上櫃ETF", displayName: "舊上櫃ETF",
+        identityKey: "tpex-etf:00601", fundType: "ETF", listedAt: "2015-01-01",
+      },
+    });
+    const retiredTwseEtn = (await import("../../src/services/research/identity.js")).canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2020-04-29",
+      retrievedAt: "2020-04-29T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:retired-twse-etn",
+        sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseEtns,
+        publisherDataset: "ETN/list",
+        accessProvider: "TWSE_WEB_JSON",
+      },
+      row: {
+        kind: "etn", ticker: "020005", legalName: "永豐金證券股份有限公司", displayName: "永豐外資50N",
+        noteType: "ETN", listedAt: "2019-04-30",
+      },
+    });
+    const retiredTpexEtn = (await import("../../src/services/research/identity.js")).canonicalizeOfficialIdentityRow({
+      venue: "TPEX",
+      snapshotDate: "2021-06-15",
+      retrievedAt: "2021-06-15T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:retired-tpex-etn",
+        sourceUrl: OFFICIAL_IDENTITY_SOURCES.tpexEtns,
+        publisherDataset: "ETN/list",
+        accessProvider: "TPEX_WEB_JSON",
+      },
+      row: {
+        kind: "etn", ticker: "020017", legalName: "永豐金證券股份有限公司", displayName: "永豐富櫃200N",
+        noteType: "ETN", listedAt: "2020-06-16",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([
+      existing,
+      beforeTransfer,
+      retiredTpex,
+      absentTwseEtf,
+      absentTpexEtf,
+      retiredTwseEtn,
+      retiredTpexEtn,
+    ]);
 
     const result = await runOfficialIdentityAcquisition(persistence, {
       fetchImpl,
@@ -114,7 +186,7 @@ describe("official Taiwan identity acquisition", () => {
       ...tpexDelistingUrls,
     ].sort());
     expect(requests.find(({ url }) => url === OFFICIAL_IDENTITY_SOURCES.tpexFunds)?.method).toBe("POST");
-    expect(result).toMatchObject({ sourceCount: 8, recordCount: 10, acquisitionRunId: "run-test-1" });
+    expect(result).toMatchObject({ sourceCount: 10, recordCount: 14, acquisitionRunId: "run-test-1" });
     const etn = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "020032", venue: "TWSE" },
       effectiveAt: "2026-08-27T23:59:59.999Z",
@@ -157,5 +229,20 @@ describe("official Taiwan identity acquisition", () => {
     const latestByListing = new Map(reusedTpexTicker.map((record) => [record.listing.id, record]));
     expect([...latestByListing.values()].filter((record) => record.listing.status === "active")).toHaveLength(1);
     expect([...latestByListing.values()].find((record) => record.listing.status === "active")?.listing.listedAt).toBe("2026-08-27");
+
+    for (const [listingId, inactiveAt, accessProvider] of [
+      [absentTwseEtf.listing.id, "2026-08-27", "TWSE_OPENAPI"],
+      [absentTpexEtf.listing.id, "2026-08-27", "TPEX_WEB_JSON"],
+      [retiredTwseEtn.listing.id, "2020-04-30", "TWSE_WEB_JSON"],
+      [retiredTpexEtn.listing.id, "2021-06-16", "TPEX_WEB_JSON"],
+    ] as const) {
+      const history = await persistence.listResearchIdentityRecords({
+        subject: { kind: "listing_id", listingId },
+        effectiveAt: "2026-08-27T23:59:59.999Z",
+        knowledgeAt: "2026-08-27T23:59:59.999Z",
+      });
+      expect(history.at(-1)?.listing).toMatchObject({ status: "inactive", inactiveAt });
+      expect(history.at(-1)?.provenance.accessProvider).toBe(accessProvider);
+    }
   });
 });

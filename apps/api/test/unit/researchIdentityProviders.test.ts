@@ -3,12 +3,14 @@ import { canonicalizeOfficialIdentityRow } from "../../src/services/research/ide
 import {
   parseTwseCompanyIdentitySnapshot,
   parseTwseEtnIdentitySnapshot,
+  parseTwseEtnRetirementSnapshot,
   parseTwseFundIdentitySnapshot,
 } from "../../src/services/research/providers/twseIdentity.js";
 import {
   parseTpexCompanyIdentitySnapshot,
   parseTpexDelistingSnapshot,
   parseTpexEtnIdentitySnapshot,
+  parseTpexEtnRetirementSnapshot,
   parseTpexFundIdentitySnapshot,
 } from "../../src/services/research/providers/tpexIdentity.js";
 
@@ -209,6 +211,31 @@ describe("official Taiwan identity providers", () => {
         listedAt: "2023-12-25",
       },
     });
+  });
+
+  it("TWSE ETN retirement feed: parse the official end-of-listing table → preserve the exact retirement date", () => {
+    expect(parseTwseEtnRetirementSnapshot({
+      stat: "ok",
+      fields: ["終止上市日期", "證券代號", "證券簡稱", "發行證券商", "終止上市理由"],
+      data: [["2020/04/30", "020005", "永豐外資50N", "永豐金證券股份有限公司", "到期"]],
+    })).toEqual([{
+      ticker: "020005",
+      displayName: "永豐外資50N",
+      inactiveAt: "2020-04-30",
+    }]);
+  });
+
+  it("TPEx ETN retirement feed: parse ROC dates → produce a Gregorian retirement date", () => {
+    expect(parseTpexEtnRetirementSnapshot({
+      stat: "ok",
+      tables: [{
+        data: [["110/06/16", "020017", "永豐富櫃200N", "永豐金證券股份有限公司", "到期"]],
+      }],
+    })).toEqual([{
+      ticker: "020017",
+      displayName: "永豐富櫃200N",
+      inactiveAt: "2021-06-16",
+    }]);
   });
 
   it("TPEx delisting feed: parse official ROC dates → retain exact ticker and company identity", () => {

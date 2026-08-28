@@ -11,9 +11,9 @@ import {
 import { unrealizedPnlAnalysisMcpInputSchema } from "../services/unrealizedPnlAnalysis.js";
 import { bookedChargeFieldSchema } from "../validation/bookedCharge.js";
 import {
-  researchIdentityOutputSchema,
+  researchIdentityToolOutputSchema,
   researchIdentityQuerySchema,
-  researchManifestOutputSchema,
+  researchManifestToolOutputSchema,
   researchQuerySchema,
 } from "../services/research/contracts.js";
 import {
@@ -257,14 +257,14 @@ const toolDefinitions = {
   get_research_manifest: {
     description: "Return the unpaginated availability status of the eleven canonical Taiwan research datasets for one immutable listing and fixed temporal context. Reads the canonical store only.",
     inputSchema: researchQuerySchema,
-    outputSchema: researchManifestOutputSchema,
+    outputSchema: researchManifestToolOutputSchema,
     scope: "research:read" as const,
     accessKind: "read" as const,
   },
   get_research_identity: {
     description: "Return canonical Taiwan issuer, security, effective-dated listing, eligibility, identity observations, provenance, and paginated identity history. Reads the canonical store only.",
     inputSchema: researchIdentityQuerySchema,
-    outputSchema: researchIdentityOutputSchema,
+    outputSchema: researchIdentityToolOutputSchema,
     scope: "research:read" as const,
     accessKind: "read" as const,
   },

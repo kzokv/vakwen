@@ -196,6 +196,44 @@ export const researchManifestOutputSchema = z.object({
   }).strict()).length(11),
 }).strict();
 
+const researchToolErrorOutputShape = {
+  code: z.enum([
+    "research_subject_not_found",
+    "research_subject_ambiguous",
+    "research_cursor_invalid",
+  ]),
+  message: z.string().min(1),
+  statusCode: z.number().int().min(400).max(499),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+} as const;
+
+export const researchToolErrorOutputSchema = z.object(researchToolErrorOutputShape).strict();
+
+export const researchIdentityToolOutputSchema = z.object({
+  contractVersion: researchIdentityOutputSchema.shape.contractVersion.optional(),
+  selector: researchIdentityOutputSchema.shape.selector.optional(),
+  context: researchIdentityOutputSchema.shape.context.optional(),
+  identity: researchIdentityOutputSchema.shape.identity.optional(),
+  history: researchIdentityOutputSchema.shape.history.optional(),
+  code: researchToolErrorOutputShape.code.optional(),
+  message: researchToolErrorOutputShape.message.optional(),
+  statusCode: researchToolErrorOutputShape.statusCode.optional(),
+  metadata: researchToolErrorOutputShape.metadata,
+}).strict();
+
+export const researchManifestToolOutputSchema = z.object({
+  contractVersion: researchManifestOutputSchema.shape.contractVersion.optional(),
+  selector: researchManifestOutputSchema.shape.selector.optional(),
+  context: researchManifestOutputSchema.shape.context.optional(),
+  eligibility: researchManifestOutputSchema.shape.eligibility.optional(),
+  orchestration: researchManifestOutputSchema.shape.orchestration.optional(),
+  datasets: researchManifestOutputSchema.shape.datasets.optional(),
+  code: researchToolErrorOutputShape.code.optional(),
+  message: researchToolErrorOutputShape.message.optional(),
+  statusCode: researchToolErrorOutputShape.statusCode.optional(),
+  metadata: researchToolErrorOutputShape.metadata,
+}).strict();
+
 export const IDENTITY_ONLY_SCOPE_STATEMENT =
   "This release supports canonical identity research only; market, financial, ownership, trading, dividend, announcement, and investor-material claims are not included.";
 
