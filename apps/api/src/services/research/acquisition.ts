@@ -37,6 +37,7 @@ export const OFFICIAL_IDENTITY_SOURCES = {
 } as const;
 
 const TPEX_DELISTING_FIRST_YEAR = 2021;
+const ETF_ABSENCE_COMPLETENESS_GUARD_PERCENT = 1;
 
 export class ResearchAcquisitionDisabledError extends Error {
   readonly code = "research_acquisition_disabled";
@@ -215,12 +216,32 @@ export async function runOfficialIdentityAcquisition(
   const currentEtfListingIds = new Set(canonicalRecords
     .filter((record) => record.security.type === "etf")
     .map((record) => record.listing.id));
+  const explicitlyInactiveListingIds = new Set(statusRevisions.map((record) => record.listing.id));
   for (const venue of ["TWSE", "TPEX"] as const) {
     const historical = await persistence.listResearchIdentityRecords({
       subject: { kind: "venue", venue },
       effectiveAt: retrievedAt,
       knowledgeAt: retrievedAt,
     });
+    const latestHistoricalByListing = new Map<string, ResearchIdentityRecord>();
+    for (const record of historical) latestHistoricalByListing.set(record.listing.id, record);
+    const historicalActiveEtfs = [...latestHistoricalByListing.values()].filter((record) =>
+      record.security.type === "etf" && record.listing.status === "active"
+    );
+    const unexplainedMissingEtfs = historicalActiveEtfs.filter((record) =>
+      !currentEtfListingIds.has(record.listing.id)
+      && !explicitlyInactiveListingIds.has(record.listing.id)
+    );
+    const absenceGuardCeiling = Math.max(
+      1,
+      Math.floor(historicalActiveEtfs.length * ETF_ABSENCE_COMPLETENESS_GUARD_PERCENT / 100),
+    );
+    if (unexplainedMissingEtfs.length > absenceGuardCeiling) {
+      throw new Error(
+        `Official ${venue} ETF snapshot failed completeness guard: `
+        + `${unexplainedMissingEtfs.length} of ${historicalActiveEtfs.length} active listings are absent`,
+      );
+    }
     const latestByListing = new Map<string, ResearchIdentityRecord>();
     for (const record of [...historical, ...records, ...statusRevisions]) {
       if (record.listing.venue === venue) latestByListing.set(record.listing.id, record);

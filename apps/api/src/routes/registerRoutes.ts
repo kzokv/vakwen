@@ -5472,7 +5472,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
    * unavailable" affordance without leaking provider internals.
    */
   app.get("/market-data/search", async (req, reply) => {
-    resolveUserId(req, app.oauthConfig?.sessionSecret);
+    const { userId } = resolveUserId(req, app.oauthConfig?.sessionSecret);
     assertMarketDataSearchRateLimit(req.ip);
 
     const query = z.object({
@@ -5489,7 +5489,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
 
     if (query.market_code === "JP") {
-      const catalogMatches = await app.persistence.listInstrumentsCatalog(query.q, undefined, "JP");
+      const catalogMatches = await app.persistence.listInstrumentsCatalog(query.q, undefined, "JP", userId);
       if (catalogMatches.length > 0) {
         return {
           instruments: catalogMatches.map((row) => ({

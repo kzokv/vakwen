@@ -24,9 +24,11 @@ import type {
   MarketCode,
 } from "@vakwen/domain";
 import type { FxRate } from "../services/market-data/types.js";
-import type {
-  ResearchIdentityRecord,
-  ResearchIdentityRecordQuery,
+import {
+  researchIdentityRecordKey,
+  researchIdentityRevisionPrecedence,
+  type ResearchIdentityRecord,
+  type ResearchIdentityRecordQuery,
 } from "../services/research/identity.js";
 import { buildRedisSocketOptions } from "../lib/redisClientOptions.js";
 import { loadMigrationManifest } from "./migrationManifest.js";
@@ -1266,11 +1268,11 @@ export class PostgresPersistence implements Persistence {
         await client.query(
           `INSERT INTO research.identity_records (
              record_key, listing_id, security_id, issuer_id, ticker, venue,
-             effective_at, retrieved_at, record
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz, $9::jsonb)
+             effective_at, retrieved_at, revision_precedence, record
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz, $9, $10::jsonb)
            ON CONFLICT (record_key) DO NOTHING`,
           [
-            `${record.provenance.id}:${record.listing.id}`,
+            researchIdentityRecordKey(record),
             record.listing.id,
             record.security.id,
             record.issuer.id,
@@ -1278,6 +1280,7 @@ export class PostgresPersistence implements Persistence {
             record.listing.venue,
             effectiveAt,
             record.provenance.retrievedAt,
+            researchIdentityRevisionPrecedence(record),
             JSON.stringify(record),
           ],
         );
@@ -1314,7 +1317,7 @@ export class PostgresPersistence implements Persistence {
        WHERE ${selectorSql}
          AND effective_at <= $${effectiveAtIndex}::timestamptz
          AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
-       ORDER BY effective_at ASC, retrieved_at ASC, record_key ASC`,
+       ORDER BY effective_at ASC, retrieved_at ASC, revision_precedence ASC, record_key ASC`,
       [...selectorValues, query.effectiveAt, query.knowledgeAt],
     );
     return result.rows.map((row) => row.record);

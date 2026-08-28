@@ -141,7 +141,7 @@ export function parseTwseFundIdentitySnapshot(
   rows: unknown,
   metadata: SnapshotMetadata,
 ): OfficialIdentityInput[] {
-  return z.array(twseFundRowSchema).parse(rows).map((row) => ({
+  return z.array(twseFundRowSchema).min(1).parse(rows).map((row) => ({
     venue: "TWSE",
     snapshotDate: parseTaiwanOfficialDate(row.出表日期),
     retrievedAt: metadata.retrievedAt,

@@ -177,6 +177,25 @@ describe("official Taiwan identity providers", () => {
     expect(inputs[0]?.row).not.toHaveProperty("unifiedBusinessNumber");
   });
 
+  it("TPEx ETF feed: provider failure or empty success payload → reject before absence retirement", () => {
+    const metadata = {
+      retrievedAt: "2026-08-27T03:00:00.000Z",
+      contentHash: "sha256:tpex-etf-invalid",
+      sourceUrl: "https://info.tpex.org.tw/api/etfFilter",
+    };
+
+    expect(() => parseTpexFundIdentitySnapshot({ status: false, data: [] }, metadata)).toThrow();
+    expect(() => parseTpexFundIdentitySnapshot({ status: true, data: [] }, metadata)).toThrow();
+  });
+
+  it("TWSE ETF feed: empty HTTP-200 array → reject before absence retirement", () => {
+    expect(() => parseTwseFundIdentitySnapshot([], {
+      retrievedAt: "2026-08-27T03:00:00.000Z",
+      contentHash: "sha256:twse-etf-empty",
+      sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap47_L",
+    })).toThrow();
+  });
+
   it("TPEx ETN feed: parse the official listed-note table → preserve venue-specific provenance", () => {
     const inputs = parseTpexEtnIdentitySnapshot({
       stat: "ok",

@@ -87,6 +87,22 @@ export interface CanonicalIdentityObservation {
 
 export type ResearchIdentityRecord = ReturnType<typeof canonicalizeOfficialIdentityRow>;
 
+export function researchIdentityRecordKey(record: ResearchIdentityRecord): string {
+  return `${record.provenance.id}:${record.listing.id}`;
+}
+
+/**
+ * Explicit status-only revisions must win over full snapshots when the source
+ * effective time and retrieval time are identical. Keep this semantic order
+ * shared by every persistence backend instead of relying on append order or
+ * opaque record hashes.
+ */
+export function researchIdentityRevisionPrecedence(record: ResearchIdentityRecord): number {
+  return record.observations.length === 1 && record.observations[0]?.field === "listing_status"
+    ? 1
+    : 0;
+}
+
 export interface ResearchIdentityRecordQuery {
   subject:
     | { kind: "listing_id"; listingId: string }

@@ -4,17 +4,17 @@ KZO-246 delivers an identity-only research vertical. It is separate from the leg
 
 ## Data flow
 
-1. A positive-gated pg-boss worker fetches declared official TWSE and TPEx snapshots, including explicit ETN retirement tables. After a successful current ETF snapshot, a previously active ETF absent from that venue's current feed receives an inactive revision at the snapshot date.
+1. A positive-gated pg-boss worker fetches declared official TWSE and TPEx snapshots, including explicit ETN retirement tables. ETF absence retirement is fail-closed: provider success and non-empty payloads are required, and a venue snapshot that omits more than the 1% completeness guard is rejected before any records append. After a complete current ETF snapshot, a previously active ETF absent from that venue's current feed receives an inactive revision at the snapshot date.
 2. Provider adapters validate source-native fields, preserve ticker strings, normalize dates and numeric values, and retain raw values alongside normalized values.
 3. Canonicalization assigns opaque stable `Issuer`, `Security`, and effective-dated `Listing` IDs. Company IDs use the official unified business number. ETF IDs use the fund business number when the source publishes it; the TPEx ETF feed instead uses a venue-scoped key composed only from its official issuer, ticker, and listing-date identifiers. ETN issuer IDs use the official issuer identity available in the ETN feed.
-4. Memory and PostgreSQL append immutable revisions. Reads apply both `effectiveAt` and `knowledgeAt` cutoffs.
+4. Memory and PostgreSQL append immutable revisions. Reads apply both `effectiveAt` and `knowledgeAt` cutoffs. Equal effective/retrieval timestamps use a shared semantic precedence so explicit status-only revisions sort after full snapshots in both backends.
 5. Store-only services resolve exactly one listing and return a fixed temporal context. They never fetch upstream data.
 6. MCP exposes concrete object schemas for `get_research_manifest` and `get_research_identity` under `research:read`; the declared fields cover both strict success contracts and structured research errors.
 7. The `taiwan-stock-research` Skill freezes the returned listing/context and produces a canonical `research-report/1.0.0` identity-only artifact before rendering Markdown.
 
 ## Canonical persistence
 
-Migration `116_research_identity_history.sql` creates `research.identity_records`. Each row stores selector and temporal columns for indexed queries plus the complete canonical JSON record. `record_key` is derived from provenance and listing IDs; retries of the same acquisition record are idempotent and never overwrite earlier history, while a later retrieval remains a distinct knowledge-time observation.
+Migration `116_research_identity_history.sql` creates `research.identity_records`; migration `117_research_identity_revision_precedence.sql` adds the stored semantic tie-breaker. Each row stores selector and temporal columns for indexed queries plus the complete canonical JSON record. `record_key` is derived from provenance and listing IDs; retries of the same acquisition record are idempotent and never overwrite earlier history, while a later retrieval remains a distinct knowledge-time observation.
 
 Identity revisions carry:
 

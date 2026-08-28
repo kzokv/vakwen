@@ -23,7 +23,8 @@ const tpexFundRowSchema = z.object({
 }).passthrough();
 
 const tpexFundResponseSchema = z.object({
-  data: z.array(tpexFundRowSchema),
+  status: z.literal(true),
+  data: z.array(tpexFundRowSchema).min(1),
 }).passthrough();
 
 const tpexEtnResponseSchema = z.object({

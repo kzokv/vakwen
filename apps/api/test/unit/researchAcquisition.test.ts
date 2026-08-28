@@ -5,6 +5,7 @@ import {
   OFFICIAL_IDENTITY_SOURCES,
   runOfficialIdentityAcquisition,
 } from "../../src/services/research/acquisition.js";
+import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
 
 describe("official Taiwan identity acquisition", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
@@ -243,6 +244,81 @@ describe("official Taiwan identity acquisition", () => {
       });
       expect(history.at(-1)?.listing).toMatchObject({ status: "inactive", inactiveAt });
       expect(history.at(-1)?.provenance.accessProvider).toBe(accessProvider);
+    }
+  });
+
+  it("partial ETF snapshot: unexplained absences exceed the completeness guard → reject without retiring listings", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    const historicalTpexEtfs = ["00610", "00611", "00612"].map((ticker, index) =>
+      canonicalizeOfficialIdentityRow({
+        venue: "TPEX",
+        snapshotDate: "2026-08-28",
+        retrievedAt: "2026-08-28T02:00:00.000Z",
+        artifact: {
+          contentHash: `sha256:historical-${ticker}`,
+          sourceUrl: OFFICIAL_IDENTITY_SOURCES.tpexFunds,
+          publisherDataset: "etfFilter",
+          accessProvider: "TPEX_WEB_JSON",
+        },
+        row: {
+          kind: "fund",
+          ticker,
+          legalName: `歷史ETF ${ticker}`,
+          displayName: `歷史ETF ${ticker}`,
+          identityKey: `tpex-etf:issuer-${index}:${ticker}:2020-01-01`,
+          fundType: "ETF",
+          listedAt: "2020-01-01",
+        },
+      })
+    );
+    await persistence.appendResearchIdentityRecords(historicalTpexEtfs);
+
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      let payload: unknown;
+      if (url === OFFICIAL_IDENTITY_SOURCES.twseCompanies || url === OFFICIAL_IDENTITY_SOURCES.tpexCompanies) {
+        payload = [];
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.twseFunds) {
+        payload = [{
+          出表日期: "1150829", 基金代號: "0050", 基金簡稱: "元大台灣50", 基金類型: "ETF",
+          基金中文名稱: "元大台灣卓越50證券投資信託基金", 基金統一編號: "00936523", 上市日期: "0920630",
+        }];
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.tpexFunds) {
+        payload = {
+          status: true,
+          data: [{ issuerID: "issuer-0", listingDate: "20200101", stockName: "歷史ETF 00610", stockNo: "00610" }],
+        };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.twseEtns) {
+        payload = { stat: "ok", fields: [], data: [] };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.tpexEtns) {
+        payload = { stat: "ok", tables: [{ data: [] }] };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.twseEtnRetirements) {
+        payload = { stat: "ok", data: [] };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.tpexEtnRetirements) {
+        payload = { stat: "ok", tables: [{ data: [] }] };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.twseDelistings) {
+        payload = [];
+      } else {
+        payload = { stat: "ok", tables: [{ data: [] }] };
+      }
+      return new Response(JSON.stringify(payload), { status: 200 });
+    };
+
+    await expect(runOfficialIdentityAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-29T04:00:00.000Z",
+      acquisitionRunId: "run-partial-etf",
+    })).rejects.toThrow("TPEX ETF snapshot failed completeness guard: 2 of 3 active listings are absent");
+
+    for (const record of historicalTpexEtfs) {
+      const history = await persistence.listResearchIdentityRecords({
+        subject: { kind: "listing_id", listingId: record.listing.id },
+        effectiveAt: "2026-08-29T23:59:59.999Z",
+        knowledgeAt: "2026-08-29T23:59:59.999Z",
+      });
+      expect(history).toHaveLength(1);
+      expect(history[0]?.listing.status).toBe("active");
     }
   });
 });

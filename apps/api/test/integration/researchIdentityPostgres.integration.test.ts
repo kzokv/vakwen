@@ -2,7 +2,10 @@ import { Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { PostgresPersistence } from "../../src/persistence/postgres.js";
-import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import {
+  appendOfficialListingStatusRevision,
+  canonicalizeOfficialIdentityRow,
+} from "../../src/services/research/identity.js";
 import { getResearchIdentity } from "../../src/services/research/service.js";
 
 const databaseUrl = process.env.POSTGRES_TEST_DB_URL ?? process.env.DB_URL;
@@ -111,5 +114,37 @@ describePostgres("research identity memory/Postgres parity", () => {
     expect(firstPage.history.items).toEqual([first]);
     expect(secondPage.history.items).toEqual([correction]);
     expect(secondPage.history.nextCursor).toBeNull();
+
+    const tiedActive = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-29",
+      retrievedAt: "2026-08-29T02:00:00.000Z",
+      artifact: { contentHash: "sha256:tied-active", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company", ticker: "8888", legalName: "同時點股份有限公司", displayName: "同時點",
+        unifiedBusinessNumber: "88888888", industryCode: "24", listedAt: "2020-01-01",
+      },
+    });
+    const tiedInactive = appendOfficialListingStatusRevision(tiedActive, {
+      status: "inactive",
+      effectiveDate: "2026-08-29",
+      retrievedAt: "2026-08-29T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:tied-inactive",
+        sourceUrl: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
+        publisherDataset: "company/suspendListingCsvAndHtml",
+      },
+    });
+    await memory.appendResearchIdentityRecords([tiedActive, tiedInactive]);
+    await postgres.appendResearchIdentityRecords([tiedActive, tiedInactive]);
+    const tiedQuery = {
+      subject: { kind: "listing_id" as const, listingId: tiedActive.listing.id },
+      effectiveAt: "2026-08-29T23:59:59.999Z",
+      knowledgeAt: "2026-08-29T23:59:59.999Z",
+    };
+    const memoryTied = await memory.listResearchIdentityRecords(tiedQuery);
+    const postgresTied = await postgres.listResearchIdentityRecords(tiedQuery);
+    expect(postgresTied).toEqual(memoryTied);
+    expect(postgresTied.at(-1)?.listing.status).toBe("inactive");
   });
 });

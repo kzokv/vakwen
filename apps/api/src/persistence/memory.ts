@@ -66,9 +66,11 @@ import type {
   MarketCode,
 } from "@vakwen/domain";
 import type { FxRate } from "../services/market-data/types.js";
-import type {
-  ResearchIdentityRecord,
-  ResearchIdentityRecordQuery,
+import {
+  researchIdentityRecordKey,
+  researchIdentityRevisionPrecedence,
+  type ResearchIdentityRecord,
+  type ResearchIdentityRecordQuery,
 } from "../services/research/identity.js";
 import type {
   AdminAuditLogResponse,
@@ -834,7 +836,7 @@ export class MemoryPersistence implements Persistence {
 
   async appendResearchIdentityRecords(records: ResearchIdentityRecord[]): Promise<void> {
     for (const record of records) {
-      const key = `${record.provenance.id}:${record.listing.id}`;
+      const key = researchIdentityRecordKey(record);
       if (!this.researchIdentityRecords.has(key)) {
         this.researchIdentityRecords.set(key, structuredClone(record));
       }
@@ -861,9 +863,14 @@ export class MemoryPersistence implements Persistence {
       .sort((left, right) => {
         const effectiveOrder = (left.observations[0]?.effectiveAt ?? "")
           .localeCompare(right.observations[0]?.effectiveAt ?? "");
-        return effectiveOrder !== 0
-          ? effectiveOrder
-          : left.provenance.retrievedAt.localeCompare(right.provenance.retrievedAt);
+        if (effectiveOrder !== 0) return effectiveOrder;
+        const retrievedOrder = left.provenance.retrievedAt.localeCompare(right.provenance.retrievedAt);
+        if (retrievedOrder !== 0) return retrievedOrder;
+        const precedenceOrder = researchIdentityRevisionPrecedence(left)
+          - researchIdentityRevisionPrecedence(right);
+        return precedenceOrder !== 0
+          ? precedenceOrder
+          : researchIdentityRecordKey(left).localeCompare(researchIdentityRecordKey(right));
       })
       .map((record) => structuredClone(record));
   }
