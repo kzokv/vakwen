@@ -229,7 +229,7 @@ describe("official Taiwan identity acquisition", () => {
       ...tpexDelistingUrls,
     ].sort());
     expect(requests.find(({ url }) => url === OFFICIAL_IDENTITY_SOURCES.tpexFunds)?.method).toBe("POST");
-    expect(result).toMatchObject({ sourceCount: 11, recordCount: 15, acquisitionRunId: "run-test-1" });
+    expect(result).toMatchObject({ sourceCount: 11, recordCount: 16, acquisitionRunId: "run-test-1" });
     const etn = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "020032", venue: "TWSE" },
       effectiveAt: "2026-08-28T23:59:59.999Z",
@@ -267,6 +267,29 @@ describe("official Taiwan identity acquisition", () => {
       status: "inactive",
       inactiveAt: "2026-08-26",
     });
+    const laggingCurrentIdentity = await getResearchIdentity(persistence, {
+      subject: { kind: "ticker_venue", ticker: "8888", listingVenue: "TWSE" },
+      context: {
+        effectiveAt: "2026-08-28T23:59:59.999Z",
+        knowledgeAt: "2026-08-28T23:59:59.999Z",
+        assessmentMode: "effective",
+      },
+      history: { limit: 25 },
+    });
+    expect(laggingCurrentIdentity.identity.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: "legal_name",
+        normalized: { state: "present", value: "延遲移除股份有限公司" },
+      }),
+      expect.objectContaining({
+        field: "display_name",
+        normalized: { state: "present", value: "延遲移除" },
+      }),
+      expect.objectContaining({
+        field: "industry_code",
+        normalized: { state: "present", value: "24" },
+      }),
+    ]));
     const transferred = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "2330", venue: "TWSE" },
       effectiveAt: "2026-08-28T23:59:59.999Z",

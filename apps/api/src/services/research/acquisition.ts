@@ -376,19 +376,25 @@ export async function runOfficialIdentityAcquisition(
     })
   ))).flat();
   const provisionalRecords = inputs.map(canonicalizeOfficialIdentityRow);
-  const canonicalRecords = inputs.map((input, index) => canonicalizeOfficialIdentityRow(
-    reconcileExistingProductIdentity(input, provisionalRecords[index]!, historicalLatest),
-  ));
+  const reconciledInputs = inputs.map((input, index) =>
+    reconcileExistingProductIdentity(input, provisionalRecords[index]!, historicalLatest)
+  );
+  const canonicalRecords = reconciledInputs.map(canonicalizeOfficialIdentityRow);
   // Explicit retirement evidence outranks a lagging current-product snapshot.
   // Keep the current row available as the identity basis for the inactive
   // revision, but never append it as a later-effective active revision.
-  const currentRecordsBlockedByRetirement = canonicalRecords.filter((record) => {
-    const snapshotDate = record.observations[0]?.effectiveAt.slice(0, 10);
-    return snapshotDate !== undefined && delistings.some((delisting) =>
-      retirementTargetsRecord(delisting, record)
-      && delisting.inactiveAt <= snapshotDate
-    );
+  const blockedCurrentRecordsWithRetirement = canonicalRecords.flatMap((record, index) => {
+    const snapshotDate = reconciledInputs[index]!.snapshotDate;
+    const retirement = delistings
+      .filter((delisting) =>
+        retirementTargetsRecord(delisting, record)
+        && delisting.inactiveAt <= snapshotDate
+      )
+      .sort((left, right) => left.inactiveAt.localeCompare(right.inactiveAt))
+      .at(-1);
+    return retirement ? [{ record, inactiveAt: retirement.inactiveAt }] : [];
   });
+  const currentRecordsBlockedByRetirement = blockedCurrentRecordsWithRetirement.map(({ record }) => record);
   const blockedCurrentRecords = new Set(currentRecordsBlockedByRetirement);
   const activeCanonicalRecords = canonicalRecords.filter((record) => !blockedCurrentRecords.has(record));
   const records: ResearchIdentityRecord[] = [];
@@ -428,6 +434,31 @@ export async function runOfficialIdentityAcquisition(
         ...delisting.artifact,
       },
     }));
+  }
+
+  // Retain the identity facts from a lagging current feed without persisting
+  // its contradicted active-status observation. The authoritative retirement
+  // revision remains the sole source for listing status.
+  for (const { record, inactiveAt } of blockedCurrentRecordsWithRetirement) {
+    const identityBasis: ResearchIdentityRecord = {
+      ...record,
+      listing: { ...record.listing, status: "inactive", inactiveAt },
+      eligibility: {
+        profile: record.eligibility.profile,
+        state: "ineligible",
+        reasonCode: "inactive_listing",
+      },
+      observations: record.observations.filter((observation) => observation.field !== "listing_status"),
+    };
+    const predecessor = [...historicalLatest, ...records]
+      .filter((item) => item.security.id === identityBasis.security.id)
+      .filter((item) => item.listing.id !== identityBasis.listing.id)
+      .filter((item) => item.listing.listedAt < identityBasis.listing.listedAt)
+      .sort(recordOrder)
+      .at(-1);
+    records.push(predecessor
+      ? withListingPredecessor(identityBasis, predecessor.listing.id)
+      : identityBasis);
   }
 
   const currentEtfListingIds = new Set(canonicalRecords
