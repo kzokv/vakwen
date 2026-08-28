@@ -198,7 +198,7 @@ export const researchManifestOutputSchema = z.object({
 
 const researchToolErrorOutputShape = {
   code: z.string().regex(
-    /^(?:research_subject_not_found|research_subject_ambiguous|research_cursor_invalid|mcp_[a-z0-9_]+)$/,
+    /^(?:research_subject_not_found|research_subject_ambiguous|research_cursor_invalid|research_assessment_mode_unsupported|mcp_[a-z0-9_]+)$/,
   ),
   message: z.string().min(1),
   statusCode: z.number().int().min(400).max(499),

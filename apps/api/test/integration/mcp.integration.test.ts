@@ -768,6 +768,25 @@ describe("mcp routes", () => {
       code: "research_subject_not_found",
       statusCode: 422,
     });
+
+    const reEvaluateResponse = await callMcpTool(headers, sessionId, "get_research_identity", {
+      ...query,
+      subject: { kind: "listing_id", listingId: record.listing.id },
+      context: {
+        ...query.context,
+        assessmentMode: "re_evaluate",
+        policySetVersion: "policy-set/not-implemented",
+      },
+      history: { limit: 25 },
+    });
+    const reEvaluate = parseMcpJson<{
+      result: { structuredContent: Record<string, unknown>; isError?: boolean };
+    }>(reEvaluateResponse.body);
+    expect(reEvaluate.result.isError, reEvaluateResponse.body).toBe(true);
+    expect(researchIdentityToolOutputSchema.parse(reEvaluate.result.structuredContent)).toMatchObject({
+      code: "research_assessment_mode_unsupported",
+      statusCode: 422,
+    });
   });
 
   it("returns shared MCP policy errors through research tool output validation", async () => {

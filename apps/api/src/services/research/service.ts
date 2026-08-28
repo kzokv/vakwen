@@ -15,7 +15,8 @@ export class ResearchServiceError extends Error {
     readonly code:
       | "research_subject_not_found"
       | "research_subject_ambiguous"
-      | "research_cursor_invalid",
+      | "research_cursor_invalid"
+      | "research_assessment_mode_unsupported",
     message: string,
     readonly metadata?: Record<string, unknown>,
   ) {
@@ -136,10 +137,31 @@ function latestFacts(records: ResearchIdentityRecord[]): CanonicalIdentityObserv
   return [...facts.values()];
 }
 
+function supportingProvenance(
+  records: ResearchIdentityRecord[],
+  facts: CanonicalIdentityObservation[],
+  historyItems: ResearchIdentityRecord[],
+) {
+  const provenanceIds = new Set([
+    ...facts.map((fact) => fact.provenanceId),
+    ...historyItems.map((record) => record.provenance.id),
+  ]);
+  return records
+    .map((record) => record.provenance)
+    .filter((provenance) => provenanceIds.has(provenance.id));
+}
+
 export async function getResearchIdentity(
   persistence: Persistence,
   query: ResearchIdentityQuery,
 ) {
+  if (query.context.assessmentMode === "re_evaluate") {
+    throw new ResearchServiceError(
+      "research_assessment_mode_unsupported",
+      "Research eligibility re-evaluation is unavailable until versioned policy sets are implemented",
+      { policySetVersion: query.context.policySetVersion },
+    );
+  }
   const matchedRecords = await persistence.listResearchIdentityRecords({
     subject: persistenceSubject(query),
     effectiveAt: query.context.effectiveAt,
@@ -185,6 +207,7 @@ export async function getResearchIdentity(
   }
   const items = records.slice(offset, offset + query.history.limit);
   const nextOffset = offset + items.length;
+  const facts = latestFacts(records);
   return {
     contractVersion: "research-identity/1.0.0" as const,
     selector: { kind: "listing_id" as const, listingId },
@@ -194,8 +217,8 @@ export async function getResearchIdentity(
       security: latest.security,
       listing: latest.listing,
       eligibility: latest.eligibility,
-      facts: latestFacts(records),
-      provenance: records.map((record) => record.provenance),
+      facts,
+      provenance: supportingProvenance(records, facts, items),
     },
     history: {
       items,

@@ -114,6 +114,22 @@ describe("Taiwan research store-only service", () => {
     })).rejects.toMatchObject({ code: "research_subject_not_found" });
   });
 
+  it("re-evaluate assessment: policy application is unavailable → reject instead of returning persisted eligibility", async () => {
+    await expect(getResearchIdentity(new MemoryPersistence(), {
+      subject: { kind: "ticker_venue", ticker: "2330", listingVenue: "TWSE" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "re_evaluate",
+        policySetVersion: "policy-set/does-not-exist",
+      },
+      history: { limit: 25 },
+    })).rejects.toMatchObject({
+      code: "research_assessment_mode_unsupported",
+      metadata: { policySetVersion: "policy-set/does-not-exist" },
+    });
+  });
+
   it("reused ticker: retire the predecessor before reuse → resolve the sole active immutable listing", async () => {
     const persistence = new MemoryPersistence();
     const predecessor = canonicalizeOfficialIdentityRow({
@@ -225,6 +241,47 @@ describe("Taiwan research store-only service", () => {
       context: { ...context, assessmentMode: "as_recorded" },
       history: { limit: 1, cursor: firstPage.history.nextCursor! },
     })).rejects.toMatchObject({ code: "research_cursor_invalid" });
+  });
+
+  it("history pagination: provenance includes current facts and page items without unbounded older snapshots", async () => {
+    const persistence = new MemoryPersistence();
+    const records = ["2026-08-26", "2026-08-27", "2026-08-28"].map((snapshotDate, index) =>
+      canonicalizeOfficialIdentityRow({
+        venue: "TWSE",
+        snapshotDate,
+        retrievedAt: `${snapshotDate}T02:00:00.000Z`,
+        artifact: {
+          contentHash: `sha256:bounded-provenance-${index}`,
+          sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+        },
+        row: {
+          kind: "company" as const,
+          ticker: "2330",
+          legalName: "台灣積體電路製造股份有限公司",
+          displayName: `台積電${index}`,
+          unifiedBusinessNumber: "22099131",
+          industryCode: "24",
+          listedAt: "1994-09-05",
+        },
+      })
+    );
+    await persistence.appendResearchIdentityRecords(records);
+
+    const result = await getResearchIdentity(persistence, {
+      subject: { kind: "listing_id", listingId: records[0]!.listing.id },
+      context: {
+        knowledgeAt: "2026-08-29T00:00:00.000Z",
+        effectiveAt: "2026-08-29T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      history: { limit: 1 },
+    });
+
+    expect(result.history.items).toEqual([records[0]]);
+    expect(result.identity.provenance.map((provenance) => provenance.id)).toEqual([
+      records[0]!.provenance.id,
+      records[2]!.provenance.id,
+    ]);
   });
 
   it("ticker correction: resolve the current ticker → return the immutable listing's earlier ticker history", async () => {
