@@ -20,7 +20,8 @@ export interface OfficialFundIdentityRow {
   ticker: string;
   legalName: string;
   displayName: string;
-  unifiedBusinessNumber: string;
+  identityKey: string;
+  unifiedBusinessNumber?: string;
   fundType: string;
   listedAt: string;
   issuedUnits?: string;
@@ -58,6 +59,7 @@ export interface OfficialIdentityInput {
     contentHash: string;
     sourceUrl: string;
     publisherDataset?: string;
+    accessProvider?: "TWSE_OPENAPI" | "TPEX_OPENAPI" | "TWSE_WEB_JSON" | "TPEX_WEB_JSON";
   };
   rawValues?: Partial<Record<string, string>>;
   row: OfficialCompanyIdentityRow | OfficialFundIdentityRow | OfficialEtnIdentityRow | OfficialUnknownIdentityRow;
@@ -168,7 +170,11 @@ export function canonicalizeOfficialIdentityRow(input: OfficialIdentityInput) {
       input.row.issuerCode ? "issuer_code" : "issuer_legal_name",
       input.row.issuerCode ?? input.row.legalName,
     )
-    : input.row.kind === "unknown"
+    : input.row.kind === "fund"
+      ? input.row.unifiedBusinessNumber
+        ? opaqueId("iss", "business_number", input.row.unifiedBusinessNumber)
+        : opaqueId("iss", input.venue, "official_identity_key", input.row.identityKey)
+      : input.row.kind === "unknown"
       ? opaqueId("iss", input.venue, "official_identity_key", input.row.identityKey)
       : opaqueId("iss", "business_number", input.row.unifiedBusinessNumber);
   const securityType = input.row.kind === "fund"
@@ -262,9 +268,9 @@ export function canonicalizeOfficialIdentityRow(input: OfficialIdentityInput) {
     provenance: {
       id: provenanceId,
       publisher: input.venue,
-      accessProvider: input.row.kind === "etn"
+      accessProvider: input.artifact.accessProvider ?? (input.row.kind === "etn"
         ? "TWSE_WEB_JSON" as const
-        : `${input.venue}_OPENAPI` as const,
+        : `${input.venue}_OPENAPI` as const),
       authorityRole: "authoritative" as const,
       canonicalDatasetId: "research_identity" as const,
       publisherDataset: input.artifact.publisherDataset ?? (input.row.kind === "fund"

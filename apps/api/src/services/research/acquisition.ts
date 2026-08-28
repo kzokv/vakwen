@@ -14,15 +14,25 @@ import {
   parseTwseEtnIdentitySnapshot,
   parseTwseFundIdentitySnapshot,
 } from "./providers/twseIdentity.js";
-import { parseTpexCompanyIdentitySnapshot } from "./providers/tpexIdentity.js";
+import {
+  parseTpexCompanyIdentitySnapshot,
+  parseTpexDelistingSnapshot,
+  parseTpexEtnIdentitySnapshot,
+  parseTpexFundIdentitySnapshot,
+} from "./providers/tpexIdentity.js";
 
 export const OFFICIAL_IDENTITY_SOURCES = {
   twseCompanies: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
   tpexCompanies: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
   twseFunds: "https://openapi.twse.com.tw/v1/opendata/t187ap47_L",
+  tpexFunds: "https://info.tpex.org.tw/api/etfFilter",
   twseEtns: "https://www.twse.com.tw/rwd/zh/ETN/list?response=json",
+  tpexEtns: "https://www.tpex.org.tw/www/zh-tw/ETN/list?type=listed",
   twseDelistings: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
+  tpexDelistings: "https://www.tpex.org.tw/www/zh-tw/company/deListed?code=&reason=-1",
 } as const;
+
+const TPEX_DELISTING_FIRST_YEAR = 2021;
 
 export class ResearchAcquisitionDisabledError extends Error {
   readonly code = "research_acquisition_disabled";
@@ -40,8 +50,9 @@ interface AcquisitionOptions {
   acquisitionRunId?: string;
 }
 
-async function fetchArtifact(fetchImpl: typeof fetch, sourceUrl: string) {
+async function fetchArtifact(fetchImpl: typeof fetch, sourceUrl: string, init?: RequestInit) {
   const response = await fetchImpl(sourceUrl, {
+    ...init,
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(30_000),
   });
@@ -76,12 +87,32 @@ export async function runOfficialIdentityAcquisition(
   const fetchImpl = options.fetchImpl ?? fetch;
   const retrievedAt = options.retrievedAt ?? new Date().toISOString();
   const acquisitionRunId = options.acquisitionRunId ?? `research-identity-${retrievedAt}`;
-  const [twseCompanies, tpexCompanies, twseFunds, twseEtns, twseDelistings] = await Promise.all([
+  const retrievalYear = Number(retrievedAt.slice(0, 4));
+  if (!Number.isInteger(retrievalYear) || retrievalYear < TPEX_DELISTING_FIRST_YEAR) {
+    throw new Error(`Unsupported identity acquisition retrieval time: ${retrievedAt}`);
+  }
+  const tpexDelistingUrls = Array.from(
+    { length: retrievalYear - TPEX_DELISTING_FIRST_YEAR + 1 },
+    (_, index) => `${OFFICIAL_IDENTITY_SOURCES.tpexDelistings}&date=${TPEX_DELISTING_FIRST_YEAR + index}`,
+  );
+  const [
+    twseCompanies,
+    tpexCompanies,
+    twseFunds,
+    tpexFunds,
+    twseEtns,
+    tpexEtns,
+    twseDelistings,
+    tpexDelistingArtifacts,
+  ] = await Promise.all([
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseCompanies),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexCompanies),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseFunds),
+    fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexFunds, { method: "POST" }),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseEtns),
+    fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexEtns),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseDelistings),
+    Promise.all(tpexDelistingUrls.map((sourceUrl) => fetchArtifact(fetchImpl, sourceUrl))),
   ]);
   const parseMetadata = (artifact: { metadata: { sourceUrl: string; contentHash: string } }) => ({
     ...artifact.metadata,
@@ -91,9 +122,28 @@ export async function runOfficialIdentityAcquisition(
     ...parseTwseCompanyIdentitySnapshot(twseCompanies.payload, parseMetadata(twseCompanies)),
     ...parseTpexCompanyIdentitySnapshot(tpexCompanies.payload, parseMetadata(tpexCompanies)),
     ...parseTwseFundIdentitySnapshot(twseFunds.payload, parseMetadata(twseFunds)),
+    ...parseTpexFundIdentitySnapshot(tpexFunds.payload, parseMetadata(tpexFunds)),
     ...parseTwseEtnIdentitySnapshot(twseEtns.payload, parseMetadata(twseEtns)),
+    ...parseTpexEtnIdentitySnapshot(tpexEtns.payload, parseMetadata(tpexEtns)),
   ].map((input) => ({ ...input, acquisitionRunId }));
-  const delistings = parseTwseDelistingSnapshot(twseDelistings.payload);
+  const delistings = [
+    ...parseTwseDelistingSnapshot(twseDelistings.payload).map((delisting) => ({
+      ...delisting,
+      venue: "TWSE" as const,
+      artifact: {
+        ...twseDelistings.metadata,
+        publisherDataset: "company/suspendListingCsvAndHtml",
+      },
+    })),
+    ...tpexDelistingArtifacts.flatMap((artifact) => parseTpexDelistingSnapshot(artifact.payload).map((delisting) => ({
+      ...delisting,
+      venue: "TPEX" as const,
+      artifact: {
+        ...artifact.metadata,
+        publisherDataset: "company/deListed",
+      },
+    }))),
+  ];
   const canonicalRecords = inputs.map(canonicalizeOfficialIdentityRow);
   const records: ResearchIdentityRecord[] = [];
   for (const record of canonicalRecords) {
@@ -112,12 +162,12 @@ export async function runOfficialIdentityAcquisition(
   const statusRevisions: ResearchIdentityRecord[] = [];
   for (const delisting of delistings) {
     const history = await persistence.listResearchIdentityRecords({
-      subject: { kind: "ticker_venue", ticker: delisting.ticker, venue: "TWSE" },
+      subject: { kind: "ticker_venue", ticker: delisting.ticker, venue: delisting.venue },
       effectiveAt: retrievedAt,
       knowledgeAt: retrievedAt,
     });
     const previous = [...history, ...records, ...statusRevisions]
-      .filter((item) => item.listing.venue === "TWSE" && item.listing.ticker === delisting.ticker)
+      .filter((item) => item.listing.venue === delisting.venue && item.listing.ticker === delisting.ticker)
       .filter((item) => item.listing.listedAt <= delisting.inactiveAt)
       .sort(recordOrder)
       .at(-1);
@@ -128,8 +178,7 @@ export async function runOfficialIdentityAcquisition(
       retrievedAt,
       acquisitionRunId,
       artifact: {
-        ...twseDelistings.metadata,
-        publisherDataset: "company/suspendListingCsvAndHtml",
+        ...delisting.artifact,
       },
     }));
   }

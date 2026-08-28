@@ -5,7 +5,12 @@ import {
   parseTwseEtnIdentitySnapshot,
   parseTwseFundIdentitySnapshot,
 } from "../../src/services/research/providers/twseIdentity.js";
-import { parseTpexCompanyIdentitySnapshot } from "../../src/services/research/providers/tpexIdentity.js";
+import {
+  parseTpexCompanyIdentitySnapshot,
+  parseTpexDelistingSnapshot,
+  parseTpexEtnIdentitySnapshot,
+  parseTpexFundIdentitySnapshot,
+} from "../../src/services/research/providers/tpexIdentity.js";
 
 describe("official Taiwan identity providers", () => {
   it("TWSE company snapshot: parse official date and numeric fields → produce a canonical input without ticker coercion", () => {
@@ -134,5 +139,94 @@ describe("official Taiwan identity providers", () => {
         listedAt: "2022-04-25",
       },
     });
+  });
+
+  it("TPEx ETF feed: parse official product identities → use a stable official fallback key without inventing a business number", () => {
+    const inputs = parseTpexFundIdentitySnapshot({
+      status: true,
+      data: [{
+        issuerID: "5801",
+        listingDate: "20260826",
+        issuer: "第一金",
+        stockName: "第一金主動式台灣成長",
+        stockNo: "00999A",
+      }],
+    }, {
+      retrievedAt: "2026-08-27T03:00:00.000Z",
+      contentHash: "sha256:tpex-etf-list",
+      sourceUrl: "https://info.tpex.org.tw/api/etfFilter",
+    });
+
+    expect(inputs[0]).toMatchObject({
+      venue: "TPEX",
+      artifact: {
+        publisherDataset: "etfFilter",
+        accessProvider: "TPEX_WEB_JSON",
+      },
+      row: {
+        kind: "fund",
+        ticker: "00999A",
+        legalName: "第一金主動式台灣成長",
+        identityKey: "tpex-etf:5801:00999A:2026-08-26",
+        fundType: "ETF",
+        listedAt: "2026-08-26",
+      },
+    });
+    expect(inputs[0]?.row).not.toHaveProperty("unifiedBusinessNumber");
+  });
+
+  it("TPEx ETN feed: parse the official listed-note table → preserve venue-specific provenance", () => {
+    const inputs = parseTpexEtnIdentitySnapshot({
+      stat: "ok",
+      tables: [{
+        data: [[
+          "020041",
+          "兆豐半導體氣候N",
+          "兆豐證券股份有限公司",
+          "TPEx FactSet半導體氣候淨零優選報酬指數",
+          "112/12/25",
+          "117/12/24",
+          "detail.html?type=domestic&code=020041",
+        ]],
+      }],
+    }, {
+      retrievedAt: "2026-08-27T03:00:00.000Z",
+      contentHash: "sha256:tpex-etn-list",
+      sourceUrl: "https://www.tpex.org.tw/www/zh-tw/ETN/list?type=listed",
+    });
+
+    expect(inputs[0]).toMatchObject({
+      venue: "TPEX",
+      artifact: {
+        publisherDataset: "ETN/list",
+        accessProvider: "TPEX_WEB_JSON",
+      },
+      row: {
+        kind: "etn",
+        ticker: "020041",
+        legalName: "兆豐證券股份有限公司",
+        displayName: "兆豐半導體氣候N",
+        listedAt: "2023-12-25",
+      },
+    });
+  });
+
+  it("TPEx delisting feed: parse official ROC dates → retain exact ticker and company identity", () => {
+    expect(parseTpexDelistingSnapshot({
+      stat: "ok",
+      tables: [{
+        data: [[
+          "7777",
+          "舊上櫃股份有限公司",
+          "113-11-29",
+          "終止上櫃原因",
+          "https://mops.twse.com.tw/mops/#/web/t05st03",
+        ]],
+      }],
+    })).toEqual([{
+      ticker: "7777",
+      companyName: "舊上櫃股份有限公司",
+      inactiveAt: "2024-11-29",
+    }]);
   });
 });

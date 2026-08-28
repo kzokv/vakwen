@@ -15,6 +15,45 @@ const tpexCompanyRowSchema = z.object({
   IssueShares: z.string().optional(),
 }).passthrough();
 
+const tpexFundRowSchema = z.object({
+  issuerID: z.string(),
+  listingDate: z.string(),
+  stockName: z.string(),
+  stockNo: z.string(),
+}).passthrough();
+
+const tpexFundResponseSchema = z.object({
+  data: z.array(tpexFundRowSchema),
+}).passthrough();
+
+const tpexEtnResponseSchema = z.object({
+  stat: z.literal("ok"),
+  tables: z.array(z.object({
+    data: z.array(z.tuple([
+      z.string(),
+      z.string(),
+      z.string(),
+      z.string(),
+      z.string(),
+      z.string(),
+      z.string(),
+    ])),
+  }).passthrough()).min(1),
+}).passthrough();
+
+const tpexDelistingResponseSchema = z.object({
+  stat: z.literal("ok"),
+  tables: z.array(z.object({
+    data: z.array(z.tuple([
+      z.string(),
+      z.string(),
+      z.string(),
+      z.string(),
+      z.string(),
+    ])),
+  }).passthrough()).min(1),
+}).passthrough();
+
 interface SnapshotMetadata {
   retrievedAt: string;
   contentHash: string;
@@ -70,5 +109,94 @@ export function parseTpexCompanyIdentitySnapshot(
         : {}),
       ...(normalizedNumber(row.IssueShares) ? { issuedShares: normalizedNumber(row.IssueShares) } : {}),
     },
+  }));
+}
+
+export function parseTpexFundIdentitySnapshot(
+  response: unknown,
+  metadata: SnapshotMetadata,
+): OfficialIdentityInput[] {
+  const parsed = tpexFundResponseSchema.parse(response);
+  return parsed.data.map((row) => {
+    const listedAt = parseTaiwanOfficialDate(row.listingDate);
+    return {
+      venue: "TPEX",
+      snapshotDate: metadata.retrievedAt.slice(0, 10),
+      retrievedAt: metadata.retrievedAt,
+      artifact: {
+        contentHash: metadata.contentHash,
+        sourceUrl: metadata.sourceUrl,
+        publisherDataset: "etfFilter",
+        accessProvider: "TPEX_WEB_JSON",
+      },
+      rawValues: {
+        legal_name: row.stockName,
+        display_name: row.stockName,
+        fund_type: "ETF",
+        ticker: row.stockNo,
+        listed_at: row.listingDate,
+      },
+      row: {
+        kind: "fund",
+        ticker: row.stockNo,
+        legalName: row.stockName.trim(),
+        displayName: row.stockName.trim(),
+        identityKey: `tpex-etf:${row.issuerID}:${row.stockNo}:${listedAt}`,
+        fundType: "ETF",
+        listedAt,
+      },
+    };
+  });
+}
+
+export function parseTpexEtnIdentitySnapshot(
+  response: unknown,
+  metadata: SnapshotMetadata,
+): OfficialIdentityInput[] {
+  const parsed = tpexEtnResponseSchema.parse(response);
+  return parsed.tables.flatMap((table) => table.data).map(([
+    ticker,
+    displayName,
+    issuerName,
+    _underlyingIndex,
+    listedAt,
+  ]) => ({
+    venue: "TPEX",
+    snapshotDate: metadata.retrievedAt.slice(0, 10),
+    retrievedAt: metadata.retrievedAt,
+    artifact: {
+      contentHash: metadata.contentHash,
+      sourceUrl: metadata.sourceUrl,
+      publisherDataset: "ETN/list",
+      accessProvider: "TPEX_WEB_JSON",
+    },
+    rawValues: {
+      legal_name: issuerName,
+      display_name: displayName,
+      note_type: "ETN",
+      ticker,
+      listed_at: listedAt,
+    },
+    row: {
+      kind: "etn",
+      ticker,
+      legalName: issuerName.trim(),
+      displayName: displayName.trim(),
+      noteType: "ETN",
+      listedAt: parseTaiwanOfficialDate(listedAt.replaceAll("/", "")),
+    },
+  }));
+}
+
+export function parseTpexDelistingSnapshot(response: unknown) {
+  const parsed = tpexDelistingResponseSchema.parse(response);
+  return parsed.tables.flatMap((table) => table.data).map(([
+    ticker,
+    companyName,
+    inactiveAt,
+  ]) => ({
+    ticker,
+    companyName: companyName.trim(),
+    inactiveAt: parseTaiwanOfficialDate(inactiveAt.replaceAll("-", "")),
   }));
 }

@@ -128,7 +128,7 @@ const listingSchema = z.object({
 const provenanceSchema = z.object({
   id: canonicalIdSchema,
   publisher: z.enum(["TWSE", "TPEX"]),
-  accessProvider: z.enum(["TWSE_OPENAPI", "TPEX_OPENAPI", "TWSE_WEB_JSON"]),
+  accessProvider: z.enum(["TWSE_OPENAPI", "TPEX_OPENAPI", "TWSE_WEB_JSON", "TPEX_WEB_JSON"]),
   authorityRole: z.literal("authoritative"),
   canonicalDatasetId: z.literal("research_identity"),
   publisherDataset: z.string().min(1),

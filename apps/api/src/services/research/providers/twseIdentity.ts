@@ -152,6 +152,7 @@ export function parseTwseFundIdentitySnapshot(
       ticker: row.基金代號,
       legalName: normalizedText(row.基金中文名稱),
       displayName: normalizedText(row.基金簡稱),
+      identityKey: row.基金統一編號.trim(),
       unifiedBusinessNumber: row.基金統一編號.trim(),
       fundType: row.基金類型.trim(),
       listedAt: parseTaiwanOfficialDate(row.上市日期),

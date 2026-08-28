@@ -6,7 +6,7 @@ KZO-246 delivers an identity-only research vertical. It is separate from the leg
 
 1. A positive-gated pg-boss worker fetches declared official TWSE and TPEx snapshots.
 2. Provider adapters validate source-native fields, preserve ticker strings, normalize dates and numeric values, and retain raw values alongside normalized values.
-3. Canonicalization assigns opaque stable `Issuer`, `Security`, and effective-dated `Listing` IDs. Company IDs use the official unified business number; ETF IDs use the fund business number; ETN issuer IDs use the official issuer identity available in the ETN feed.
+3. Canonicalization assigns opaque stable `Issuer`, `Security`, and effective-dated `Listing` IDs. Company IDs use the official unified business number. ETF IDs use the fund business number when the source publishes it; the TPEx ETF feed instead uses a venue-scoped key composed only from its official issuer, ticker, and listing-date identifiers. ETN issuer IDs use the official issuer identity available in the ETN feed.
 4. Memory and PostgreSQL append immutable revisions. Reads apply both `effectiveAt` and `knowledgeAt` cutoffs.
 5. Store-only services resolve exactly one listing and return a fixed temporal context. They never fetch upstream data.
 6. MCP exposes concrete strict schemas for `get_research_manifest` and `get_research_identity` under `research:read`.
@@ -20,7 +20,7 @@ Identity revisions carry:
 
 - raw and normalized source facts with explicit missingness
 - effective, retrieval, and processing timestamps
-- publisher, exact access provider (`TWSE_OPENAPI`, `TPEX_OPENAPI`, or `TWSE_WEB_JSON`), authority role, source URL, content hash, acquisition run, parser version, usage policy, retention, and exposure metadata
+- publisher, exact access provider (`TWSE_OPENAPI`, `TPEX_OPENAPI`, `TWSE_WEB_JSON`, or `TPEX_WEB_JSON`), authority role, source URL, content hash, acquisition run, parser version, usage policy, retention, and exposure metadata
 - operating-company, ETF-limited, identity-only, or unknown eligibility
 - active/inactive listing status and predecessor listing linkage for venue transfers
 

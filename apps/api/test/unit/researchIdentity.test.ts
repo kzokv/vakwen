@@ -91,6 +91,7 @@ describe("Taiwan research identity", () => {
         ticker: "0050",
         legalName: "元大台灣卓越50證券投資信託基金",
         displayName: "元大台灣50",
+        identityKey: "00936523",
         unifiedBusinessNumber: "00936523",
         fundType: "ETF",
         listedAt: "2003-06-30",

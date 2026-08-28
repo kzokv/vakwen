@@ -389,7 +389,7 @@ Research rollout behavior:
 - A connector that already has `portfolio:mcp_read` and later gains `research:read` must reconnect or be recreated. Existing rows are preserved for rollback, but they are not auto-upgraded.
 - When the additive research path is active, `search_instruments.includeInactive=true` widens results without changing legacy error shapes, and each result may add `researchIdentity.availability` as `available`, `unavailable`, or `not_applicable`.
 - Research-only search supports Taiwan (`marketCode=TW`) only. Portfolio read continues to support the legacy multi-market search path. A combined connector may still use the legacy read path and receive additive `researchIdentity` metadata when the rollout is on.
-- The official identity worker runs at `15 18 * * 1-5` UTC and once at worker startup. It ingests TWSE listed companies, TWSE funds, the TWSE ETN list, TWSE delistings, and TPEx company identity snapshots into append-only canonical history.
+- The official identity worker runs at `15 18 * * 1-5` UTC and once at worker startup. It ingests official company, ETF, ETN, and delisting identity/status sources for both TWSE and TPEx into append-only canonical history. The TPEx delisting import covers each supported year from 2021 through the acquisition year so retired listings do not remain active when a ticker is reused.
 
 Built-in production ChatGPT redirect callbacks are:
 
