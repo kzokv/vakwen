@@ -158,5 +158,43 @@ describePostgres("research identity memory/Postgres parity", () => {
     const postgresTied = await postgres.listResearchIdentityRecords(tiedQuery);
     expect(postgresTied).toEqual(memoryTied);
     expect(postgresTied.at(-1)?.listing.status).toBe("inactive");
+
+    const postRetirementActive = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-30",
+      retrievedAt: "2026-08-30T02:00:00.000Z",
+      artifact: { contentHash: "sha256:post-retirement-active", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company", ticker: "7777", legalName: "延遲除名股份有限公司", displayName: "延遲除名",
+        unifiedBusinessNumber: "77777777", industryCode: "24", listedAt: "2020-01-01",
+      },
+    });
+    const delayedRetirement = appendOfficialListingStatusRevision(postRetirementActive, {
+      status: "inactive",
+      effectiveDate: "2026-08-29",
+      retrievedAt: "2026-08-31T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:delayed-retirement",
+        sourceUrl: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
+        publisherDataset: "company/suspendListingCsvAndHtml",
+      },
+    });
+    await memory.appendResearchIdentityRecords([postRetirementActive]);
+    await postgres.appendResearchIdentityRecords([postRetirementActive]);
+    await memory.appendResearchIdentityRecords([delayedRetirement]);
+    await postgres.appendResearchIdentityRecords([delayedRetirement]);
+    const correctedIntervalQuery = {
+      subject: { kind: "listing_id" as const, listingId: postRetirementActive.listing.id },
+      effectiveAt: "2026-08-30T12:00:00.000Z",
+      knowledgeAt: "2026-08-31T12:00:00.000Z",
+    };
+    const memoryCorrected = await memory.listResearchIdentityRecords(correctedIntervalQuery);
+    const postgresCorrected = await postgres.listResearchIdentityRecords(correctedIntervalQuery);
+    expect(postgresCorrected).toEqual(memoryCorrected);
+    expect(postgresCorrected.at(-1)?.listing).toMatchObject({
+      status: "inactive",
+      inactiveAt: "2026-08-29",
+    });
+    expect(await postgres.listLatestResearchIdentityRecords(correctedIntervalQuery)).toEqual([delayedRetirement]);
   });
 });

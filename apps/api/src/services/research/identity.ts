@@ -100,10 +100,10 @@ export function researchIdentityRecordKey(record: ResearchIdentityRecord): strin
 }
 
 /**
- * Explicit status-only revisions must win over full snapshots when the source
- * effective time and retrieval time are identical. Keep this semantic order
- * shared by every persistence backend instead of relying on append order or
- * opaque record hashes.
+ * A listing lifecycle is terminal: once an explicit inactive revision is
+ * effective and known, lagging active snapshots for the same immutable
+ * Listing must not resurrect it. Keep this semantic order shared by every
+ * persistence backend instead of relying on append order or opaque hashes.
  */
 export function researchIdentityRevisionPrecedence(record: ResearchIdentityRecord): number {
   return record.observations.length === 1 && record.observations[0]?.field === "listing_status"
@@ -115,16 +115,15 @@ export function researchIdentityRecordSortOrder(
   left: ResearchIdentityRecord,
   right: ResearchIdentityRecord,
 ): number {
+  const precedenceOrder = researchIdentityRevisionPrecedence(left)
+    - researchIdentityRevisionPrecedence(right);
+  if (precedenceOrder !== 0) return precedenceOrder;
   const effectiveOrder = (left.observations[0]?.effectiveAt ?? "")
     .localeCompare(right.observations[0]?.effectiveAt ?? "");
   if (effectiveOrder !== 0) return effectiveOrder;
   const retrievedOrder = left.provenance.retrievedAt.localeCompare(right.provenance.retrievedAt);
   if (retrievedOrder !== 0) return retrievedOrder;
-  const precedenceOrder = researchIdentityRevisionPrecedence(left)
-    - researchIdentityRevisionPrecedence(right);
-  return precedenceOrder !== 0
-    ? precedenceOrder
-    : researchIdentityRecordKey(left).localeCompare(researchIdentityRecordKey(right));
+  return researchIdentityRecordKey(left).localeCompare(researchIdentityRecordKey(right));
 }
 
 export interface ResearchIdentityRecordQuery {

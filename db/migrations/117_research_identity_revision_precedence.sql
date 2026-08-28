@@ -12,4 +12,4 @@ WHERE EXISTS (
 AND jsonb_array_length(record -> 'observations') = 1;
 
 COMMENT ON COLUMN research.identity_records.revision_precedence IS
-  'Semantic tie-breaker for equal effective/retrieval times; explicit status-only revisions sort after snapshots.';
+  'Terminal lifecycle priority; effective explicit status-only revisions sort after full snapshots.';

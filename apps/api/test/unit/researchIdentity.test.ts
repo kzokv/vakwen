@@ -364,6 +364,51 @@ describe("Taiwan research identity", () => {
     expect(afterKnowledge).toHaveLength(2);
   });
 
+  it("delayed retirement evidence: learn an earlier retirement after a later active snapshot → keep the listing inactive", async () => {
+    const persistence = new MemoryPersistence();
+    const laggingActive = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-28",
+      retrievedAt: "2026-08-28T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:post-retirement-active",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+      },
+      row: {
+        kind: "company",
+        ticker: "8888",
+        legalName: "延遲移除股份有限公司",
+        displayName: "延遲移除",
+        unifiedBusinessNumber: "88880000",
+        industryCode: "24",
+        listedAt: "2020-01-01",
+      },
+    });
+    const delayedRetirement = appendOfficialListingStatusRevision(laggingActive, {
+      status: "inactive",
+      effectiveDate: "2026-08-27",
+      retrievedAt: "2026-08-29T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:delayed-retirement",
+        sourceUrl: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
+        publisherDataset: "company/suspendListingCsvAndHtml",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([laggingActive]);
+    await persistence.appendResearchIdentityRecords([delayedRetirement]);
+
+    const correctedInterval = await persistence.listResearchIdentityRecords({
+      subject: { kind: "listing_id", listingId: laggingActive.listing.id },
+      effectiveAt: "2026-08-28T12:00:00.000Z",
+      knowledgeAt: "2026-08-29T12:00:00.000Z",
+    });
+
+    expect(correctedInterval.at(-1)?.listing).toMatchObject({
+      status: "inactive",
+      inactiveAt: "2026-08-27",
+    });
+  });
+
   it("listing lifecycle: transfer venue then delist → retain stable entities, distinct listings, and sourced inactive history", async () => {
     const tpex = canonicalizeOfficialIdentityRow({
       venue: "TPEX",

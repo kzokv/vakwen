@@ -1317,7 +1317,7 @@ export class PostgresPersistence implements Persistence {
        WHERE ${selectorSql}
          AND effective_at <= $${effectiveAtIndex}::timestamptz
          AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
-       ORDER BY effective_at ASC, retrieved_at ASC, revision_precedence ASC, record_key ASC`,
+       ORDER BY revision_precedence ASC, effective_at ASC, retrieved_at ASC, record_key ASC`,
       [...selectorValues, query.effectiveAt, query.knowledgeAt],
     );
     return result.rows.map((row) => row.record);
@@ -1349,10 +1349,10 @@ export class PostgresPersistence implements Persistence {
          WHERE ${selectorSql}
            AND effective_at <= $${effectiveAtIndex}::timestamptz
            AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
-         ORDER BY listing_id, effective_at DESC, retrieved_at DESC,
-                  revision_precedence DESC, record_key DESC
+         ORDER BY listing_id, revision_precedence DESC, effective_at DESC,
+                  retrieved_at DESC, record_key DESC
        ) AS latest
-       ORDER BY effective_at ASC, retrieved_at ASC, revision_precedence ASC, record_key ASC`,
+       ORDER BY revision_precedence ASC, effective_at ASC, retrieved_at ASC, record_key ASC`,
       [...selectorValues, query.effectiveAt, query.knowledgeAt],
     );
     return result.rows.map((row) => row.record);
