@@ -3,6 +3,7 @@ import { officialEtnContractIdentityKey, type OfficialIdentityInput } from "../i
 import {
   parseTaiwanOfficialDate,
   resolveOfficialEtnIssuerIdentity,
+  taiwanBusinessDate,
   type OfficialSecuritiesFirmDirectory,
 } from "./twseIdentity.js";
 
@@ -139,7 +140,7 @@ export function parseTpexFundIdentitySnapshot(
     const listedAt = parseTaiwanOfficialDate(row.listingDate);
     return {
       venue: "TPEX",
-      snapshotDate: metadata.retrievedAt.slice(0, 10),
+      snapshotDate: taiwanBusinessDate(metadata.retrievedAt),
       retrievedAt: metadata.retrievedAt,
       artifact: {
         contentHash: metadata.contentHash,
@@ -195,7 +196,7 @@ export function parseTpexEtnIdentitySnapshot(
     });
     return {
       venue: "TPEX",
-      snapshotDate: metadata.retrievedAt.slice(0, 10),
+      snapshotDate: taiwanBusinessDate(metadata.retrievedAt),
       retrievedAt: metadata.retrievedAt,
       artifact: {
         contentHash: metadata.contentHash,

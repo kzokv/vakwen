@@ -186,7 +186,7 @@ describe("official Taiwan identity acquisition", () => {
 
     const result = await runOfficialIdentityAcquisition(persistence, {
       fetchImpl,
-      retrievedAt: "2026-08-27T04:00:00.000Z",
+      retrievedAt: "2026-08-27T18:15:00.000Z",
       acquisitionRunId: "run-test-1",
     });
     expect(listHistorySpy).not.toHaveBeenCalled();
@@ -200,32 +200,32 @@ describe("official Taiwan identity acquisition", () => {
     expect(result).toMatchObject({ sourceCount: 11, recordCount: 14, acquisitionRunId: "run-test-1" });
     const etn = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "020032", venue: "TWSE" },
-      effectiveAt: "2026-08-27T23:59:59.999Z",
-      knowledgeAt: "2026-08-27T23:59:59.999Z",
+      effectiveAt: "2026-08-28T23:59:59.999Z",
+      knowledgeAt: "2026-08-28T23:59:59.999Z",
     });
     expect(etn[0]?.eligibility.profile).toBe("identity_only");
     const inactive = await persistence.listResearchIdentityRecords({
       subject: { kind: "listing_id", listingId: existing.listing.id },
-      effectiveAt: "2026-08-27T23:59:59.999Z",
-      knowledgeAt: "2026-08-27T23:59:59.999Z",
+      effectiveAt: "2026-08-28T23:59:59.999Z",
+      knowledgeAt: "2026-08-28T23:59:59.999Z",
     });
     expect(inactive.at(-1)?.listing.status).toBe("inactive");
     const reusedTicker = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "9999", venue: "TWSE" },
-      effectiveAt: "2026-08-27T23:59:59.999Z",
-      knowledgeAt: "2026-08-27T23:59:59.999Z",
+      effectiveAt: "2026-08-28T23:59:59.999Z",
+      knowledgeAt: "2026-08-28T23:59:59.999Z",
     });
     expect(reusedTicker.find((record) => record.listing.listedAt === "2026-08-27")?.listing.status).toBe("active");
     const transferred = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "2330", venue: "TWSE" },
-      effectiveAt: "2026-08-27T23:59:59.999Z",
-      knowledgeAt: "2026-08-27T23:59:59.999Z",
+      effectiveAt: "2026-08-28T23:59:59.999Z",
+      knowledgeAt: "2026-08-28T23:59:59.999Z",
     });
     expect(transferred.at(-1)?.listing.predecessorListingId).toBe(beforeTransfer.listing.id);
     const retiredTpexHistory = await persistence.listResearchIdentityRecords({
       subject: { kind: "listing_id", listingId: retiredTpex.listing.id },
-      effectiveAt: "2026-08-27T23:59:59.999Z",
-      knowledgeAt: "2026-08-27T23:59:59.999Z",
+      effectiveAt: "2026-08-28T23:59:59.999Z",
+      knowledgeAt: "2026-08-28T23:59:59.999Z",
     });
     expect(retiredTpexHistory.at(-1)?.listing).toMatchObject({
       venue: "TPEX",
@@ -242,15 +242,15 @@ describe("official Taiwan identity acquisition", () => {
     expect([...latestByListing.values()].find((record) => record.listing.status === "active")?.listing.listedAt).toBe("2026-08-27");
 
     for (const [listingId, inactiveAt, accessProvider] of [
-      [absentTwseEtf.listing.id, "2026-08-27", "TWSE_OPENAPI"],
-      [absentTpexEtf.listing.id, "2026-08-27", "TPEX_WEB_JSON"],
+      [absentTwseEtf.listing.id, "2026-08-28", "TWSE_OPENAPI"],
+      [absentTpexEtf.listing.id, "2026-08-28", "TPEX_WEB_JSON"],
       [retiredTwseEtn.listing.id, "2020-04-30", "TWSE_WEB_JSON"],
       [retiredTpexEtn.listing.id, "2021-06-16", "TPEX_WEB_JSON"],
     ] as const) {
       const history = await persistence.listResearchIdentityRecords({
         subject: { kind: "listing_id", listingId },
-        effectiveAt: "2026-08-27T23:59:59.999Z",
-        knowledgeAt: "2026-08-27T23:59:59.999Z",
+        effectiveAt: "2026-08-28T23:59:59.999Z",
+        knowledgeAt: "2026-08-28T23:59:59.999Z",
       });
       expect(history.at(-1)?.listing).toMatchObject({ status: "inactive", inactiveAt });
       expect(history.at(-1)?.provenance.accessProvider).toBe(accessProvider);

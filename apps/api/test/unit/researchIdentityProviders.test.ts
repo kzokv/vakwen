@@ -6,6 +6,7 @@ import {
   parseTwseEtnIdentitySnapshot,
   parseTwseEtnRetirementSnapshot,
   parseTwseFundIdentitySnapshot,
+  taiwanBusinessDate,
 } from "../../src/services/research/providers/twseIdentity.js";
 import {
   parseTpexCompanyIdentitySnapshot,
@@ -25,6 +26,10 @@ describe("official Taiwan identity providers", () => {
     "券商(證券IB)簡稱": "兆豐",
     營利事業統一編號: "23474649",
   }]);
+
+  it("retrieval fallback date: scheduled UTC instant after Taiwan midnight → use the next Taiwan business date", () => {
+    expect(taiwanBusinessDate("2026-08-27T18:15:00.000Z")).toBe("2026-08-28");
+  });
 
   it("TWSE company snapshot: parse official date and numeric fields → produce a canonical input without ticker coercion", () => {
     const inputs = parseTwseCompanyIdentitySnapshot([{
@@ -154,6 +159,35 @@ describe("official Taiwan identity providers", () => {
         listedAt: "2022-04-25",
       },
     });
+  });
+
+  it("retrieval-dated feeds: scheduled UTC instant after Taiwan midnight → stamp the Taiwan date", () => {
+    const retrievedAt = "2026-08-27T18:15:00.000Z";
+    const metadata = {
+      retrievedAt,
+      contentHash: "sha256:taiwan-business-date",
+      sourceUrl: "https://example.test/identity",
+    };
+
+    const twseEtn = parseTwseEtnIdentitySnapshot({
+      stat: "ok",
+      fields: ["上市日期", "證券代號", "證券簡稱", "發行證券商", "標的指數", "到期日"],
+      data: [["2022/04/25", "020032", "元大綠能N", "元大證券股份有限公司", "綠色能源報酬指數", "2032/04/26"]],
+    }, metadata, securitiesFirms);
+    const tpexEtf = parseTpexFundIdentitySnapshot({
+      status: true,
+      data: [{ issuerID: "5801", listingDate: "20260826", stockName: "第一金主動式台灣成長", stockNo: "00999A" }],
+    }, metadata);
+    const tpexEtn = parseTpexEtnIdentitySnapshot({
+      stat: "ok",
+      tables: [{ data: [[
+        "020041", "兆豐半導體氣候N", "兆豐證券股份有限公司", "半導體指數",
+        "112/12/25", "117/12/24", "detail.html?code=020041",
+      ]] }],
+    }, metadata, securitiesFirms);
+
+    expect([twseEtn[0]?.snapshotDate, tpexEtf[0]?.snapshotDate, tpexEtn[0]?.snapshotDate])
+      .toEqual(["2026-08-28", "2026-08-28", "2026-08-28"]);
   });
 
   it("TPEx ETF feed: parse official product identities → use a stable official fallback key without inventing a business number", () => {

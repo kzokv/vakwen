@@ -75,6 +75,24 @@ interface SnapshotMetadata {
   sourceUrl: string;
 }
 
+const taiwanBusinessDateFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Taipei",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+export function taiwanBusinessDate(retrievedAt: string): string {
+  const instant = new Date(retrievedAt);
+  if (Number.isNaN(instant.valueOf())) {
+    throw new Error(`Invalid retrieval timestamp: ${retrievedAt}`);
+  }
+  const parts = Object.fromEntries(
+    taiwanBusinessDateFormatter.formatToParts(instant).map(({ type, value }) => [type, value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
 export function parseTaiwanOfficialDate(value: string): string {
   const compact = value.trim();
   const match = /^(?:(\d{3})(\d{2})(\d{2})|(\d{4})(\d{2})(\d{2}))$/.exec(compact);
@@ -242,7 +260,7 @@ export function parseTwseEtnIdentitySnapshot(
     });
     return {
       venue: "TWSE",
-      snapshotDate: metadata.retrievedAt.slice(0, 10),
+      snapshotDate: taiwanBusinessDate(metadata.retrievedAt),
       retrievedAt: metadata.retrievedAt,
       artifact: {
         contentHash: metadata.contentHash,

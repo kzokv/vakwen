@@ -15,6 +15,7 @@ import {
   parseTwseEtnIdentitySnapshot,
   parseTwseEtnRetirementSnapshot,
   parseTwseFundIdentitySnapshot,
+  taiwanBusinessDate,
 } from "./providers/twseIdentity.js";
 import {
   parseTpexCompanyIdentitySnapshot,
@@ -94,7 +95,8 @@ export async function runOfficialIdentityAcquisition(
   const fetchImpl = options.fetchImpl ?? fetch;
   const retrievedAt = options.retrievedAt ?? new Date().toISOString();
   const acquisitionRunId = options.acquisitionRunId ?? `research-identity-${retrievedAt}`;
-  const retrievalYear = Number(retrievedAt.slice(0, 4));
+  const retrievalBusinessDate = taiwanBusinessDate(retrievedAt);
+  const retrievalYear = Number(retrievalBusinessDate.slice(0, 4));
   if (!Number.isInteger(retrievalYear) || retrievalYear < TPEX_DELISTING_FIRST_YEAR) {
     throw new Error(`Unsupported identity acquisition retrieval time: ${retrievedAt}`);
   }
@@ -252,7 +254,7 @@ export async function runOfficialIdentityAcquisition(
       ) continue;
       statusRevisions.push(appendOfficialListingStatusRevision(previous, {
         status: "inactive",
-        effectiveDate: retrievedAt.slice(0, 10),
+        effectiveDate: retrievalBusinessDate,
         retrievedAt,
         acquisitionRunId,
         artifact: {
