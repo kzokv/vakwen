@@ -25,6 +25,11 @@ import { listMcpToolDefinitions, setResearchRolloutOverrideForTest } from "../..
 import { resetMcpRateLimitBucketsForTest } from "../../src/mcp/policy.js";
 import { createDividendEvent } from "../../src/services/dividends.js";
 import { replayPositionHistory } from "../../src/services/replayPositionHistory.js";
+import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import {
+  researchIdentityOutputSchema,
+  researchManifestOutputSchema,
+} from "../../src/services/research/contracts.js";
 
 let app: Awaited<ReturnType<typeof buildApp>>;
 
@@ -683,6 +688,69 @@ describe("mcp routes", () => {
       { type: "oauth2", scopes: ["portfolio:mcp_read"] },
       { type: "oauth2", scopes: ["research:read"] },
     ]);
+  });
+
+  it("serves canonical manifest and identity structured content through research-only MCP authorization", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: true,
+      mcpExposureEnabled: true,
+      skillExposureEnabled: true,
+    });
+    await app.persistence.saveAiConnectorPolicySettings({ groupToggles: { research: true } });
+    const record = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:mcp-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company", ticker: "2330", legalName: "台灣積體電路製造股份有限公司", displayName: "台積電",
+        unifiedBusinessNumber: "22099131", industryCode: "24", listedAt: "1994-09-05",
+      },
+    });
+    await app.persistence.appendResearchIdentityRecords([record]);
+    const headers = {
+      authorization: `Bearer ${devToken({ userId: "user-1", scopes: ["research:read"] })}`,
+      accept: "application/json, text/event-stream",
+    };
+    const sessionId = await initializeMcpSession(headers);
+    const query = {
+      subject: { kind: "ticker_venue", ticker: "2330", listingVenue: "TWSE" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+    };
+
+    const manifestResponse = await callMcpTool(headers, sessionId, "get_research_manifest", query);
+    expect(manifestResponse.statusCode).toBe(200);
+    const manifest = parseMcpJson<{ result: { content: Array<{ text: string }>; structuredContent: Record<string, unknown>; isError?: boolean } }>(manifestResponse.body);
+    expect(manifest.result.isError).not.toBe(true);
+    expect(researchManifestOutputSchema.parse(manifest.result.structuredContent)).toEqual(
+      manifest.result.structuredContent,
+    );
+    expect(manifest.result.structuredContent).toMatchObject({
+      selector: { kind: "listing_id", listingId: record.listing.id },
+      orchestration: { skillExposure: "enabled" },
+    });
+    expect(manifest.result.content[0]?.text).toContain("1 of 11 datasets available");
+
+    const identityResponse = await callMcpTool(headers, sessionId, "get_research_identity", {
+      ...query,
+      subject: { kind: "listing_id", listingId: record.listing.id },
+      history: { limit: 25 },
+    });
+    expect(identityResponse.statusCode).toBe(200);
+    const identity = parseMcpJson<{ result: { content: Array<{ text: string }>; structuredContent: Record<string, unknown>; isError?: boolean } }>(identityResponse.body);
+    expect(identity.result.isError).not.toBe(true);
+    expect(researchIdentityOutputSchema.parse(identity.result.structuredContent)).toEqual(
+      identity.result.structuredContent,
+    );
+    expect(identity.result.structuredContent).toMatchObject({
+      selector: { kind: "listing_id", listingId: record.listing.id },
+      identity: { listing: { ticker: "2330", venue: "TWSE" } },
+    });
+    expect(identity.result.content[0]?.text).toContain("Research identity for TWSE:2330");
   });
 
   it("rejects mixed-market search_instruments requests through MCP when authorized only by research:read", async () => {

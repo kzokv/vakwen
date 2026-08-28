@@ -1,0 +1,4 @@
+interface:
+  display_name: "Taiwan Stock Research"
+  short_description: "Produce canonical TWSE and TPEx identity research"
+  default_prompt: "Use $taiwan-stock-research to produce an identity-only, provenance-backed ResearchReport for one exact TWSE or TPEx listing."

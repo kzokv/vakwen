@@ -24,6 +24,10 @@ import type {
   MarketCode,
 } from "@vakwen/domain";
 import type { FxRate } from "../services/market-data/types.js";
+import type {
+  ResearchIdentityRecord,
+  ResearchIdentityRecordQuery,
+} from "../services/research/identity.js";
 import { buildRedisSocketOptions } from "../lib/redisClientOptions.js";
 import { loadMigrationManifest } from "./migrationManifest.js";
 import {
@@ -1249,6 +1253,67 @@ export class PostgresPersistence implements Persistence {
   async close(): Promise<void> {
     if (this.redis.isOpen) await this.redis.quit();
     await this.pool.end();
+  }
+
+  async appendResearchIdentityRecords(records: ResearchIdentityRecord[]): Promise<void> {
+    if (records.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of records) {
+        const effectiveAt = record.observations[0]?.effectiveAt;
+        if (!effectiveAt) throw new Error("Research identity records require effective observations");
+        await client.query(
+          `INSERT INTO research.identity_records (
+             record_key, listing_id, security_id, issuer_id, ticker, venue,
+             effective_at, retrieved_at, record
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz, $9::jsonb)
+           ON CONFLICT (record_key) DO NOTHING`,
+          [
+            `${record.provenance.id}:${record.listing.id}`,
+            record.listing.id,
+            record.security.id,
+            record.issuer.id,
+            record.listing.ticker,
+            record.listing.venue,
+            effectiveAt,
+            record.provenance.retrievedAt,
+            JSON.stringify(record),
+          ],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]> {
+    const selectorSql = query.subject.kind === "listing_id"
+      ? "listing_id = $1"
+      : query.subject.kind === "security_id"
+        ? "security_id = $1"
+        : "ticker = $1 AND venue = $2";
+    const selectorValues = query.subject.kind === "listing_id"
+      ? [query.subject.listingId]
+      : query.subject.kind === "security_id"
+        ? [query.subject.securityId]
+        : [query.subject.ticker, query.subject.venue];
+    const effectiveAtIndex = selectorValues.length + 1;
+    const knowledgeAtIndex = selectorValues.length + 2;
+    const result = await this.pool.query<{ record: ResearchIdentityRecord }>(
+      `SELECT record
+       FROM research.identity_records
+       WHERE ${selectorSql}
+         AND effective_at <= $${effectiveAtIndex}::timestamptz
+         AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
+       ORDER BY effective_at ASC, retrieved_at ASC, record_key ASC`,
+      [...selectorValues, query.effectiveAt, query.knowledgeAt],
+    );
+    return result.rows.map((row) => row.record);
   }
 
   private async getLatestQuoteFallbackSnapshotsForPolicyIds(

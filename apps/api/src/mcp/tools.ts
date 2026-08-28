@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { Env } from "@vakwen/config";
 import {
   ACCOUNT_DEFAULT_CURRENCIES,
   MARKET_CODES,
@@ -11,6 +10,23 @@ import {
 } from "@vakwen/shared-types";
 import { unrealizedPnlAnalysisMcpInputSchema } from "../services/unrealizedPnlAnalysis.js";
 import { bookedChargeFieldSchema } from "../validation/bookedCharge.js";
+import {
+  researchIdentityOutputSchema,
+  researchIdentityQuerySchema,
+  researchManifestOutputSchema,
+  researchQuerySchema,
+} from "../services/research/contracts.js";
+import {
+  researchMcpExposureEnabled,
+  researchScopeAcquisitionAllowed,
+} from "../services/research/rollout.js";
+export {
+  researchAcquisitionEnabled,
+  researchMcpExposureEnabled,
+  researchScopeAcquisitionAllowed,
+  researchSkillExposureEnabled,
+  setResearchRolloutOverrideForTest,
+} from "../services/research/rollout.js";
 
 const adviceBoundary =
   "Descriptive portfolio and draft workflow only. Do not use this tool for investment, tax, suitability, target-price, buy/sell/hold, or rebalancing advice.";
@@ -238,6 +254,20 @@ export const mcpDraftCandidateSchema = z.object({
 }).strict();
 
 const toolDefinitions = {
+  get_research_manifest: {
+    description: "Return the unpaginated availability status of the eleven canonical Taiwan research datasets for one immutable listing and fixed temporal context. Reads the canonical store only.",
+    inputSchema: researchQuerySchema,
+    outputSchema: researchManifestOutputSchema,
+    scope: "research:read" as const,
+    accessKind: "read" as const,
+  },
+  get_research_identity: {
+    description: "Return canonical Taiwan issuer, security, effective-dated listing, eligibility, identity observations, provenance, and paginated identity history. Reads the canonical store only.",
+    inputSchema: researchIdentityQuerySchema,
+    outputSchema: researchIdentityOutputSchema,
+    scope: "research:read" as const,
+    accessKind: "read" as const,
+  },
   get_portfolio_overview: {
     description: `Return descriptive portfolio overview data with the user's default locale and reporting currency unless overridden. ${adviceBoundary}`,
     inputSchema: z.object({ ...mcpSharedInputShape }),
@@ -1191,48 +1221,13 @@ type ListedMcpToolDefinition = {
   name: McpToolName;
   description: string;
   inputSchema: McpToolDefinition["inputSchema"];
-  outputSchema: typeof genericMcpToolOutputSchema;
+  outputSchema: z.AnyZodObject;
   annotations: McpToolAnnotations;
   scope: AiConnectorScope;
   alternativeScopes?: AiConnectorScope[];
   accessKind: AiConnectorAccessKind;
   _meta?: Record<string, unknown>;
 };
-
-let researchRolloutOverrideForTest: {
-  acquisitionEnabled?: boolean;
-  mcpExposureEnabled?: boolean;
-  skillExposureEnabled?: boolean;
-} | null = null;
-
-export function setResearchRolloutOverrideForTest(
-  override: {
-    acquisitionEnabled?: boolean;
-    mcpExposureEnabled?: boolean;
-    skillExposureEnabled?: boolean;
-  } | null,
-): void {
-  researchRolloutOverrideForTest = override;
-}
-
-export function researchAcquisitionEnabled(): boolean {
-  return researchRolloutOverrideForTest?.acquisitionEnabled ?? Env.MCP_RESEARCH_ACQUISITION_ENABLED ?? false;
-}
-
-export function researchMcpExposureEnabled(): boolean {
-  return researchRolloutOverrideForTest?.mcpExposureEnabled ?? Env.MCP_RESEARCH_MCP_ENABLED ?? false;
-}
-
-// Reserved gate for a future Skills-facing surface. KZO-245 does not expose a
-// Skill endpoint yet, but admin/API DTOs need an explicit independently-routed
-// flag so later rollout work does not overload the MCP gate semantics.
-export function researchSkillExposureEnabled(): boolean {
-  return researchRolloutOverrideForTest?.skillExposureEnabled ?? Env.MCP_RESEARCH_SKILL_ENABLED ?? false;
-}
-
-export function researchScopeAcquisitionAllowed(): boolean {
-  return researchAcquisitionEnabled() && researchMcpExposureEnabled();
-}
 
 export function scopesForListedTool(tool: Pick<ListedMcpToolDefinition, "scope" | "alternativeScopes">): AiConnectorScope[] {
   return tool.alternativeScopes ? [tool.scope, ...tool.alternativeScopes] : [tool.scope];
@@ -1270,14 +1265,18 @@ export function getMcpToolDefinition(toolName: McpToolName): McpToolDefinition {
   return toolDefinitions[toolName];
 }
 
-export function listMcpToolDefinitions(options: { legacyReadGroupEnabled?: boolean } = {}): ListedMcpToolDefinition[] {
+export function listMcpToolDefinitions(options: {
+  legacyReadGroupEnabled?: boolean;
+  includeRolloutDisabled?: boolean;
+} = {}): ListedMcpToolDefinition[] {
   const legacyReadGroupEnabled = options.legacyReadGroupEnabled ?? true;
+  const includeRolloutDisabled = options.includeRolloutDisabled ?? false;
   return Object.entries(toolDefinitions)
     .map(([name, value]) => ({
     name: name as McpToolName,
     description: value.description,
     inputSchema: value.inputSchema,
-    outputSchema: genericMcpToolOutputSchema,
+    outputSchema: "outputSchema" in value ? value.outputSchema : genericMcpToolOutputSchema,
     annotations: getToolAnnotations(name as McpToolName, value.accessKind),
     scope: value.scope,
     alternativeScopes: name === "search_instruments" && researchMcpExposureEnabled()
@@ -1286,7 +1285,12 @@ export function listMcpToolDefinitions(options: { legacyReadGroupEnabled?: boole
     accessKind: value.accessKind,
     _meta: "_meta" in value ? value._meta : undefined,
   }))
-    .filter((tool) => tool.name !== "search_instruments" || legacyReadGroupEnabled || researchMcpExposureEnabled());
+    .filter((tool) => {
+      if (tool.name === "get_research_manifest" || tool.name === "get_research_identity") {
+        return includeRolloutDisabled || researchScopeAcquisitionAllowed();
+      }
+      return tool.name !== "search_instruments" || legacyReadGroupEnabled || researchMcpExposureEnabled();
+    });
 }
 
 export const ALL_MCP_SCOPES: AiConnectorScope[] = [

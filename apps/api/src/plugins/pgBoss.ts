@@ -59,6 +59,8 @@ import { toDailyBarUpsertRows } from "../services/market-data/closeRefreshWorker
 import { upsertDailyBars } from "../services/market-data/upserts.js";
 import { registerMcpReplayPositionRunWorker } from "../services/mcpReplayPositionRunWorker.js";
 import { EodhdEodProvider } from "../services/market-data/providers/eodhdEod.js";
+import { registerResearchIdentityAcquisitionWorker } from "../services/research/registerIdentityAcquisitionWorker.js";
+import { researchAcquisitionEnabled } from "../services/research/rollout.js";
 
 function createRedisIntradayRefreshRequestBudget(
   redis: Pick<RedisClientType, "isOpen" | "connect" | "incrBy" | "pExpire" | "pTTL">,
@@ -209,6 +211,13 @@ export async function registerPgBoss(app: AppInstance, persistenceOverride?: str
   // call — without this startup-tick, the AU catalog stays empty until the cron
   // fires. Singleton policy collapses duplicate kicks from concurrent restarts.
   await boss.send(CATALOG_SYNC_QUEUE, {}, { singletonKey: CATALOG_SYNC_QUEUE });
+
+  if (researchAcquisitionEnabled()) {
+    await registerResearchIdentityAcquisitionWorker(boss, {
+      persistence: app.persistence,
+      log: app.log,
+    });
+  }
 
   // KZO-164: Frankfurter FX rate ingestion. Singleton policy ensures concurrent
   // manual triggers (and overlapping cron + manual) coalesce. Cron schedule sends

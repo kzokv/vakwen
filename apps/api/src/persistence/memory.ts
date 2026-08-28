@@ -67,6 +67,10 @@ import type {
 } from "@vakwen/domain";
 import type { FxRate } from "../services/market-data/types.js";
 import type {
+  ResearchIdentityRecord,
+  ResearchIdentityRecordQuery,
+} from "../services/research/identity.js";
+import type {
   AdminAuditLogResponse,
   AdminInviteListResponse,
   AdminUserListResponse,
@@ -653,6 +657,7 @@ function stockDividendLotIdsForScope(
 }
 
 export class MemoryPersistence implements Persistence {
+  private readonly researchIdentityRecords = new Map<string, ResearchIdentityRecord>();
   private readonly stores = new Map<string, Store>();
   private readonly idempotencyKeys = new Map<string, Set<string>>();
   private readonly dailyBars: MemoryDailyBar[] = [];
@@ -826,6 +831,40 @@ export class MemoryPersistence implements Persistence {
   >();
 
   constructor(private readonly options: MemoryPersistenceOptions = {}) {}
+
+  async appendResearchIdentityRecords(records: ResearchIdentityRecord[]): Promise<void> {
+    for (const record of records) {
+      const key = `${record.provenance.id}:${record.listing.id}`;
+      if (!this.researchIdentityRecords.has(key)) {
+        this.researchIdentityRecords.set(key, structuredClone(record));
+      }
+    }
+  }
+
+  async listResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]> {
+    return [...this.researchIdentityRecords.values()]
+      .filter((record) => {
+        const subjectMatches = query.subject.kind === "listing_id"
+          ? record.listing.id === query.subject.listingId
+          : query.subject.kind === "security_id"
+            ? record.security.id === query.subject.securityId
+            : record.listing.ticker === query.subject.ticker
+              && record.listing.venue === query.subject.venue;
+        const effectiveAt = record.observations[0]?.effectiveAt;
+        return subjectMatches
+          && effectiveAt !== undefined
+          && effectiveAt <= query.effectiveAt
+          && record.provenance.retrievedAt <= query.knowledgeAt;
+      })
+      .sort((left, right) => {
+        const effectiveOrder = (left.observations[0]?.effectiveAt ?? "")
+          .localeCompare(right.observations[0]?.effectiveAt ?? "");
+        return effectiveOrder !== 0
+          ? effectiveOrder
+          : left.provenance.retrievedAt.localeCompare(right.provenance.retrievedAt);
+      })
+      .map((record) => structuredClone(record));
+  }
 
   async init(): Promise<void> {
     // KZO-177: pre-seed the canonical providers, mirroring migration 046's

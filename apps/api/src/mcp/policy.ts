@@ -42,6 +42,7 @@ export function scopesForToolAccess(
   toolScope: AiConnectorScope,
 ): AiConnectorScope[] {
   if (accessKind === "read") {
+    if (toolScope === "research:read") return ["research:read"];
     if (toolName === "search_instruments" && researchMcpExposureEnabled()) {
       return ["portfolio:mcp_read", "research:read"];
     }
