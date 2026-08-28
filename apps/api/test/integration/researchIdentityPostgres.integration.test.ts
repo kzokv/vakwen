@@ -183,18 +183,54 @@ describePostgres("research identity memory/Postgres parity", () => {
     await postgres.appendResearchIdentityRecords([postRetirementActive]);
     await memory.appendResearchIdentityRecords([delayedRetirement]);
     await postgres.appendResearchIdentityRecords([delayedRetirement]);
+    const correctedIdentity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-31",
+      retrievedAt: "2026-09-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:corrected-post-retirement-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company", ticker: "7777A", legalName: "延遲除名更正股份有限公司", displayName: "延遲除名更正",
+        unifiedBusinessNumber: "77777777", industryCode: "31", listedAt: "2020-01-01",
+      },
+    });
+    await memory.appendResearchIdentityRecords([correctedIdentity]);
+    await postgres.appendResearchIdentityRecords([correctedIdentity]);
     const correctedIntervalQuery = {
       subject: { kind: "listing_id" as const, listingId: postRetirementActive.listing.id },
-      effectiveAt: "2026-08-30T12:00:00.000Z",
-      knowledgeAt: "2026-08-31T12:00:00.000Z",
+      effectiveAt: "2026-09-01T12:00:00.000Z",
+      knowledgeAt: "2026-09-01T12:00:00.000Z",
     };
     const memoryCorrected = await memory.listResearchIdentityRecords(correctedIntervalQuery);
     const postgresCorrected = await postgres.listResearchIdentityRecords(correctedIntervalQuery);
     expect(postgresCorrected).toEqual(memoryCorrected);
-    expect(postgresCorrected.at(-1)?.listing).toMatchObject({
+    expect(postgresCorrected.at(-1)?.listing.ticker).toBe("7777A");
+    const memoryLatestCorrected = await memory.listLatestResearchIdentityRecords(correctedIntervalQuery);
+    const postgresLatestCorrected = await postgres.listLatestResearchIdentityRecords(correctedIntervalQuery);
+    expect(postgresLatestCorrected).toEqual(memoryLatestCorrected);
+    expect(postgresLatestCorrected[0]?.listing).toMatchObject({
+      ticker: "7777A",
       status: "inactive",
       inactiveAt: "2026-08-29",
     });
-    expect(await postgres.listLatestResearchIdentityRecords(correctedIntervalQuery)).toEqual([delayedRetirement]);
+    const correctedServiceQuery = {
+      subject: { kind: "ticker_venue" as const, ticker: "7777A", listingVenue: "TWSE" as const },
+      context: {
+        effectiveAt: "2026-09-01T12:00:00.000Z",
+        knowledgeAt: "2026-09-01T12:00:00.000Z",
+        assessmentMode: "effective" as const,
+      },
+      history: { limit: 25 },
+    };
+    const postgresResolved = await getResearchIdentity(postgres, correctedServiceQuery);
+    expect(postgresResolved).toEqual(await getResearchIdentity(memory, correctedServiceQuery));
+    expect(postgresResolved.identity.listing).toMatchObject({
+      ticker: "7777A",
+      status: "inactive",
+      inactiveAt: "2026-08-29",
+    });
+    expect(postgresResolved.identity.facts.find((fact) => fact.field === "legal_name")?.normalized).toEqual({
+      state: "present",
+      value: "延遲除名更正股份有限公司",
+    });
   });
 });

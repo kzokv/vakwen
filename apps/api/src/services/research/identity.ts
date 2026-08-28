@@ -115,15 +115,45 @@ export function researchIdentityRecordSortOrder(
   left: ResearchIdentityRecord,
   right: ResearchIdentityRecord,
 ): number {
-  const precedenceOrder = researchIdentityRevisionPrecedence(left)
-    - researchIdentityRevisionPrecedence(right);
-  if (precedenceOrder !== 0) return precedenceOrder;
   const effectiveOrder = (left.observations[0]?.effectiveAt ?? "")
     .localeCompare(right.observations[0]?.effectiveAt ?? "");
   if (effectiveOrder !== 0) return effectiveOrder;
   const retrievedOrder = left.provenance.retrievedAt.localeCompare(right.provenance.retrievedAt);
   if (retrievedOrder !== 0) return retrievedOrder;
-  return researchIdentityRecordKey(left).localeCompare(researchIdentityRecordKey(right));
+  const precedenceOrder = researchIdentityRevisionPrecedence(left)
+    - researchIdentityRevisionPrecedence(right);
+  return precedenceOrder !== 0
+    ? precedenceOrder
+    : researchIdentityRecordKey(left).localeCompare(researchIdentityRecordKey(right));
+}
+
+export function resolveResearchIdentityLatestState(
+  records: readonly ResearchIdentityRecord[],
+): ResearchIdentityRecord | undefined {
+  const ordered = [...records].sort(researchIdentityRecordSortOrder);
+  const identityBasis = ordered
+    .filter((record) => researchIdentityRevisionPrecedence(record) === 0)
+    .at(-1);
+  const terminalStatus = ordered
+    .filter((record) => researchIdentityRevisionPrecedence(record) > 0)
+    .at(-1);
+  if (!identityBasis) return terminalStatus;
+  if (!terminalStatus) return identityBasis;
+  return {
+    ...identityBasis,
+    listing: {
+      ...identityBasis.listing,
+      status: terminalStatus.listing.status,
+      ...(terminalStatus.listing.inactiveAt
+        ? { inactiveAt: terminalStatus.listing.inactiveAt }
+        : {}),
+    },
+    eligibility: terminalStatus.eligibility,
+    observations: [
+      ...identityBasis.observations.filter((observation) => observation.field !== "listing_status"),
+      ...terminalStatus.observations.filter((observation) => observation.field === "listing_status"),
+    ],
+  };
 }
 
 export interface ResearchIdentityRecordQuery {

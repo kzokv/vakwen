@@ -4,6 +4,7 @@ import {
   appendOfficialListingStatusRevision,
   canonicalizeOfficialIdentityRow,
 } from "../../src/services/research/identity.js";
+import { getResearchIdentity } from "../../src/services/research/service.js";
 
 describe("Taiwan research identity", () => {
   it("official company revisions: change name and industry classification → keep stable IDs and append sourced evidence", () => {
@@ -394,19 +395,62 @@ describe("Taiwan research identity", () => {
         publisherDataset: "company/suspendListingCsvAndHtml",
       },
     });
+    const correctedIdentity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-30",
+      retrievedAt: "2026-08-30T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:corrected-post-retirement-identity",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+      },
+      row: {
+        kind: "company",
+        ticker: "8888A",
+        legalName: "延遲移除更正股份有限公司",
+        displayName: "延遲移除更正",
+        unifiedBusinessNumber: "88880000",
+        industryCode: "31",
+        listedAt: "2020-01-01",
+      },
+    });
     await persistence.appendResearchIdentityRecords([laggingActive]);
     await persistence.appendResearchIdentityRecords([delayedRetirement]);
+    await persistence.appendResearchIdentityRecords([correctedIdentity]);
 
     const correctedInterval = await persistence.listResearchIdentityRecords({
       subject: { kind: "listing_id", listingId: laggingActive.listing.id },
-      effectiveAt: "2026-08-28T12:00:00.000Z",
-      knowledgeAt: "2026-08-29T12:00:00.000Z",
+      effectiveAt: "2026-08-30T12:00:00.000Z",
+      knowledgeAt: "2026-08-30T12:00:00.000Z",
+    });
+    const resolved = await getResearchIdentity(persistence, {
+      subject: { kind: "ticker_venue", ticker: "8888A", listingVenue: "TWSE" },
+      context: {
+        effectiveAt: "2026-08-30T12:00:00.000Z",
+        knowledgeAt: "2026-08-30T12:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      history: { limit: 25 },
     });
 
-    expect(correctedInterval.at(-1)?.listing).toMatchObject({
+    expect(correctedInterval.at(-1)?.listing.ticker).toBe("8888A");
+    expect(resolved.identity.listing).toMatchObject({
+      ticker: "8888A",
       status: "inactive",
       inactiveAt: "2026-08-27",
     });
+    expect(resolved.identity.facts.find((fact) => fact.field === "legal_name")?.normalized).toEqual({
+      state: "present",
+      value: "延遲移除更正股份有限公司",
+    });
+    await expect(getResearchIdentity(persistence, {
+      subject: { kind: "ticker_venue", ticker: "8888", listingVenue: "TWSE" },
+      context: {
+        effectiveAt: "2026-08-30T12:00:00.000Z",
+        knowledgeAt: "2026-08-30T12:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      history: { limit: 25 },
+    })).rejects.toMatchObject({ code: "research_subject_not_found" });
   });
 
   it("listing lifecycle: transfer venue then delist → retain stable entities, distinct listings, and sourced inactive history", async () => {

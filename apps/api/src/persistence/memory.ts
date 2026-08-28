@@ -69,6 +69,7 @@ import type { FxRate } from "../services/market-data/types.js";
 import {
   researchIdentityRecordKey,
   researchIdentityRecordSortOrder,
+  resolveResearchIdentityLatestState,
   type ResearchIdentityRecord,
   type ResearchIdentityRecordQuery,
 } from "../services/research/identity.js";
@@ -865,7 +866,7 @@ export class MemoryPersistence implements Persistence {
   }
 
   async listLatestResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]> {
-    const latestByListing = new Map<string, ResearchIdentityRecord>();
+    const recordsByListing = new Map<string, ResearchIdentityRecord[]>();
     for (const record of this.researchIdentityRecords.values()) {
       const subjectMatches = query.subject.kind === "listing_id"
         ? record.listing.id === query.subject.listingId
@@ -881,12 +882,12 @@ export class MemoryPersistence implements Persistence {
         || effectiveAt > query.effectiveAt
         || record.provenance.retrievedAt > query.knowledgeAt
       ) continue;
-      const previous = latestByListing.get(record.listing.id);
-      if (!previous || researchIdentityRecordSortOrder(previous, record) < 0) {
-        latestByListing.set(record.listing.id, record);
-      }
+      const records = recordsByListing.get(record.listing.id) ?? [];
+      records.push(record);
+      recordsByListing.set(record.listing.id, records);
     }
-    return [...latestByListing.values()]
+    return [...recordsByListing.values()]
+      .map((records) => resolveResearchIdentityLatestState(records)!)
       .sort(researchIdentityRecordSortOrder)
       .map((record) => structuredClone(record));
   }

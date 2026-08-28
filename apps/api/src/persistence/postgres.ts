@@ -26,7 +26,9 @@ import type {
 import type { FxRate } from "../services/market-data/types.js";
 import {
   researchIdentityRecordKey,
+  researchIdentityRecordSortOrder,
   researchIdentityRevisionPrecedence,
+  resolveResearchIdentityLatestState,
   type ResearchIdentityRecord,
   type ResearchIdentityRecordQuery,
 } from "../services/research/identity.js";
@@ -1317,7 +1319,7 @@ export class PostgresPersistence implements Persistence {
        WHERE ${selectorSql}
          AND effective_at <= $${effectiveAtIndex}::timestamptz
          AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
-       ORDER BY revision_precedence ASC, effective_at ASC, retrieved_at ASC, record_key ASC`,
+       ORDER BY effective_at ASC, retrieved_at ASC, revision_precedence ASC, record_key ASC`,
       [...selectorValues, query.effectiveAt, query.knowledgeAt],
     );
     return result.rows.map((row) => row.record);
@@ -1343,19 +1345,27 @@ export class PostgresPersistence implements Persistence {
     const result = await this.pool.query<{ record: ResearchIdentityRecord }>(
       `SELECT record
        FROM (
-         SELECT DISTINCT ON (listing_id)
-           record_key, effective_at, retrieved_at, revision_precedence, record
+         SELECT DISTINCT ON (listing_id, revision_precedence)
+           record_key, listing_id, effective_at, retrieved_at, revision_precedence, record
          FROM research.identity_records
          WHERE ${selectorSql}
            AND effective_at <= $${effectiveAtIndex}::timestamptz
            AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
-         ORDER BY listing_id, revision_precedence DESC, effective_at DESC,
+         ORDER BY listing_id, revision_precedence ASC, effective_at DESC,
                   retrieved_at DESC, record_key DESC
        ) AS latest
-       ORDER BY revision_precedence ASC, effective_at ASC, retrieved_at ASC, record_key ASC`,
+       ORDER BY listing_id ASC, revision_precedence ASC`,
       [...selectorValues, query.effectiveAt, query.knowledgeAt],
     );
-    return result.rows.map((row) => row.record);
+    const recordsByListing = new Map<string, ResearchIdentityRecord[]>();
+    for (const { record } of result.rows) {
+      const records = recordsByListing.get(record.listing.id) ?? [];
+      records.push(record);
+      recordsByListing.set(record.listing.id, records);
+    }
+    return [...recordsByListing.values()]
+      .map((records) => resolveResearchIdentityLatestState(records)!)
+      .sort(researchIdentityRecordSortOrder);
   }
 
   private async getLatestQuoteFallbackSnapshotsForPolicyIds(

@@ -5,7 +5,12 @@ import type {
   ResearchQuery,
   ResearchTemporalContext,
 } from "./contracts.js";
-import type { CanonicalIdentityObservation, ResearchIdentityRecord } from "./identity.js";
+import {
+  researchIdentityRevisionPrecedence,
+  resolveResearchIdentityLatestState,
+  type CanonicalIdentityObservation,
+  type ResearchIdentityRecord,
+} from "./identity.js";
 import { researchSkillExposureEnabled } from "./rollout.js";
 
 export class ResearchServiceError extends Error {
@@ -117,7 +122,7 @@ async function resolveEffectiveTickerListings(
   ] as const));
   const historiesByListing = new Map(candidateHistories);
   const effectiveMatches = candidateHistories
-    .map(([, history]) => history.at(-1))
+    .map(([, history]) => resolveResearchIdentityLatestState(history))
     .filter((record): record is ResearchIdentityRecord => record !== undefined)
     .filter((record) => record.listing.ticker === query.subject.ticker
       && record.listing.venue === query.subject.listingVenue);
@@ -129,10 +134,18 @@ async function resolveEffectiveTickerListings(
 
 function latestFacts(records: ResearchIdentityRecord[]): CanonicalIdentityObservation[] {
   const facts = new Map<string, CanonicalIdentityObservation>();
+  const terminalStatusFacts: CanonicalIdentityObservation[] = [];
   for (const record of records) {
     for (const observation of record.observations) {
+      if (researchIdentityRevisionPrecedence(record) > 0 && observation.field === "listing_status") {
+        terminalStatusFacts.push(observation);
+        continue;
+      }
       facts.set(`${observation.subject.kind}:${observation.subject.id}:${observation.field}`, observation);
     }
+  }
+  for (const observation of terminalStatusFacts) {
+    facts.set(`${observation.subject.kind}:${observation.subject.id}:${observation.field}`, observation);
   }
   return [...facts.values()];
 }
@@ -200,7 +213,7 @@ export async function getResearchIdentity(
     : tickerResolution!.historiesByListing.get(listingIds[0]!)!;
 
   const listingId = listingIds[0]!;
-  const latest = records.at(-1)!;
+  const latest = resolveResearchIdentityLatestState(records)!;
   const offset = cursorOffset(query.history.cursor, listingId, query.context);
   if (offset >= records.length && offset !== 0) {
     throw new ResearchServiceError("research_cursor_invalid", "The research history cursor is outside the available history");
