@@ -148,7 +148,7 @@ export function parseTpexFundIdentitySnapshot(
     const identityKey = officialFundProductIdentityKey({
       venue: "TPEX",
       issuerIdentityKey,
-      legalName,
+      officialProductCode: row.stockNo,
       listedAt,
       fundType: "ETF",
     });
@@ -197,7 +197,7 @@ export function parseTpexEtnIdentitySnapshot(
     ticker,
     displayName,
     issuerName,
-    underlyingIndex,
+    _underlyingIndex,
     listedAt,
     maturityDate,
     _detailPath,
@@ -208,7 +208,7 @@ export function parseTpexEtnIdentitySnapshot(
     const identityKey = officialEtnContractIdentityKey({
       venue: "TPEX",
       issuerIdentityKey: issuerIdentity.businessNumber,
-      underlyingIndex,
+      officialProductCode: ticker,
       listedAt: normalizedListedAt,
       maturityAt: normalizedMaturityAt,
       noteType: "ETN",

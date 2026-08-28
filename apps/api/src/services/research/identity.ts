@@ -24,7 +24,7 @@ export interface OfficialFundIdentityRow {
   issuerIdentityKey?: string;
   /** Official issuer name when the source models the fund manager as the Issuer. */
   issuerLegalName?: string;
-  /** Source-native product identity, independent from mutable listing ticker corrections. */
+  /** Canonical product identity derived from the official venue product code. */
   identityKey: string;
   unifiedBusinessNumber?: string;
   fundType: string;
@@ -37,7 +37,7 @@ export interface OfficialEtnIdentityRow {
   ticker: string;
   legalName: string;
   displayName: string;
-  /** Source-native contract identity, independent from mutable names and ticker corrections. */
+  /** Canonical contract identity derived from the official venue product code. */
   identityKey: string;
   /** Official securities-firm business number resolved from the exchange master. */
   issuerIdentityKey: string;
@@ -145,7 +145,7 @@ function opaqueId(prefix: string, ...parts: string[]): string {
 export function officialEtnContractIdentityKey(input: {
   venue: ResearchListingVenue;
   issuerIdentityKey: string;
-  underlyingIndex: string;
+  officialProductCode: string;
   listedAt: string;
   maturityAt: string;
   noteType: string;
@@ -154,7 +154,7 @@ export function officialEtnContractIdentityKey(input: {
     "etn_contract",
     input.venue,
     input.issuerIdentityKey,
-    input.underlyingIndex.normalize("NFKC").trim(),
+    input.officialProductCode.normalize("NFKC").trim(),
     input.listedAt,
     input.maturityAt,
     input.noteType,
@@ -164,7 +164,7 @@ export function officialEtnContractIdentityKey(input: {
 export function officialFundProductIdentityKey(input: {
   venue: ResearchListingVenue;
   issuerIdentityKey: string;
-  legalName: string;
+  officialProductCode: string;
   listedAt: string;
   fundType: string;
 }): string {
@@ -172,7 +172,7 @@ export function officialFundProductIdentityKey(input: {
     "fund_product",
     input.venue,
     input.issuerIdentityKey,
-    input.legalName.normalize("NFKC").trim(),
+    input.officialProductCode.normalize("NFKC").trim(),
     input.listedAt,
     input.fundType.normalize("NFKC").trim(),
   );

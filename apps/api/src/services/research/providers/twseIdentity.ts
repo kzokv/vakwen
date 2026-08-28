@@ -246,14 +246,14 @@ export function parseTwseEtnIdentitySnapshot(
   securitiesFirms: OfficialSecuritiesFirmDirectory,
 ): OfficialIdentityInput[] {
   const parsed = twseEtnResponseSchema.parse(response);
-  return parsed.data.map(([listedAt, ticker, displayName, issuerName, underlyingIndex, maturityAt]) => {
+  return parsed.data.map(([listedAt, ticker, displayName, issuerName, _underlyingIndex, maturityAt]) => {
     const normalizedListedAt = parseTaiwanOfficialDate(listedAt.replaceAll("/", ""));
     const normalizedMaturityAt = parseTaiwanOfficialDate(maturityAt.replaceAll("/", ""));
     const issuerIdentity = resolveOfficialEtnIssuerIdentity(issuerName, securitiesFirms);
     const identityKey = officialEtnContractIdentityKey({
       venue: "TWSE",
       issuerIdentityKey: issuerIdentity.businessNumber,
-      underlyingIndex,
+      officialProductCode: ticker,
       listedAt: normalizedListedAt,
       maturityAt: normalizedMaturityAt,
       noteType: "ETN",

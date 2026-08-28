@@ -150,6 +150,28 @@ describe("official Taiwan identity acquisition", () => {
         identityKey: "tpex-etf:00601", fundType: "ETF", listedAt: "2015-01-01",
       },
     });
+    const preCorrectionTpexEtf = canonicalizeOfficialIdentityRow({
+      venue: "TPEX",
+      snapshotDate: "2026-08-26",
+      retrievedAt: "2026-08-26T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:pre-correction-tpex-etf",
+        sourceUrl: OFFICIAL_IDENTITY_SOURCES.tpexFunds,
+        publisherDataset: "etfFilter",
+        accessProvider: "TPEX_WEB_JSON",
+      },
+      row: {
+        kind: "fund",
+        ticker: "00999B",
+        legalName: "第一金主動式台灣成長",
+        displayName: "第一金主動式台灣成長",
+        issuerIdentityKey: "5801",
+        issuerLegalName: "第一金投信",
+        identityKey: "fund_product:official-code-before-correction",
+        fundType: "ETF",
+        listedAt: "2026-08-26",
+      },
+    });
     const retiredTwseEtn = (await import("../../src/services/research/identity.js")).canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2020-04-29",
@@ -187,6 +209,7 @@ describe("official Taiwan identity acquisition", () => {
       retiredTpex,
       absentTwseEtf,
       absentTpexEtf,
+      preCorrectionTpexEtf,
       retiredTwseEtn,
       retiredTpexEtn,
     ]);
@@ -225,6 +248,16 @@ describe("official Taiwan identity acquisition", () => {
       knowledgeAt: "2026-08-28T23:59:59.999Z",
     });
     expect(reusedTicker.find((record) => record.listing.listedAt === "2026-08-27")?.listing.status).toBe("active");
+    const correctedTpexEtf = await persistence.listResearchIdentityRecords({
+      subject: { kind: "ticker_venue", ticker: "00999A", venue: "TPEX" },
+      effectiveAt: "2026-08-28T23:59:59.999Z",
+      knowledgeAt: "2026-08-28T23:59:59.999Z",
+    });
+    expect(correctedTpexEtf.at(-1)).toMatchObject({
+      issuer: { id: preCorrectionTpexEtf.issuer.id },
+      security: { id: preCorrectionTpexEtf.security.id },
+      listing: { id: preCorrectionTpexEtf.listing.id, ticker: "00999A", status: "active" },
+    });
     const laggingCurrentTicker = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "8888", venue: "TWSE" },
       effectiveAt: "2026-08-28T23:59:59.999Z",
@@ -379,7 +412,7 @@ describe("official Taiwan identity acquisition", () => {
           identityKey: officialFundProductIdentityKey({
             venue: "TPEX",
             issuerIdentityKey: `issuer-${index}`,
-            legalName: `歷史ETF ${ticker}`,
+            officialProductCode: ticker,
             listedAt: "2020-01-01",
             fundType: "ETF",
           }),

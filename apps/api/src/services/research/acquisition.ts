@@ -90,6 +90,64 @@ function recordOrder(left: ResearchIdentityRecord, right: ResearchIdentityRecord
     : left.provenance.retrievedAt.localeCompare(right.provenance.retrievedAt);
 }
 
+function normalizedObservationValue(
+  record: ResearchIdentityRecord,
+  field: string,
+  subjectKind: "issuer" | "security" | "listing",
+): string | undefined {
+  const observation = record.observations.find((item) =>
+    item.field === field && item.subject.kind === subjectKind
+  );
+  return observation?.normalized.state === "present" ? observation.normalized.value : undefined;
+}
+
+function reconcileExistingProductIdentity(
+  input: OfficialIdentityInput,
+  provisional: ResearchIdentityRecord,
+  historicalLatest: ResearchIdentityRecord[],
+): OfficialIdentityInput {
+  if (input.row.kind === "fund") {
+    if (input.venue !== "TPEX" || input.row.issuerIdentityKey === undefined) return input;
+  } else if (input.row.kind !== "etn") {
+    return input;
+  }
+
+  const securityType = input.row.kind === "fund" ? "etf" : "etn";
+  const productNameField = input.row.kind === "fund" ? "product_legal_name" : "display_name";
+  const productName = input.row.kind === "fund" ? input.row.legalName : input.row.displayName;
+  const candidates = historicalLatest.filter((record) =>
+    record.listing.status === "active"
+    && record.listing.venue === input.venue
+    && record.security.type === securityType
+    && record.issuer.id === provisional.issuer.id
+    && record.listing.listedAt === input.row.listedAt
+  );
+  const exactTickerMatches = candidates.filter((record) => record.listing.ticker === input.row.ticker);
+  const exactNameMatches = candidates.filter((record) =>
+    normalizedObservationValue(record, productNameField, "security") === productName
+  );
+  const matches = exactTickerMatches.length > 0 ? exactTickerMatches : exactNameMatches;
+  if (matches.length > 1) {
+    throw new Error(`Ambiguous official product identity correction: ${input.venue}:${input.row.ticker}`);
+  }
+  const identityKey = matches[0]
+    ? normalizedObservationValue(matches[0], "official_product_identity", "security")
+    : undefined;
+  if (!identityKey) return input;
+  if (input.row.kind === "fund") {
+    return {
+      ...input,
+      rawValues: { ...input.rawValues, official_product_identity: identityKey },
+      row: { ...input.row, identityKey },
+    };
+  }
+  return {
+    ...input,
+    rawValues: { ...input.rawValues, official_product_identity: identityKey },
+    row: { ...input.row, identityKey },
+  };
+}
+
 interface HistoricalDelistingSeed {
   venue: "TWSE" | "TPEX";
   ticker: string;
@@ -290,7 +348,17 @@ export async function runOfficialIdentityAcquisition(
       },
     })),
   ];
-  const canonicalRecords = inputs.map(canonicalizeOfficialIdentityRow);
+  const historicalLatest = (await Promise.all((["TWSE", "TPEX"] as const).map((venue) =>
+    persistence.listLatestResearchIdentityRecords({
+      subject: { kind: "venue", venue },
+      effectiveAt: retrievedAt,
+      knowledgeAt: retrievedAt,
+    })
+  ))).flat();
+  const provisionalRecords = inputs.map(canonicalizeOfficialIdentityRow);
+  const canonicalRecords = inputs.map((input, index) => canonicalizeOfficialIdentityRow(
+    reconcileExistingProductIdentity(input, provisionalRecords[index]!, historicalLatest),
+  ));
   // Explicit retirement evidence outranks a lagging current-product snapshot.
   // Keep the current row available as the identity basis for the inactive
   // revision, but never append it as a later-effective active revision.
@@ -303,13 +371,6 @@ export async function runOfficialIdentityAcquisition(
   });
   const blockedCurrentRecords = new Set(currentRecordsBlockedByRetirement);
   const activeCanonicalRecords = canonicalRecords.filter((record) => !blockedCurrentRecords.has(record));
-  const historicalLatest = (await Promise.all((["TWSE", "TPEX"] as const).map((venue) =>
-    persistence.listLatestResearchIdentityRecords({
-      subject: { kind: "venue", venue },
-      effectiveAt: retrievedAt,
-      knowledgeAt: retrievedAt,
-    })
-  ))).flat();
   const records: ResearchIdentityRecord[] = [];
   for (const record of activeCanonicalRecords) {
     const predecessor = [...historicalLatest, ...records]

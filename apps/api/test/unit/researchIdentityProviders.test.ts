@@ -226,7 +226,7 @@ describe("official Taiwan identity providers", () => {
     expect(inputs[0]?.row).not.toHaveProperty("unifiedBusinessNumber");
   });
 
-  it("TPEx ETF identity: shared issuer, distinct products, and ticker correction → preserve entity boundaries", () => {
+  it("TPEx ETF identity: shared issuer, distinct products, and product rename → preserve entity boundaries", () => {
     const metadata = {
       retrievedAt: "2026-08-27T03:00:00.000Z",
       contentHash: "sha256:tpex-etf-boundaries",
@@ -240,20 +240,20 @@ describe("official Taiwan identity providers", () => {
         issuerID: "A00009", issuer: "統一投信", listingDate: "20260826", stockName: "主動統一美債量化", stockNo: "00987D",
       }],
     }, metadata).map(canonicalizeOfficialIdentityRow);
-    const correctedTicker = canonicalizeOfficialIdentityRow(parseTpexFundIdentitySnapshot({
+    const renamedProduct = canonicalizeOfficialIdentityRow(parseTpexFundIdentitySnapshot({
       status: true,
       data: [{
-        issuerID: "A00009", issuer: "統一投信", listingDate: "20260826", stockName: "主動統一前沿科技", stockNo: "00411B",
+        issuerID: "A00009", issuer: "統一投信", listingDate: "20260826", stockName: "主動統一前沿科技基金", stockNo: "00411A",
       }],
-    }, { ...metadata, contentHash: "sha256:tpex-etf-ticker-correction" })[0]!);
+    }, { ...metadata, contentHash: "sha256:tpex-etf-name-correction" })[0]!);
 
     expect(first?.issuer.id).toBe(sibling?.issuer.id);
     expect(first?.security.id).not.toBe(sibling?.security.id);
     expect(first?.listing.id).not.toBe(sibling?.listing.id);
-    expect(correctedTicker.issuer.id).toBe(first?.issuer.id);
-    expect(correctedTicker.security.id).toBe(first?.security.id);
-    expect(correctedTicker.listing.id).toBe(first?.listing.id);
-    expect(correctedTicker.listing.ticker).toBe("00411B");
+    expect(renamedProduct.issuer.id).toBe(first?.issuer.id);
+    expect(renamedProduct.security.id).toBe(first?.security.id);
+    expect(renamedProduct.listing.id).toBe(first?.listing.id);
+    expect(renamedProduct.listing.ticker).toBe("00411A");
     expect(first?.observations.find((fact) => fact.subject.kind === "issuer" && fact.field === "legal_name")?.normalized)
       .toEqual({ state: "present", value: "統一投信" });
     expect(first?.observations.find((fact) => fact.subject.kind === "security" && fact.field === "product_legal_name")?.normalized)
@@ -315,6 +315,29 @@ describe("official Taiwan identity providers", () => {
         listedAt: "2023-12-25",
       },
     });
+
+    const renamedIndex = canonicalizeOfficialIdentityRow(parseTpexEtnIdentitySnapshot({
+      stat: "ok",
+      tables: [{
+        data: [[
+          "020041",
+          "兆豐半導體氣候N",
+          "兆豐證券股份有限公司",
+          "TPEx FactSet 半導體氣候淨零優選報酬指數（更名）",
+          "112/12/25",
+          "117/12/24",
+          "detail.html?type=domestic&code=020041",
+        ]],
+      }],
+    }, {
+      retrievedAt: "2026-08-28T03:00:00.000Z",
+      contentHash: "sha256:tpex-etn-index-rename",
+      sourceUrl: "https://www.tpex.org.tw/www/zh-tw/ETN/list?type=listed",
+    }, securitiesFirms)[0]!);
+    const original = canonicalizeOfficialIdentityRow(inputs[0]!);
+    expect(renamedIndex.issuer.id).toBe(original.issuer.id);
+    expect(renamedIndex.security.id).toBe(original.security.id);
+    expect(renamedIndex.listing.id).toBe(original.listing.id);
   });
 
   it("ETN feed issuer: no official securities-firm identity match → reject instead of hashing a legal name", () => {
