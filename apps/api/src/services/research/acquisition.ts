@@ -184,6 +184,19 @@ function historicalIdentitySeed(
   });
 }
 
+function retirementTargetsRecord(
+  delisting: HistoricalDelistingSeed,
+  record: ResearchIdentityRecord,
+): boolean {
+  const securityTypeMatches = delisting.securityType === "etn"
+    ? record.security.type === "etn"
+    : record.security.type === "common_equity" || record.security.type === "unknown";
+  return delisting.venue === record.listing.venue
+    && delisting.ticker === record.listing.ticker
+    && securityTypeMatches
+    && record.listing.listedAt <= delisting.inactiveAt;
+}
+
 export async function runOfficialIdentityAcquisition(
   persistence: Persistence,
   options: AcquisitionOptions = {},
@@ -278,6 +291,18 @@ export async function runOfficialIdentityAcquisition(
     })),
   ];
   const canonicalRecords = inputs.map(canonicalizeOfficialIdentityRow);
+  // Explicit retirement evidence outranks a lagging current-product snapshot.
+  // Keep the current row available as the identity basis for the inactive
+  // revision, but never append it as a later-effective active revision.
+  const currentRecordsBlockedByRetirement = canonicalRecords.filter((record) => {
+    const snapshotDate = record.observations[0]?.effectiveAt.slice(0, 10);
+    return snapshotDate !== undefined && delistings.some((delisting) =>
+      retirementTargetsRecord(delisting, record)
+      && delisting.inactiveAt <= snapshotDate
+    );
+  });
+  const blockedCurrentRecords = new Set(currentRecordsBlockedByRetirement);
+  const activeCanonicalRecords = canonicalRecords.filter((record) => !blockedCurrentRecords.has(record));
   const historicalLatest = (await Promise.all((["TWSE", "TPEX"] as const).map((venue) =>
     persistence.listLatestResearchIdentityRecords({
       subject: { kind: "venue", venue },
@@ -286,7 +311,7 @@ export async function runOfficialIdentityAcquisition(
     })
   ))).flat();
   const records: ResearchIdentityRecord[] = [];
-  for (const record of canonicalRecords) {
+  for (const record of activeCanonicalRecords) {
     const predecessor = [...historicalLatest, ...records]
       .filter((item) => item.security.id === record.security.id)
       .filter((item) => item.listing.id !== record.listing.id)
@@ -297,10 +322,13 @@ export async function runOfficialIdentityAcquisition(
   }
   const statusRevisions: ResearchIdentityRecord[] = [];
   for (const delisting of delistings) {
-    let previous = [...historicalLatest, ...records, ...statusRevisions]
-      .filter((item) => item.listing.venue === delisting.venue && item.listing.ticker === delisting.ticker)
-      .filter((item) => !("securityType" in delisting) || item.security.type === delisting.securityType)
-      .filter((item) => item.listing.listedAt <= delisting.inactiveAt)
+    let previous = [
+      ...historicalLatest,
+      ...records,
+      ...currentRecordsBlockedByRetirement,
+      ...statusRevisions,
+    ]
+      .filter((item) => retirementTargetsRecord(delisting, item))
       .sort(recordOrder)
       .at(-1);
     if (!previous) {

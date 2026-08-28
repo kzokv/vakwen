@@ -27,6 +27,9 @@ describe("official Taiwan identity acquisition", () => {
       }, {
         出表日期: "1150827", 公司代號: "9999", 公司名稱: "新上市股份有限公司", 公司簡稱: "新上市",
         產業別: "24", 營利事業統一編號: "88888888", 上市日期: "20260827",
+      }, {
+        出表日期: "1150827", 公司代號: "8888", 公司名稱: "延遲移除股份有限公司", 公司簡稱: "延遲移除",
+        產業別: "24", 營利事業統一編號: "88880000", 上市日期: "20200101",
       }]],
       [OFFICIAL_IDENTITY_SOURCES.tpexCompanies, [{
         Date: "1150827", SecuritiesCompanyCode: "5274", CompanyName: "信驊科技股份有限公司", CompanyAbbreviation: "信驊",
@@ -70,6 +73,8 @@ describe("official Taiwan identity acquisition", () => {
       }],
       [OFFICIAL_IDENTITY_SOURCES.twseDelistings, [{
         DelistingDate: "2026/08/26", Company: "既有下市股份有限公司", Code: "9999",
+      }, {
+        DelistingDate: "2026/08/26", Company: "延遲移除股份有限公司", Code: "8888",
       }]],
       ...tpexDelistingUrls.map((url, index) => [url, {
         stat: "ok",
@@ -201,7 +206,7 @@ describe("official Taiwan identity acquisition", () => {
       ...tpexDelistingUrls,
     ].sort());
     expect(requests.find(({ url }) => url === OFFICIAL_IDENTITY_SOURCES.tpexFunds)?.method).toBe("POST");
-    expect(result).toMatchObject({ sourceCount: 11, recordCount: 14, acquisitionRunId: "run-test-1" });
+    expect(result).toMatchObject({ sourceCount: 11, recordCount: 15, acquisitionRunId: "run-test-1" });
     const etn = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "020032", venue: "TWSE" },
       effectiveAt: "2026-08-28T23:59:59.999Z",
@@ -220,6 +225,15 @@ describe("official Taiwan identity acquisition", () => {
       knowledgeAt: "2026-08-28T23:59:59.999Z",
     });
     expect(reusedTicker.find((record) => record.listing.listedAt === "2026-08-27")?.listing.status).toBe("active");
+    const laggingCurrentTicker = await persistence.listResearchIdentityRecords({
+      subject: { kind: "ticker_venue", ticker: "8888", venue: "TWSE" },
+      effectiveAt: "2026-08-28T23:59:59.999Z",
+      knowledgeAt: "2026-08-28T23:59:59.999Z",
+    });
+    expect(laggingCurrentTicker.at(-1)?.listing).toMatchObject({
+      status: "inactive",
+      inactiveAt: "2026-08-26",
+    });
     const transferred = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "2330", venue: "TWSE" },
       effectiveAt: "2026-08-28T23:59:59.999Z",
