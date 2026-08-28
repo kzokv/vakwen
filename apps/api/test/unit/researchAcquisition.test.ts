@@ -346,7 +346,11 @@ describe("official Taiwan identity acquisition", () => {
           tables: [{ data: [["110/06/16", "020017", "兆豐歷史N", "兆豐證券股份有限公司", "到期"]] }],
         };
       } else if (url === OFFICIAL_IDENTITY_SOURCES.twseDelistings) {
-        payload = [{ DelistingDate: "2020/01/31", Company: "歷史上市公司", Code: "1234" }];
+        payload = [{
+          DelistingDate: "2020/01/31", Company: "第一代歷史上市公司", Code: "1234",
+        }, {
+          DelistingDate: "2023/06/30", Company: "第二代歷史上市公司", Code: "1234",
+        }];
       } else {
         payload = {
           stat: "ok",
@@ -365,9 +369,24 @@ describe("official Taiwan identity acquisition", () => {
       acquisitionRunId: "run-fresh-history",
     });
 
-    expect(result.recordCount).toBe(6);
+    expect(result.recordCount).toBe(7);
+    const reusedHistoricalTicker = await persistence.listResearchIdentityRecords({
+      subject: { kind: "ticker_venue", ticker: "1234", venue: "TWSE" },
+      effectiveAt: "2026-08-29T23:59:59.999Z",
+      knowledgeAt: "2026-08-29T23:59:59.999Z",
+    });
+    expect([...new Set(reusedHistoricalTicker.map((record) => record.listing.id))]).toHaveLength(2);
+    expect(reusedHistoricalTicker.map((record) => record.listing.inactiveAt).sort()).toEqual([
+      "2020-01-31",
+      "2023-06-30",
+    ]);
+    expect(reusedHistoricalTicker.map((record) =>
+      record.observations.find((observation) => observation.field === "legal_name")?.normalized
+    )).toEqual(expect.arrayContaining([
+      { state: "present", value: "第一代歷史上市公司" },
+      { state: "present", value: "第二代歷史上市公司" },
+    ]));
     for (const [ticker, listingVenue, profile, inactiveAt] of [
-      ["1234", "TWSE", "unknown", "2020-01-31"],
       ["5678", "TPEX", "unknown", "2024-11-29"],
       ["020005", "TWSE", "identity_only", "2020-04-30"],
       ["020017", "TPEX", "identity_only", "2021-06-16"],

@@ -183,6 +183,7 @@ export function officialHistoricalListingIdentityKey(input: {
   securityType: "common_equity" | "etn";
   ticker: string;
   inactiveAt: string;
+  identityDiscriminator: string;
 }): string {
   return opaqueId(
     "historical_listing",
@@ -190,6 +191,7 @@ export function officialHistoricalListingIdentityKey(input: {
     input.securityType,
     input.ticker,
     input.inactiveAt,
+    input.identityDiscriminator.normalize("NFKC").trim(),
   );
 }
 

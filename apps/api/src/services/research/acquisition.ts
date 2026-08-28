@@ -176,6 +176,9 @@ function historicalIdentitySeed(
     securityType,
     ticker: delisting.ticker,
     inactiveAt: delisting.inactiveAt,
+    identityDiscriminator: delisting.securityType === "etn"
+      ? `${delisting.issuerName ?? ""}\u001f${delisting.displayName ?? ""}`
+      : delisting.companyName ?? "",
   });
   const common = {
     venue: delisting.venue,
@@ -253,6 +256,23 @@ function retirementTargetsRecord(
     && delisting.ticker === record.listing.ticker
     && securityTypeMatches
     && record.listing.listedAt <= delisting.inactiveAt;
+}
+
+function retirementAlreadyRecorded(
+  delisting: HistoricalDelistingSeed,
+  record: ResearchIdentityRecord,
+): boolean {
+  if (
+    !retirementTargetsRecord(delisting, record)
+    || record.listing.status !== "inactive"
+    || record.listing.inactiveAt !== delisting.inactiveAt
+  ) return false;
+  const legalName = normalizedObservationValue(record, "legal_name", "issuer");
+  if (delisting.securityType === "etn") {
+    return legalName === delisting.issuerName
+      && normalizedObservationValue(record, "display_name", "security") === delisting.displayName;
+  }
+  return legalName === delisting.companyName;
 }
 
 export async function runOfficialIdentityAcquisition(
@@ -383,20 +403,22 @@ export async function runOfficialIdentityAcquisition(
   }
   const statusRevisions: ResearchIdentityRecord[] = [];
   for (const delisting of delistings) {
-    let previous = [
+    const candidates = [
       ...historicalLatest,
       ...records,
       ...currentRecordsBlockedByRetirement,
       ...statusRevisions,
     ]
-      .filter((item) => retirementTargetsRecord(delisting, item))
+      .filter((item) => retirementTargetsRecord(delisting, item));
+    if (candidates.some((item) => retirementAlreadyRecorded(delisting, item))) continue;
+    const previous = candidates
+      .filter((item) => item.listing.status === "active")
       .sort(recordOrder)
       .at(-1);
     if (!previous) {
-      previous = historicalIdentitySeed(delisting, securitiesFirms, retrievedAt, acquisitionRunId);
-      records.push(previous);
+      records.push(historicalIdentitySeed(delisting, securitiesFirms, retrievedAt, acquisitionRunId));
+      continue;
     }
-    if (previous.listing.status === "inactive") continue;
     statusRevisions.push(appendOfficialListingStatusRevision(previous, {
       status: "inactive",
       effectiveDate: delisting.inactiveAt,
