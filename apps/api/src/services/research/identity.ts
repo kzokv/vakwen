@@ -20,6 +20,11 @@ export interface OfficialFundIdentityRow {
   ticker: string;
   legalName: string;
   displayName: string;
+  /** Venue-scoped official issuer identifier, separate from the fund product identity. */
+  issuerIdentityKey?: string;
+  /** Official issuer name when the source models the fund manager as the Issuer. */
+  issuerLegalName?: string;
+  /** Source-native product identity, independent from mutable listing ticker corrections. */
   identityKey: string;
   unifiedBusinessNumber?: string;
   fundType: string;
@@ -156,6 +161,38 @@ export function officialEtnContractIdentityKey(input: {
   );
 }
 
+export function officialFundProductIdentityKey(input: {
+  venue: ResearchListingVenue;
+  issuerIdentityKey: string;
+  legalName: string;
+  listedAt: string;
+  fundType: string;
+}): string {
+  return opaqueId(
+    "fund_product",
+    input.venue,
+    input.issuerIdentityKey,
+    input.legalName.normalize("NFKC").trim(),
+    input.listedAt,
+    input.fundType.normalize("NFKC").trim(),
+  );
+}
+
+export function officialHistoricalListingIdentityKey(input: {
+  venue: ResearchListingVenue;
+  securityType: "common_equity" | "etn";
+  ticker: string;
+  inactiveAt: string;
+}): string {
+  return opaqueId(
+    "historical_listing",
+    input.venue,
+    input.securityType,
+    input.ticker,
+    input.inactiveAt,
+  );
+}
+
 function atStartOfDay(date: string): string {
   return `${date}T00:00:00.000Z`;
 }
@@ -175,14 +212,21 @@ function identityFacts(
   label: string;
   value?: string;
 }> {
+  const fundHasSeparateIssuer = input.row.kind === "fund" && input.row.issuerIdentityKey !== undefined;
+  const issuerLegalName = input.row.kind === "fund" && input.row.issuerIdentityKey !== undefined
+    ? input.row.issuerLegalName ?? input.row.legalName
+    : input.row.legalName;
+  const displayNameSubject = input.row.kind === "etn" || fundHasSeparateIssuer
+    ? { kind: "security" as const, id: securityId }
+    : { kind: "issuer" as const, id: issuerId };
   const facts: Array<{
     subject: { kind: "issuer" | "security" | "listing"; id: string };
     field: string;
     label: string;
     value?: string;
   }> = [
-    { subject: { kind: "issuer" as const, id: issuerId }, field: "legal_name", label: "legalName", value: input.row.legalName },
-    { subject: { kind: input.row.kind === "etn" ? "security" as const : "issuer" as const, id: input.row.kind === "etn" ? securityId : issuerId }, field: "display_name", label: "displayName", value: input.row.displayName },
+    { subject: { kind: "issuer" as const, id: issuerId }, field: "legal_name", label: "legalName", value: issuerLegalName },
+    { subject: displayNameSubject, field: "display_name", label: "displayName", value: input.row.displayName },
     { subject: { kind: "listing" as const, id: listingId }, field: "ticker", label: "ticker", value: input.row.ticker },
     { subject: { kind: "listing" as const, id: listingId }, field: "listing_venue", label: "listingVenue", value: input.venue },
     { subject: { kind: "listing" as const, id: listingId }, field: "listed_at", label: "listedAt", value: input.row.listedAt },
@@ -203,6 +247,11 @@ function identityFacts(
     facts.push({ subject: { kind: "issuer", id: issuerId }, field: "paid_in_capital", label: "paidInCapital", value: input.row.paidInCapital ? normalizedNumber(input.row.paidInCapital) : undefined });
     facts.push({ subject: { kind: "issuer", id: issuerId }, field: "issued_shares", label: "issuedShares", value: input.row.issuedShares ? normalizedNumber(input.row.issuedShares) : undefined });
   } else if (input.row.kind === "fund") {
+    facts.push({ subject: { kind: "issuer", id: issuerId }, field: "issuer_identity_key", label: "issuerIdentityKey", value: input.row.issuerIdentityKey });
+    facts.push({ subject: { kind: "security", id: securityId }, field: "official_product_identity", label: "officialProductIdentity", value: input.row.identityKey });
+    if (fundHasSeparateIssuer) {
+      facts.push({ subject: { kind: "security", id: securityId }, field: "product_legal_name", label: "productLegalName", value: input.row.legalName });
+    }
     facts.push({ subject: { kind: "issuer", id: issuerId }, field: "unified_business_number", label: "unifiedBusinessNumber", value: input.row.unifiedBusinessNumber });
     facts.push({ subject: { kind: "issuer", id: issuerId }, field: "fund_type", label: "fundType", value: input.row.fundType });
     facts.push({ subject: { kind: "issuer", id: issuerId }, field: "issued_units", label: "issuedUnits", value: input.row.issuedUnits ? normalizedNumber(input.row.issuedUnits) : undefined });
@@ -222,7 +271,9 @@ export function canonicalizeOfficialIdentityRow(input: OfficialIdentityInput) {
     : input.row.kind === "fund"
       ? input.row.unifiedBusinessNumber
         ? opaqueId("iss", "business_number", input.row.unifiedBusinessNumber)
-        : opaqueId("iss", input.venue, "official_identity_key", input.row.identityKey)
+        : input.row.issuerIdentityKey
+          ? opaqueId("iss", input.venue, "official_issuer_identity", input.row.issuerIdentityKey)
+          : opaqueId("iss", input.venue, "official_identity_key", input.row.identityKey)
       : input.row.kind === "unknown"
       ? opaqueId("iss", input.venue, "official_identity_key", input.row.identityKey)
       : opaqueId("iss", "business_number", input.row.unifiedBusinessNumber);
@@ -233,7 +284,9 @@ export function canonicalizeOfficialIdentityRow(input: OfficialIdentityInput) {
       : input.row.kind === "unknown" ? "unknown" as const : "common_equity" as const;
   const securityId = input.row.kind === "etn"
     ? opaqueId("sec", issuerId, input.venue, "official_contract_identity", input.row.identityKey)
-    : opaqueId("sec", issuerId, securityType);
+    : input.row.kind === "fund"
+      ? opaqueId("sec", issuerId, input.venue, "official_product_identity", input.row.identityKey)
+      : opaqueId("sec", issuerId, securityType);
   const listingId = opaqueId("lst", securityId, input.venue, input.row.listedAt);
   const provenanceId = opaqueId("prv", input.venue, input.artifact.contentHash, input.retrievedAt);
   const effectiveAt = atStartOfDay(input.snapshotDate);

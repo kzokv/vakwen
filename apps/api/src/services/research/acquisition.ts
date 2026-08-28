@@ -3,6 +3,7 @@ import type { Persistence } from "../../persistence/types.js";
 import {
   appendOfficialListingStatusRevision,
   canonicalizeOfficialIdentityRow,
+  officialHistoricalListingIdentityKey,
   withListingPredecessor,
   type OfficialIdentityInput,
   type ResearchIdentityRecord,
@@ -15,7 +16,9 @@ import {
   parseTwseEtnIdentitySnapshot,
   parseTwseEtnRetirementSnapshot,
   parseTwseFundIdentitySnapshot,
+  resolveOfficialEtnIssuerIdentity,
   taiwanBusinessDate,
+  type OfficialSecuritiesFirmDirectory,
 } from "./providers/twseIdentity.js";
 import {
   parseTpexCompanyIdentitySnapshot,
@@ -85,6 +88,100 @@ function recordOrder(left: ResearchIdentityRecord, right: ResearchIdentityRecord
   return effectiveOrder !== 0
     ? effectiveOrder
     : left.provenance.retrievedAt.localeCompare(right.provenance.retrievedAt);
+}
+
+interface HistoricalDelistingSeed {
+  venue: "TWSE" | "TPEX";
+  ticker: string;
+  inactiveAt: string;
+  companyName?: string;
+  displayName?: string;
+  issuerName?: string;
+  securityType?: "etn";
+  artifact: {
+    sourceUrl: string;
+    contentHash: string;
+    publisherDataset: string;
+    accessProvider?: "TWSE_OPENAPI" | "TPEX_OPENAPI" | "TWSE_WEB_JSON" | "TPEX_WEB_JSON";
+  };
+}
+
+function historicalIdentitySeed(
+  delisting: HistoricalDelistingSeed,
+  securitiesFirms: OfficialSecuritiesFirmDirectory,
+  retrievedAt: string,
+  acquisitionRunId: string,
+): ResearchIdentityRecord {
+  const securityType = delisting.securityType ?? "common_equity";
+  const identityKey = officialHistoricalListingIdentityKey({
+    venue: delisting.venue,
+    securityType,
+    ticker: delisting.ticker,
+    inactiveAt: delisting.inactiveAt,
+  });
+  const common = {
+    venue: delisting.venue,
+    snapshotDate: delisting.inactiveAt,
+    retrievedAt,
+    acquisitionRunId,
+    listingStatus: "inactive" as const,
+    inactiveAt: delisting.inactiveAt,
+    artifact: delisting.artifact,
+  } as const;
+  if (delisting.securityType === "etn") {
+    if (!delisting.issuerName || !delisting.displayName) {
+      throw new Error(`Incomplete official ETN retirement identity: ${delisting.venue}:${delisting.ticker}`);
+    }
+    const issuerIdentity = resolveOfficialEtnIssuerIdentity(delisting.issuerName, securitiesFirms);
+    return canonicalizeOfficialIdentityRow({
+      ...common,
+      rawValues: {
+        legal_name: delisting.issuerName,
+        display_name: delisting.displayName,
+        ticker: delisting.ticker,
+        issuer_identity_key: issuerIdentity.businessNumber,
+        official_product_identity: identityKey,
+        note_type: "ETN",
+      },
+      row: {
+        kind: "etn",
+        ticker: delisting.ticker,
+        legalName: delisting.issuerName,
+        displayName: delisting.displayName,
+        identityKey,
+        issuerIdentityKey: issuerIdentity.businessNumber,
+        noteType: "ETN",
+        // Retirement tables do not publish the original listing date. Use the
+        // first official effective boundary so the identity is never projected
+        // into an earlier period without source evidence.
+        listedAt: delisting.inactiveAt,
+      },
+    });
+  }
+  if (!delisting.companyName) {
+    throw new Error(`Incomplete official company delisting identity: ${delisting.venue}:${delisting.ticker}`);
+  }
+  return canonicalizeOfficialIdentityRow({
+    ...common,
+    rawValues: {
+      legal_name: delisting.companyName,
+      display_name: delisting.companyName,
+      ticker: delisting.ticker,
+      declared_security_type: "common_equity",
+      official_product_identity: identityKey,
+    },
+    row: {
+      kind: "unknown",
+      ticker: delisting.ticker,
+      legalName: delisting.companyName,
+      displayName: delisting.companyName,
+      identityKey,
+      declaredSecurityType: "common_equity",
+      // See the ETN branch above: this is an evidence boundary, not an
+      // inferred historical listing date.
+      listedAt: delisting.inactiveAt,
+    },
+  });
 }
 
 export async function runOfficialIdentityAcquisition(
@@ -200,13 +297,17 @@ export async function runOfficialIdentityAcquisition(
   }
   const statusRevisions: ResearchIdentityRecord[] = [];
   for (const delisting of delistings) {
-    const previous = [...historicalLatest, ...records, ...statusRevisions]
+    let previous = [...historicalLatest, ...records, ...statusRevisions]
       .filter((item) => item.listing.venue === delisting.venue && item.listing.ticker === delisting.ticker)
       .filter((item) => !("securityType" in delisting) || item.security.type === delisting.securityType)
       .filter((item) => item.listing.listedAt <= delisting.inactiveAt)
       .sort(recordOrder)
       .at(-1);
-    if (!previous || previous.listing.status === "inactive") continue;
+    if (!previous) {
+      previous = historicalIdentitySeed(delisting, securitiesFirms, retrievedAt, acquisitionRunId);
+      records.push(previous);
+    }
+    if (previous.listing.status === "inactive") continue;
     statusRevisions.push(appendOfficialListingStatusRevision(previous, {
       status: "inactive",
       effectiveDate: delisting.inactiveAt,

@@ -176,7 +176,7 @@ describe("official Taiwan identity providers", () => {
     }, metadata, securitiesFirms);
     const tpexEtf = parseTpexFundIdentitySnapshot({
       status: true,
-      data: [{ issuerID: "5801", listingDate: "20260826", stockName: "第一金主動式台灣成長", stockNo: "00999A" }],
+      data: [{ issuerID: "5801", issuer: "第一金投信", listingDate: "20260826", stockName: "第一金主動式台灣成長", stockNo: "00999A" }],
     }, metadata);
     const tpexEtn = parseTpexEtnIdentitySnapshot({
       stat: "ok",
@@ -195,8 +195,8 @@ describe("official Taiwan identity providers", () => {
       status: true,
       data: [{
         issuerID: "5801",
+        issuer: "第一金投信",
         listingDate: "20260826",
-        issuer: "第一金",
         stockName: "第一金主動式台灣成長",
         stockNo: "00999A",
       }],
@@ -216,12 +216,48 @@ describe("official Taiwan identity providers", () => {
         kind: "fund",
         ticker: "00999A",
         legalName: "第一金主動式台灣成長",
-        identityKey: "tpex-etf:5801:00999A:2026-08-26",
+        issuerIdentityKey: "5801",
+        issuerLegalName: "第一金投信",
+        identityKey: expect.stringMatching(/^fund_product_[a-f0-9]{32}$/),
         fundType: "ETF",
         listedAt: "2026-08-26",
       },
     });
     expect(inputs[0]?.row).not.toHaveProperty("unifiedBusinessNumber");
+  });
+
+  it("TPEx ETF identity: shared issuer, distinct products, and ticker correction → preserve entity boundaries", () => {
+    const metadata = {
+      retrievedAt: "2026-08-27T03:00:00.000Z",
+      contentHash: "sha256:tpex-etf-boundaries",
+      sourceUrl: "https://info.tpex.org.tw/api/etfFilter",
+    };
+    const [first, sibling] = parseTpexFundIdentitySnapshot({
+      status: true,
+      data: [{
+        issuerID: "A00009", issuer: "統一投信", listingDate: "20260826", stockName: "主動統一前沿科技", stockNo: "00411A",
+      }, {
+        issuerID: "A00009", issuer: "統一投信", listingDate: "20260826", stockName: "主動統一美債量化", stockNo: "00987D",
+      }],
+    }, metadata).map(canonicalizeOfficialIdentityRow);
+    const correctedTicker = canonicalizeOfficialIdentityRow(parseTpexFundIdentitySnapshot({
+      status: true,
+      data: [{
+        issuerID: "A00009", issuer: "統一投信", listingDate: "20260826", stockName: "主動統一前沿科技", stockNo: "00411B",
+      }],
+    }, { ...metadata, contentHash: "sha256:tpex-etf-ticker-correction" })[0]!);
+
+    expect(first?.issuer.id).toBe(sibling?.issuer.id);
+    expect(first?.security.id).not.toBe(sibling?.security.id);
+    expect(first?.listing.id).not.toBe(sibling?.listing.id);
+    expect(correctedTicker.issuer.id).toBe(first?.issuer.id);
+    expect(correctedTicker.security.id).toBe(first?.security.id);
+    expect(correctedTicker.listing.id).toBe(first?.listing.id);
+    expect(correctedTicker.listing.ticker).toBe("00411B");
+    expect(first?.observations.find((fact) => fact.subject.kind === "issuer" && fact.field === "legal_name")?.normalized)
+      .toEqual({ state: "present", value: "統一投信" });
+    expect(first?.observations.find((fact) => fact.subject.kind === "security" && fact.field === "product_legal_name")?.normalized)
+      .toEqual({ state: "present", value: "主動統一前沿科技" });
   });
 
   it("TPEx ETF feed: provider failure or empty success payload → reject before absence retirement", () => {
@@ -309,6 +345,7 @@ describe("official Taiwan identity providers", () => {
     })).toEqual([{
       ticker: "020005",
       displayName: "永豐外資50N",
+      issuerName: "永豐金證券股份有限公司",
       inactiveAt: "2020-04-30",
     }]);
   });
@@ -322,6 +359,7 @@ describe("official Taiwan identity providers", () => {
     })).toEqual([{
       ticker: "020017",
       displayName: "永豐富櫃200N",
+      issuerName: "永豐金證券股份有限公司",
       inactiveAt: "2021-06-16",
     }]);
   });

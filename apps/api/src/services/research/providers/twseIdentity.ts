@@ -291,9 +291,10 @@ export function parseTwseEtnIdentitySnapshot(
 
 export function parseTwseEtnRetirementSnapshot(response: unknown) {
   const parsed = twseEtnRetirementResponseSchema.parse(response);
-  return parsed.data.map(([inactiveAt, ticker, displayName]) => ({
+  return parsed.data.map(([inactiveAt, ticker, displayName, issuerName]) => ({
     ticker,
     displayName: normalizedText(displayName),
+    issuerName: normalizedText(issuerName),
     inactiveAt: parseTaiwanOfficialDate(inactiveAt.replaceAll("/", "")),
   }));
 }

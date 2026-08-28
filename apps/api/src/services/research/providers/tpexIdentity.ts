@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { officialEtnContractIdentityKey, type OfficialIdentityInput } from "../identity.js";
+import {
+  officialEtnContractIdentityKey,
+  officialFundProductIdentityKey,
+  type OfficialIdentityInput,
+} from "../identity.js";
 import {
   parseTaiwanOfficialDate,
   resolveOfficialEtnIssuerIdentity,
@@ -22,6 +26,7 @@ const tpexCompanyRowSchema = z.object({
 
 const tpexFundRowSchema = z.object({
   issuerID: z.string(),
+  issuer: z.string(),
   listingDate: z.string(),
   stockName: z.string(),
   stockNo: z.string(),
@@ -138,6 +143,15 @@ export function parseTpexFundIdentitySnapshot(
   const parsed = tpexFundResponseSchema.parse(response);
   return parsed.data.map((row) => {
     const listedAt = parseTaiwanOfficialDate(row.listingDate);
+    const issuerIdentityKey = row.issuerID.trim();
+    const legalName = row.stockName.trim();
+    const identityKey = officialFundProductIdentityKey({
+      venue: "TPEX",
+      issuerIdentityKey,
+      legalName,
+      listedAt,
+      fundType: "ETF",
+    });
     return {
       venue: "TPEX",
       snapshotDate: taiwanBusinessDate(metadata.retrievedAt),
@@ -149,8 +163,11 @@ export function parseTpexFundIdentitySnapshot(
         accessProvider: "TPEX_WEB_JSON",
       },
       rawValues: {
-        legal_name: row.stockName,
+        legal_name: row.issuer,
+        product_legal_name: row.stockName,
         display_name: row.stockName,
+        issuer_identity_key: row.issuerID,
+        official_product_identity: identityKey,
         fund_type: "ETF",
         ticker: row.stockNo,
         listed_at: row.listingDate,
@@ -158,9 +175,11 @@ export function parseTpexFundIdentitySnapshot(
       row: {
         kind: "fund",
         ticker: row.stockNo,
-        legalName: row.stockName.trim(),
-        displayName: row.stockName.trim(),
-        identityKey: `tpex-etf:${row.issuerID}:${row.stockNo}:${listedAt}`,
+        legalName,
+        displayName: legalName,
+        issuerIdentityKey,
+        issuerLegalName: row.issuer.trim(),
+        identityKey,
         fundType: "ETF",
         listedAt,
       },
@@ -233,9 +252,11 @@ export function parseTpexEtnRetirementSnapshot(response: unknown) {
     inactiveAt,
     ticker,
     displayName,
+    issuerName,
   ]) => ({
     ticker,
     displayName: displayName.trim(),
+    issuerName: issuerName.trim(),
     inactiveAt: parseTaiwanOfficialDate(inactiveAt.replaceAll("/", "")),
   }));
 }

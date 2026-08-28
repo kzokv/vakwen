@@ -5,7 +5,11 @@ import {
   OFFICIAL_IDENTITY_SOURCES,
   runOfficialIdentityAcquisition,
 } from "../../src/services/research/acquisition.js";
-import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import {
+  canonicalizeOfficialIdentityRow,
+  officialFundProductIdentityKey,
+} from "../../src/services/research/identity.js";
+import { getResearchIdentity } from "../../src/services/research/service.js";
 
 describe("official Taiwan identity acquisition", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
@@ -37,7 +41,7 @@ describe("official Taiwan identity acquisition", () => {
       }]],
       [OFFICIAL_IDENTITY_SOURCES.tpexFunds, {
         status: true,
-        data: [{ issuerID: "5801", listingDate: "20260826", stockName: "第一金主動式台灣成長", stockNo: "00999A" }],
+        data: [{ issuerID: "5801", issuer: "第一金投信", listingDate: "20260826", stockName: "第一金主動式台灣成長", stockNo: "00999A" }],
       }],
       [OFFICIAL_IDENTITY_SOURCES.twseSecuritiesFirms, [{
         證券代號: "9800", "券商(證券IB)簡稱": "元大", 營利事業統一編號: "97160609",
@@ -257,6 +261,87 @@ describe("official Taiwan identity acquisition", () => {
     }
   });
 
+  it("fresh database: historical company and ETN retirements → seed queryable inactive identities", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      let payload: unknown;
+      if (url === OFFICIAL_IDENTITY_SOURCES.twseCompanies || url === OFFICIAL_IDENTITY_SOURCES.tpexCompanies) {
+        payload = [];
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.twseFunds) {
+        payload = [{
+          出表日期: "1150829", 基金代號: "0050", 基金簡稱: "元大台灣50", 基金類型: "ETF",
+          基金中文名稱: "元大台灣卓越50證券投資信託基金", 基金統一編號: "00936523", 上市日期: "0920630",
+        }];
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.tpexFunds) {
+        payload = {
+          status: true,
+          data: [{ issuerID: "A00009", issuer: "統一投信", listingDate: "20260826", stockName: "主動統一前沿科技", stockNo: "00411A" }],
+        };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.twseSecuritiesFirms) {
+        payload = [{
+          證券代號: "9800", "券商(證券IB)簡稱": "元大", 營利事業統一編號: "97160609",
+        }, {
+          證券代號: "7000", "券商(證券IB)簡稱": "兆豐", 營利事業統一編號: "23474649",
+        }];
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.twseEtns) {
+        payload = { stat: "ok", fields: [], data: [] };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.tpexEtns) {
+        payload = { stat: "ok", tables: [{ data: [] }] };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.twseEtnRetirements) {
+        payload = {
+          stat: "ok",
+          data: [["2020/04/30", "020005", "元大歷史N", "元大證券股份有限公司", "到期"]],
+        };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.tpexEtnRetirements) {
+        payload = {
+          stat: "ok",
+          tables: [{ data: [["110/06/16", "020017", "兆豐歷史N", "兆豐證券股份有限公司", "到期"]] }],
+        };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.twseDelistings) {
+        payload = [{ DelistingDate: "2020/01/31", Company: "歷史上市公司", Code: "1234" }];
+      } else {
+        payload = {
+          stat: "ok",
+          tables: [{ data: url.endsWith("date=2024")
+            ? [["5678", "歷史上櫃公司", "113-11-29", "終止上櫃原因", "https://mops.twse.com.tw/"]]
+            : [] }],
+        };
+      }
+      return new Response(JSON.stringify(payload), { status: 200 });
+    };
+    const persistence = new MemoryPersistence();
+
+    const result = await runOfficialIdentityAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-29T04:00:00.000Z",
+      acquisitionRunId: "run-fresh-history",
+    });
+
+    expect(result.recordCount).toBe(6);
+    for (const [ticker, listingVenue, profile, inactiveAt] of [
+      ["1234", "TWSE", "unknown", "2020-01-31"],
+      ["5678", "TPEX", "unknown", "2024-11-29"],
+      ["020005", "TWSE", "identity_only", "2020-04-30"],
+      ["020017", "TPEX", "identity_only", "2021-06-16"],
+    ] as const) {
+      const identity = await getResearchIdentity(persistence, {
+        subject: { kind: "ticker_venue", ticker, listingVenue },
+        context: {
+          effectiveAt: "2026-08-29T23:59:59.999Z",
+          knowledgeAt: "2026-08-29T23:59:59.999Z",
+          assessmentMode: "effective",
+        },
+        history: { limit: 25 },
+      });
+      expect(identity.identity).toMatchObject({
+        listing: { ticker, venue: listingVenue, status: "inactive", inactiveAt },
+        eligibility: { profile, state: "ineligible", reasonCode: "inactive_listing" },
+      });
+      expect(identity.history.items).toHaveLength(1);
+    }
+  });
+
   it("partial ETF snapshot: unexplained absences exceed the completeness guard → reject without retiring listings", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
@@ -276,7 +361,14 @@ describe("official Taiwan identity acquisition", () => {
           ticker,
           legalName: `歷史ETF ${ticker}`,
           displayName: `歷史ETF ${ticker}`,
-          identityKey: `tpex-etf:issuer-${index}:${ticker}:2020-01-01`,
+          issuerIdentityKey: `issuer-${index}`,
+          identityKey: officialFundProductIdentityKey({
+            venue: "TPEX",
+            issuerIdentityKey: `issuer-${index}`,
+            legalName: `歷史ETF ${ticker}`,
+            listedAt: "2020-01-01",
+            fundType: "ETF",
+          }),
           fundType: "ETF",
           listedAt: "2020-01-01",
         },
@@ -297,7 +389,7 @@ describe("official Taiwan identity acquisition", () => {
       } else if (url === OFFICIAL_IDENTITY_SOURCES.tpexFunds) {
         payload = {
           status: true,
-          data: [{ issuerID: "issuer-0", listingDate: "20200101", stockName: "歷史ETF 00610", stockNo: "00610" }],
+          data: [{ issuerID: "issuer-0", issuer: "歷史投信 0", listingDate: "20200101", stockName: "歷史ETF 00610", stockNo: "00610" }],
         };
       } else if (url === OFFICIAL_IDENTITY_SOURCES.twseSecuritiesFirms) {
         payload = [{
