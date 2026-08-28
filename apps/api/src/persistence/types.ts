@@ -2838,6 +2838,7 @@ export interface Persistence {
   close(): Promise<void>;
   appendResearchIdentityRecords(records: ResearchIdentityRecord[]): Promise<void>;
   listResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]>;
+  listLatestResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]>;
   /**
    * Resolve an existing user by email or create a new one.
    * Returns the internal UUID for the user.

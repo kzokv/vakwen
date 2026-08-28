@@ -73,6 +73,9 @@ describePostgres("research identity memory/Postgres parity", () => {
       expect(await postgres.listResearchIdentityRecords(query)).toEqual(
         await memory.listResearchIdentityRecords(query),
       );
+      expect(await postgres.listLatestResearchIdentityRecords(query)).toEqual(
+        await memory.listLatestResearchIdentityRecords(query),
+      );
       const serviceQuery = {
         subject: { kind: "listing_id" as const, listingId: first.listing.id },
         context: {
@@ -86,6 +89,15 @@ describePostgres("research identity memory/Postgres parity", () => {
         await getResearchIdentity(memory, serviceQuery),
       );
     }
+    const latestVenueQuery = {
+      subject: { kind: "venue" as const, venue: "TPEX" as const },
+      effectiveAt: "2026-08-28T23:59:59.999Z",
+      knowledgeAt: "2026-08-28T23:59:59.999Z",
+    };
+    expect(await postgres.listLatestResearchIdentityRecords(latestVenueQuery)).toEqual(
+      await memory.listLatestResearchIdentityRecords(latestVenueQuery),
+    );
+    expect(await postgres.listLatestResearchIdentityRecords(latestVenueQuery)).toEqual([correction]);
     expect(await postgres.listResearchIdentityRecords({
       subject: { kind: "listing_id", listingId: first.listing.id },
       effectiveAt: "2026-08-28T23:59:59.999Z",

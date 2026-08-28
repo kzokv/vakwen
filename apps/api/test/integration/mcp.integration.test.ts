@@ -728,10 +728,11 @@ describe("mcp routes", () => {
     expect(manifestResponse.statusCode).toBe(200);
     const manifest = parseMcpJson<{ result: { content: Array<{ text: string }>; structuredContent: Record<string, unknown>; isError?: boolean } }>(manifestResponse.body);
     expect(manifest.result.isError, manifestResponse.body).not.toBe(true);
-    expect(researchManifestOutputSchema.parse(manifest.result.structuredContent)).toEqual(
-      manifest.result.structuredContent,
+    const manifestResult = (manifest.result.structuredContent as { result: unknown }).result;
+    expect(researchManifestOutputSchema.parse(manifestResult)).toEqual(
+      manifestResult,
     );
-    expect(manifest.result.structuredContent).toMatchObject({
+    expect(manifestResult).toMatchObject({
       selector: { kind: "listing_id", listingId: record.listing.id },
       orchestration: { skillExposure: "enabled" },
     });
@@ -745,10 +746,11 @@ describe("mcp routes", () => {
     expect(identityResponse.statusCode).toBe(200);
     const identity = parseMcpJson<{ result: { content: Array<{ text: string }>; structuredContent: Record<string, unknown>; isError?: boolean } }>(identityResponse.body);
     expect(identity.result.isError).not.toBe(true);
-    expect(researchIdentityOutputSchema.parse(identity.result.structuredContent)).toEqual(
-      identity.result.structuredContent,
+    const identityResult = (identity.result.structuredContent as { result: unknown }).result;
+    expect(researchIdentityOutputSchema.parse(identityResult)).toEqual(
+      identityResult,
     );
-    expect(identity.result.structuredContent).toMatchObject({
+    expect(identityResult).toMatchObject({
       selector: { kind: "listing_id", listingId: record.listing.id },
       identity: { listing: { ticker: "2330", venue: "TWSE" } },
     });
@@ -765,8 +767,7 @@ describe("mcp routes", () => {
     }>(missingResponse.body);
     expect(missing.result.isError).toBe(true);
     expect(researchIdentityToolOutputSchema.parse(missing.result.structuredContent)).toMatchObject({
-      code: "research_subject_not_found",
-      statusCode: 422,
+      result: { code: "research_subject_not_found", statusCode: 422 },
     });
 
     const reEvaluateResponse = await callMcpTool(headers, sessionId, "get_research_identity", {
@@ -784,8 +785,7 @@ describe("mcp routes", () => {
     }>(reEvaluateResponse.body);
     expect(reEvaluate.result.isError, reEvaluateResponse.body).toBe(true);
     expect(researchIdentityToolOutputSchema.parse(reEvaluate.result.structuredContent)).toMatchObject({
-      code: "research_assessment_mode_unsupported",
-      statusCode: 422,
+      result: { code: "research_assessment_mode_unsupported", statusCode: 422 },
     });
   });
 
@@ -817,8 +817,7 @@ describe("mcp routes", () => {
     }>(response.body);
     expect(body.result.isError, response.body).toBe(true);
     expect(researchManifestToolOutputSchema.parse(body.result.structuredContent)).toMatchObject({
-      code: "mcp_tool_group_disabled",
-      statusCode: 403,
+      result: { code: "mcp_tool_group_disabled", statusCode: 403 },
     });
   });
 

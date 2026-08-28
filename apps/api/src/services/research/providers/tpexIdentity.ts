@@ -1,6 +1,10 @@
 import { z } from "zod";
-import type { OfficialIdentityInput } from "../identity.js";
-import { parseTaiwanOfficialDate } from "./twseIdentity.js";
+import { officialEtnContractIdentityKey, type OfficialIdentityInput } from "../identity.js";
+import {
+  parseTaiwanOfficialDate,
+  resolveOfficialEtnIssuerIdentity,
+  type OfficialSecuritiesFirmDirectory,
+} from "./twseIdentity.js";
 
 const tpexCompanyRowSchema = z.object({
   Date: z.string(),
@@ -166,40 +170,60 @@ export function parseTpexFundIdentitySnapshot(
 export function parseTpexEtnIdentitySnapshot(
   response: unknown,
   metadata: SnapshotMetadata,
+  securitiesFirms: OfficialSecuritiesFirmDirectory,
 ): OfficialIdentityInput[] {
   const parsed = tpexEtnResponseSchema.parse(response);
   return parsed.tables.flatMap((table) => table.data).map(([
     ticker,
     displayName,
     issuerName,
-    _underlyingIndex,
+    underlyingIndex,
     listedAt,
-  ]) => ({
-    venue: "TPEX",
-    snapshotDate: metadata.retrievedAt.slice(0, 10),
-    retrievedAt: metadata.retrievedAt,
-    artifact: {
-      contentHash: metadata.contentHash,
-      sourceUrl: metadata.sourceUrl,
-      publisherDataset: "ETN/list",
-      accessProvider: "TPEX_WEB_JSON",
-    },
-    rawValues: {
-      legal_name: issuerName,
-      display_name: displayName,
-      note_type: "ETN",
-      ticker,
-      listed_at: listedAt,
-    },
-    row: {
-      kind: "etn",
-      ticker,
-      legalName: issuerName.trim(),
-      displayName: displayName.trim(),
+    maturityDate,
+    _detailPath,
+  ]) => {
+    const normalizedListedAt = parseTaiwanOfficialDate(listedAt.replaceAll("/", ""));
+    const normalizedMaturityAt = parseTaiwanOfficialDate(maturityDate.replaceAll("/", ""));
+    const issuerIdentity = resolveOfficialEtnIssuerIdentity(issuerName, securitiesFirms);
+    const identityKey = officialEtnContractIdentityKey({
+      venue: "TPEX",
+      issuerIdentityKey: issuerIdentity.businessNumber,
+      underlyingIndex,
+      listedAt: normalizedListedAt,
+      maturityAt: normalizedMaturityAt,
       noteType: "ETN",
-      listedAt: parseTaiwanOfficialDate(listedAt.replaceAll("/", "")),
-    },
-  }));
+    });
+    return {
+      venue: "TPEX",
+      snapshotDate: metadata.retrievedAt.slice(0, 10),
+      retrievedAt: metadata.retrievedAt,
+      artifact: {
+        contentHash: metadata.contentHash,
+        sourceUrl: metadata.sourceUrl,
+        publisherDataset: "ETN/list",
+        accessProvider: "TPEX_WEB_JSON",
+      },
+      rawValues: {
+        legal_name: issuerName,
+        display_name: displayName,
+        note_type: "ETN",
+        ticker,
+        listed_at: listedAt,
+        issuer_identity_key: issuerIdentity.businessNumber,
+        official_product_identity: identityKey,
+      },
+      row: {
+        kind: "etn" as const,
+        ticker,
+        legalName: issuerName.trim(),
+        displayName: displayName.trim(),
+        identityKey,
+        issuerIdentityKey: issuerIdentity.businessNumber,
+        noteType: "ETN",
+        listedAt: normalizedListedAt,
+      },
+    };
+  });
 }
 
 export function parseTpexEtnRetirementSnapshot(response: unknown) {

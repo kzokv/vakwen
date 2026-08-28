@@ -198,7 +198,10 @@ function researchToolSummary(toolName: McpToolName, value: Record<string, unknow
   return undefined;
 }
 
-function buildToolErrorResult(error: Error & { statusCode?: unknown; code?: unknown; metadata?: unknown }) {
+function buildToolErrorResult(
+  error: Error & { statusCode?: unknown; code?: unknown; metadata?: unknown },
+  wrapResearchResult = false,
+) {
   const code = typeof error.code === "string" ? error.code : "mcp_tool_error";
   const statusCode = typeof error.statusCode === "number" ? error.statusCode : 500;
   const structuredContent = {
@@ -211,7 +214,7 @@ function buildToolErrorResult(error: Error & { statusCode?: unknown; code?: unkn
   };
   return {
     content: [{ type: "text" as const, text: `${code}: ${error.message}` }],
-    structuredContent,
+    structuredContent: wrapResearchResult ? { result: structuredContent } : structuredContent,
     isError: true,
   };
 }
@@ -1008,7 +1011,11 @@ export async function registerMcpRoutes(
       }
       await logAccess("ok");
       const adapted = adaptMcpToolResultForHost({ toolName, auth, result }) as Record<string, unknown>;
-      return buildToolResult(adapted, researchToolSummary(toolName, adapted));
+      const isResearchTool = toolName === "get_research_manifest" || toolName === "get_research_identity";
+      return buildToolResult(
+        isResearchTool ? { result: adapted } : adapted,
+        researchToolSummary(toolName, adapted),
+      );
     } catch (error) {
       const denialReason = error instanceof Error && "code" in error
         ? String((error as { code?: unknown }).code)
@@ -1031,7 +1038,10 @@ export async function registerMcpRoutes(
         });
       }
       if (error instanceof Error && "statusCode" in error && Number((error as { statusCode?: unknown }).statusCode) < 500) {
-        return buildToolErrorResult(error as Error & { statusCode?: unknown; code?: unknown; metadata?: unknown });
+        return buildToolErrorResult(
+          error as Error & { statusCode?: unknown; code?: unknown; metadata?: unknown },
+          toolName === "get_research_manifest" || toolName === "get_research_identity",
+        );
       }
       throw error;
     }

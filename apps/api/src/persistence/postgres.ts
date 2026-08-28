@@ -1323,6 +1323,41 @@ export class PostgresPersistence implements Persistence {
     return result.rows.map((row) => row.record);
   }
 
+  async listLatestResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]> {
+    const selectorSql = query.subject.kind === "listing_id"
+      ? "listing_id = $1"
+      : query.subject.kind === "security_id"
+        ? "security_id = $1"
+        : query.subject.kind === "ticker_venue"
+          ? "ticker = $1 AND venue = $2"
+          : "venue = $1";
+    const selectorValues = query.subject.kind === "listing_id"
+      ? [query.subject.listingId]
+      : query.subject.kind === "security_id"
+        ? [query.subject.securityId]
+        : query.subject.kind === "ticker_venue"
+          ? [query.subject.ticker, query.subject.venue]
+          : [query.subject.venue];
+    const effectiveAtIndex = selectorValues.length + 1;
+    const knowledgeAtIndex = selectorValues.length + 2;
+    const result = await this.pool.query<{ record: ResearchIdentityRecord }>(
+      `SELECT record
+       FROM (
+         SELECT DISTINCT ON (listing_id)
+           record_key, effective_at, retrieved_at, revision_precedence, record
+         FROM research.identity_records
+         WHERE ${selectorSql}
+           AND effective_at <= $${effectiveAtIndex}::timestamptz
+           AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
+         ORDER BY listing_id, effective_at DESC, retrieved_at DESC,
+                  revision_precedence DESC, record_key DESC
+       ) AS latest
+       ORDER BY effective_at ASC, retrieved_at ASC, revision_precedence ASC, record_key ASC`,
+      [...selectorValues, query.effectiveAt, query.knowledgeAt],
+    );
+    return result.rows.map((row) => row.record);
+  }
+
   private async getLatestQuoteFallbackSnapshotsForPolicyIds(
     policyIds: readonly string[],
   ): Promise<Map<string, QuoteFallbackSnapshotRecord>> {

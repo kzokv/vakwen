@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import {
@@ -39,6 +39,11 @@ describe("official Taiwan identity acquisition", () => {
         status: true,
         data: [{ issuerID: "5801", listingDate: "20260826", stockName: "第一金主動式台灣成長", stockNo: "00999A" }],
       }],
+      [OFFICIAL_IDENTITY_SOURCES.twseSecuritiesFirms, [{
+        證券代號: "9800", "券商(證券IB)簡稱": "元大", 營利事業統一編號: "97160609",
+      }, {
+        證券代號: "7000", "券商(證券IB)簡稱": "兆豐", 營利事業統一編號: "23474649",
+      }]],
       [OFFICIAL_IDENTITY_SOURCES.twseEtns, {
         stat: "ok", fields: ["上市日期", "證券代號", "證券簡稱", "發行證券商", "標的指數", "到期日"],
         data: [["2022/04/25", "020032", "元大綠能N", "元大證券股份有限公司", "綠色能源報酬指數", "2032/04/26"]],
@@ -148,7 +153,7 @@ describe("official Taiwan identity acquisition", () => {
       },
       row: {
         kind: "etn", ticker: "020005", legalName: "永豐金證券股份有限公司", displayName: "永豐外資50N",
-        noteType: "ETN", listedAt: "2019-04-30",
+        identityKey: "twse-etn:contract-retired", issuerIdentityKey: "23113343", noteType: "ETN", listedAt: "2019-04-30",
       },
     });
     const retiredTpexEtn = (await import("../../src/services/research/identity.js")).canonicalizeOfficialIdentityRow({
@@ -163,6 +168,7 @@ describe("official Taiwan identity acquisition", () => {
       },
       row: {
         kind: "etn", ticker: "020017", legalName: "永豐金證券股份有限公司", displayName: "永豐富櫃200N",
+        identityKey: "tpex-etn:contract-retired", issuerIdentityKey: "23113343",
         noteType: "ETN", listedAt: "2020-06-16",
       },
     });
@@ -175,19 +181,23 @@ describe("official Taiwan identity acquisition", () => {
       retiredTwseEtn,
       retiredTpexEtn,
     ]);
+    const listHistorySpy = vi.spyOn(persistence, "listResearchIdentityRecords");
+    const listLatestSpy = vi.spyOn(persistence, "listLatestResearchIdentityRecords");
 
     const result = await runOfficialIdentityAcquisition(persistence, {
       fetchImpl,
       retrievedAt: "2026-08-27T04:00:00.000Z",
       acquisitionRunId: "run-test-1",
     });
+    expect(listHistorySpy).not.toHaveBeenCalled();
+    expect(listLatestSpy).toHaveBeenCalledTimes(2);
 
     expect(requested.sort()).toEqual([
       ...Object.values(OFFICIAL_IDENTITY_SOURCES).filter((url) => url !== OFFICIAL_IDENTITY_SOURCES.tpexDelistings),
       ...tpexDelistingUrls,
     ].sort());
     expect(requests.find(({ url }) => url === OFFICIAL_IDENTITY_SOURCES.tpexFunds)?.method).toBe("POST");
-    expect(result).toMatchObject({ sourceCount: 10, recordCount: 14, acquisitionRunId: "run-test-1" });
+    expect(result).toMatchObject({ sourceCount: 11, recordCount: 14, acquisitionRunId: "run-test-1" });
     const etn = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "020032", venue: "TWSE" },
       effectiveAt: "2026-08-27T23:59:59.999Z",
@@ -289,6 +299,10 @@ describe("official Taiwan identity acquisition", () => {
           status: true,
           data: [{ issuerID: "issuer-0", listingDate: "20200101", stockName: "歷史ETF 00610", stockNo: "00610" }],
         };
+      } else if (url === OFFICIAL_IDENTITY_SOURCES.twseSecuritiesFirms) {
+        payload = [{
+          證券代號: "9800", "券商(證券IB)簡稱": "元大", 營利事業統一編號: "97160609",
+        }];
       } else if (url === OFFICIAL_IDENTITY_SOURCES.twseEtns) {
         payload = { stat: "ok", fields: [], data: [] };
       } else if (url === OFFICIAL_IDENTITY_SOURCES.tpexEtns) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
 import {
+  parseOfficialSecuritiesFirmDirectory,
   parseTwseCompanyIdentitySnapshot,
   parseTwseEtnIdentitySnapshot,
   parseTwseEtnRetirementSnapshot,
@@ -15,6 +16,16 @@ import {
 } from "../../src/services/research/providers/tpexIdentity.js";
 
 describe("official Taiwan identity providers", () => {
+  const securitiesFirms = parseOfficialSecuritiesFirmDirectory([{
+    證券代號: "9800",
+    "券商(證券IB)簡稱": "元大",
+    營利事業統一編號: "97160609",
+  }, {
+    證券代號: "7000",
+    "券商(證券IB)簡稱": "兆豐",
+    營利事業統一編號: "23474649",
+  }]);
+
   it("TWSE company snapshot: parse official date and numeric fields → produce a canonical input without ticker coercion", () => {
     const inputs = parseTwseCompanyIdentitySnapshot([{
       出表日期: "1150827",
@@ -127,7 +138,7 @@ describe("official Taiwan identity providers", () => {
       retrievedAt: "2026-08-27T03:00:00.000Z",
       contentHash: "sha256:twse-etn-list",
       sourceUrl: "https://www.twse.com.tw/rwd/zh/ETN/list?response=json",
-    });
+    }, securitiesFirms);
 
     expect(inputs[0]).toMatchObject({
       venue: "TWSE",
@@ -137,6 +148,8 @@ describe("official Taiwan identity providers", () => {
         ticker: "020032",
         legalName: "元大證券股份有限公司",
         displayName: "元大綠能N",
+        identityKey: expect.stringMatching(/^etn_contract_[a-f0-9]{32}$/),
+        issuerIdentityKey: "97160609",
         noteType: "ETN",
         listedAt: "2022-04-25",
       },
@@ -214,7 +227,7 @@ describe("official Taiwan identity providers", () => {
       retrievedAt: "2026-08-27T03:00:00.000Z",
       contentHash: "sha256:tpex-etn-list",
       sourceUrl: "https://www.tpex.org.tw/www/zh-tw/ETN/list?type=listed",
-    });
+    }, securitiesFirms);
 
     expect(inputs[0]).toMatchObject({
       venue: "TPEX",
@@ -227,9 +240,31 @@ describe("official Taiwan identity providers", () => {
         ticker: "020041",
         legalName: "兆豐證券股份有限公司",
         displayName: "兆豐半導體氣候N",
+        identityKey: expect.stringMatching(/^etn_contract_[a-f0-9]{32}$/),
+        issuerIdentityKey: "23474649",
         listedAt: "2023-12-25",
       },
     });
+  });
+
+  it("ETN feed issuer: no official securities-firm identity match → reject instead of hashing a legal name", () => {
+    expect(() => parseTwseEtnIdentitySnapshot({
+      stat: "ok",
+      fields: ["上市日期", "證券代號", "證券簡稱", "發行證券商", "標的指數", "到期日"],
+      data: [["2022/04/25", "020032", "未知綠能N", "未知證券股份有限公司", "綠色能源報酬指數", "2032/04/26"]],
+    }, {
+      retrievedAt: "2026-08-27T03:00:00.000Z",
+      contentHash: "sha256:twse-etn-list",
+      sourceUrl: "https://www.twse.com.tw/rwd/zh/ETN/list?response=json",
+    }, securitiesFirms)).toThrow("Unknown official ETN issuer");
+  });
+
+  it("securities-firm master: missing official business number → reject before ETN identity resolution", () => {
+    expect(() => parseOfficialSecuritiesFirmDirectory([{
+      證券代號: "9800",
+      "券商(證券IB)簡稱": "元大",
+      營利事業統一編號: "",
+    }])).toThrow();
   });
 
   it("TWSE ETN retirement feed: parse the official end-of-listing table → preserve the exact retirement date", () => {

@@ -127,7 +127,8 @@ describe("Taiwan research identity", () => {
         ticker: "020032",
         legalName: "Yuanta Securities Co., Ltd.",
         displayName: "Yuanta 20Y US Treasury Bond ER Index ETN",
-        issuerCode: "9800",
+        identityKey: "twse-etn:020032:2024-02-01",
+        issuerIdentityKey: "97160609",
         noteType: "ETN",
         listedAt: "2024-02-01",
       },
@@ -157,20 +158,51 @@ describe("Taiwan research identity", () => {
       ...common,
       row: {
         kind: "etn", ticker: "020032", legalName: "元大證券股份有限公司", displayName: "元大綠能N",
-        issuerCode: "9800", noteType: "ETN", listedAt: "2022-04-25",
+        identityKey: "twse-etn:contract-a", issuerIdentityKey: "97160609", noteType: "ETN", listedAt: "2022-04-25",
       },
     });
     const second = canonicalizeOfficialIdentityRow({
       ...common,
       row: {
         kind: "etn", ticker: "020033", legalName: "元大證券股份有限公司", displayName: "元大科技N",
-        issuerCode: "9800", noteType: "ETN", listedAt: "2022-04-25",
+        identityKey: "twse-etn:contract-b", issuerIdentityKey: "97160609", noteType: "ETN", listedAt: "2022-04-25",
       },
     });
 
     expect(second.issuer.id).toBe(first.issuer.id);
     expect(second.security.id).not.toBe(first.security.id);
     expect(second.listing.id).not.toBe(first.listing.id);
+  });
+
+  it("ETN source corrections: keep source product identity → preserve Issuer, Security, and Listing IDs", () => {
+    const common = {
+      venue: "TWSE" as const,
+      snapshotDate: "2026-08-27",
+      artifact: {
+        contentHash: "sha256:twse-etn-correction",
+        sourceUrl: "https://www.twse.com.tw/rwd/zh/ETN/list?response=json",
+      },
+    };
+    const first = canonicalizeOfficialIdentityRow({
+      ...common,
+      retrievedAt: "2026-08-27T03:00:00.000Z",
+      row: {
+        kind: "etn", ticker: "020032", legalName: "元大證券股份有限公司", displayName: "元大綠能N",
+        identityKey: "twse-etn:official-product-020032", issuerIdentityKey: "97160609", noteType: "ETN", listedAt: "2022-04-25",
+      },
+    });
+    const corrected = canonicalizeOfficialIdentityRow({
+      ...common,
+      retrievedAt: "2026-08-28T03:00:00.000Z",
+      row: {
+        kind: "etn", ticker: "020032A", legalName: "元大證券（更名）股份有限公司", displayName: "元大綠能指數N",
+        identityKey: "twse-etn:official-product-020032", issuerIdentityKey: "97160609", noteType: "ETN", listedAt: "2022-04-25",
+      },
+    });
+
+    expect(corrected.issuer.id).toBe(first.issuer.id);
+    expect(corrected.security.id).toBe(first.security.id);
+    expect(corrected.listing.id).toBe(first.listing.id);
   });
 
   it("unrecognized official security: retain its identity evidence → mark eligibility indeterminate with an explicit reason", () => {

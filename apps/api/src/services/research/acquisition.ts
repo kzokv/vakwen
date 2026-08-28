@@ -9,6 +9,7 @@ import {
 } from "./identity.js";
 import { researchAcquisitionEnabled } from "./rollout.js";
 import {
+  parseOfficialSecuritiesFirmDirectory,
   parseTwseCompanyIdentitySnapshot,
   parseTwseDelistingSnapshot,
   parseTwseEtnIdentitySnapshot,
@@ -28,6 +29,7 @@ export const OFFICIAL_IDENTITY_SOURCES = {
   tpexCompanies: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
   twseFunds: "https://openapi.twse.com.tw/v1/opendata/t187ap47_L",
   tpexFunds: "https://info.tpex.org.tw/api/etfFilter",
+  twseSecuritiesFirms: "https://openapi.twse.com.tw/v1/opendata/t187ap18",
   twseEtns: "https://www.twse.com.tw/rwd/zh/ETN/list?response=json",
   tpexEtns: "https://www.tpex.org.tw/www/zh-tw/ETN/list?type=listed",
   twseEtnRetirements: "https://www.twse.com.tw/rwd/zh/ETN/expireEnd?response=json",
@@ -105,6 +107,7 @@ export async function runOfficialIdentityAcquisition(
     tpexCompanies,
     twseFunds,
     tpexFunds,
+    twseSecuritiesFirms,
     twseEtns,
     tpexEtns,
     twseEtnRetirements,
@@ -116,6 +119,7 @@ export async function runOfficialIdentityAcquisition(
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexCompanies),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseFunds),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexFunds, { method: "POST" }),
+    fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseSecuritiesFirms),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseEtns),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexEtns),
     fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseEtnRetirements),
@@ -127,13 +131,14 @@ export async function runOfficialIdentityAcquisition(
     ...artifact.metadata,
     retrievedAt,
   });
+  const securitiesFirms = parseOfficialSecuritiesFirmDirectory(twseSecuritiesFirms.payload);
   const inputs: OfficialIdentityInput[] = [
     ...parseTwseCompanyIdentitySnapshot(twseCompanies.payload, parseMetadata(twseCompanies)),
     ...parseTpexCompanyIdentitySnapshot(tpexCompanies.payload, parseMetadata(tpexCompanies)),
     ...parseTwseFundIdentitySnapshot(twseFunds.payload, parseMetadata(twseFunds)),
     ...parseTpexFundIdentitySnapshot(tpexFunds.payload, parseMetadata(tpexFunds)),
-    ...parseTwseEtnIdentitySnapshot(twseEtns.payload, parseMetadata(twseEtns)),
-    ...parseTpexEtnIdentitySnapshot(tpexEtns.payload, parseMetadata(tpexEtns)),
+    ...parseTwseEtnIdentitySnapshot(twseEtns.payload, parseMetadata(twseEtns), securitiesFirms),
+    ...parseTpexEtnIdentitySnapshot(tpexEtns.payload, parseMetadata(tpexEtns), securitiesFirms),
   ].map((input) => ({ ...input, acquisitionRunId }));
   const delistings = [
     ...parseTwseDelistingSnapshot(twseDelistings.payload).map((delisting) => ({
@@ -174,14 +179,17 @@ export async function runOfficialIdentityAcquisition(
     })),
   ];
   const canonicalRecords = inputs.map(canonicalizeOfficialIdentityRow);
-  const records: ResearchIdentityRecord[] = [];
-  for (const record of canonicalRecords) {
-    const history = await persistence.listResearchIdentityRecords({
-      subject: { kind: "security_id", securityId: record.security.id },
+  const historicalLatest = (await Promise.all((["TWSE", "TPEX"] as const).map((venue) =>
+    persistence.listLatestResearchIdentityRecords({
+      subject: { kind: "venue", venue },
       effectiveAt: retrievedAt,
       knowledgeAt: retrievedAt,
-    });
-    const predecessor = [...history, ...records]
+    })
+  ))).flat();
+  const records: ResearchIdentityRecord[] = [];
+  for (const record of canonicalRecords) {
+    const predecessor = [...historicalLatest, ...records]
+      .filter((item) => item.security.id === record.security.id)
       .filter((item) => item.listing.id !== record.listing.id)
       .filter((item) => item.listing.listedAt < record.listing.listedAt)
       .sort(recordOrder)
@@ -190,12 +198,7 @@ export async function runOfficialIdentityAcquisition(
   }
   const statusRevisions: ResearchIdentityRecord[] = [];
   for (const delisting of delistings) {
-    const history = await persistence.listResearchIdentityRecords({
-      subject: { kind: "ticker_venue", ticker: delisting.ticker, venue: delisting.venue },
-      effectiveAt: retrievedAt,
-      knowledgeAt: retrievedAt,
-    });
-    const previous = [...history, ...records, ...statusRevisions]
+    const previous = [...historicalLatest, ...records, ...statusRevisions]
       .filter((item) => item.listing.venue === delisting.venue && item.listing.ticker === delisting.ticker)
       .filter((item) => !("securityType" in delisting) || item.security.type === delisting.securityType)
       .filter((item) => item.listing.listedAt <= delisting.inactiveAt)
@@ -218,14 +221,8 @@ export async function runOfficialIdentityAcquisition(
     .map((record) => record.listing.id));
   const explicitlyInactiveListingIds = new Set(statusRevisions.map((record) => record.listing.id));
   for (const venue of ["TWSE", "TPEX"] as const) {
-    const historical = await persistence.listResearchIdentityRecords({
-      subject: { kind: "venue", venue },
-      effectiveAt: retrievedAt,
-      knowledgeAt: retrievedAt,
-    });
-    const latestHistoricalByListing = new Map<string, ResearchIdentityRecord>();
-    for (const record of historical) latestHistoricalByListing.set(record.listing.id, record);
-    const historicalActiveEtfs = [...latestHistoricalByListing.values()].filter((record) =>
+    const historical = historicalLatest.filter((record) => record.listing.venue === venue);
+    const historicalActiveEtfs = historical.filter((record) =>
       record.security.type === "etf" && record.listing.status === "active"
     );
     const unexplainedMissingEtfs = historicalActiveEtfs.filter((record) =>

@@ -208,28 +208,17 @@ const researchToolErrorOutputShape = {
 export const researchToolErrorOutputSchema = z.object(researchToolErrorOutputShape).strict();
 
 export const researchIdentityToolOutputSchema = z.object({
-  contractVersion: researchIdentityOutputSchema.shape.contractVersion.optional(),
-  selector: researchIdentityOutputSchema.shape.selector.optional(),
-  context: researchIdentityOutputSchema.shape.context.optional(),
-  identity: researchIdentityOutputSchema.shape.identity.optional(),
-  history: researchIdentityOutputSchema.shape.history.optional(),
-  code: researchToolErrorOutputShape.code.optional(),
-  message: researchToolErrorOutputShape.message.optional(),
-  statusCode: researchToolErrorOutputShape.statusCode.optional(),
-  metadata: researchToolErrorOutputShape.metadata,
+  result: z.union([
+    researchIdentityOutputSchema,
+    researchToolErrorOutputSchema,
+  ]),
 }).strict();
 
 export const researchManifestToolOutputSchema = z.object({
-  contractVersion: researchManifestOutputSchema.shape.contractVersion.optional(),
-  selector: researchManifestOutputSchema.shape.selector.optional(),
-  context: researchManifestOutputSchema.shape.context.optional(),
-  eligibility: researchManifestOutputSchema.shape.eligibility.optional(),
-  orchestration: researchManifestOutputSchema.shape.orchestration.optional(),
-  datasets: researchManifestOutputSchema.shape.datasets.optional(),
-  code: researchToolErrorOutputShape.code.optional(),
-  message: researchToolErrorOutputShape.message.optional(),
-  statusCode: researchToolErrorOutputShape.statusCode.optional(),
-  metadata: researchToolErrorOutputShape.metadata,
+  result: z.union([
+    researchManifestOutputSchema,
+    researchToolErrorOutputSchema,
+  ]),
 }).strict();
 
 export const IDENTITY_ONLY_SCOPE_STATEMENT =

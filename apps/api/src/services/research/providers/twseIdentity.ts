@@ -1,5 +1,19 @@
 import { z } from "zod";
-import type { OfficialIdentityInput } from "../identity.js";
+import {
+  officialEtnContractIdentityKey,
+  type OfficialIdentityInput,
+} from "../identity.js";
+
+const officialSecuritiesFirmRowSchema = z.object({
+  證券代號: z.string().trim().min(1),
+  "券商(證券IB)簡稱": z.string().trim().min(1),
+  營利事業統一編號: z.string().trim().regex(/^\d{8}$/),
+}).passthrough();
+
+export type OfficialSecuritiesFirmDirectory = ReadonlyMap<string, {
+  brokerCode: string;
+  businessNumber: string;
+}>;
 
 const twseCompanyRowSchema = z.object({
   出表日期: z.string(),
@@ -95,6 +109,40 @@ function normalizedText(value: string): string {
   });
 }
 
+function securitiesFirmAlias(value: string): string {
+  return normalizedText(value)
+    .normalize("NFKC")
+    .replaceAll(/\s+/g, "")
+    .replace(/(?:綜合)?證券股份有限公司$/, "")
+    .replace(/(?:綜合)?證券$/, "");
+}
+
+export function parseOfficialSecuritiesFirmDirectory(rows: unknown): OfficialSecuritiesFirmDirectory {
+  const directory = new Map<string, { brokerCode: string; businessNumber: string }>();
+  for (const row of z.array(officialSecuritiesFirmRowSchema).min(1).parse(rows)) {
+    const alias = securitiesFirmAlias(row["券商(證券IB)簡稱"]);
+    const identity = {
+      brokerCode: row.證券代號.trim(),
+      businessNumber: row.營利事業統一編號.trim(),
+    };
+    const existing = directory.get(alias);
+    if (existing && existing.businessNumber !== identity.businessNumber) {
+      throw new Error(`Ambiguous official securities-firm alias: ${alias}`);
+    }
+    directory.set(alias, identity);
+  }
+  return directory;
+}
+
+export function resolveOfficialEtnIssuerIdentity(
+  legalName: string,
+  directory: OfficialSecuritiesFirmDirectory,
+): { brokerCode: string; businessNumber: string } {
+  const identity = directory.get(securitiesFirmAlias(legalName));
+  if (!identity) throw new Error(`Unknown official ETN issuer: ${legalName}`);
+  return identity;
+}
+
 export function parseTwseCompanyIdentitySnapshot(
   rows: unknown,
   metadata: SnapshotMetadata,
@@ -177,32 +225,50 @@ export function parseTwseFundIdentitySnapshot(
 export function parseTwseEtnIdentitySnapshot(
   response: unknown,
   metadata: SnapshotMetadata,
+  securitiesFirms: OfficialSecuritiesFirmDirectory,
 ): OfficialIdentityInput[] {
   const parsed = twseEtnResponseSchema.parse(response);
-  return parsed.data.map(([listedAt, ticker, displayName, issuerName]) => ({
-    venue: "TWSE",
-    snapshotDate: metadata.retrievedAt.slice(0, 10),
-    retrievedAt: metadata.retrievedAt,
-    artifact: {
-      contentHash: metadata.contentHash,
-      sourceUrl: metadata.sourceUrl,
-    },
-    rawValues: {
-      legal_name: issuerName,
-      display_name: displayName,
-      note_type: "ETN",
-      ticker,
-      listed_at: listedAt,
-    },
-    row: {
-      kind: "etn",
-      ticker,
-      legalName: normalizedText(issuerName),
-      displayName: normalizedText(displayName),
+  return parsed.data.map(([listedAt, ticker, displayName, issuerName, underlyingIndex, maturityAt]) => {
+    const normalizedListedAt = parseTaiwanOfficialDate(listedAt.replaceAll("/", ""));
+    const normalizedMaturityAt = parseTaiwanOfficialDate(maturityAt.replaceAll("/", ""));
+    const issuerIdentity = resolveOfficialEtnIssuerIdentity(issuerName, securitiesFirms);
+    const identityKey = officialEtnContractIdentityKey({
+      venue: "TWSE",
+      issuerIdentityKey: issuerIdentity.businessNumber,
+      underlyingIndex,
+      listedAt: normalizedListedAt,
+      maturityAt: normalizedMaturityAt,
       noteType: "ETN",
-      listedAt: parseTaiwanOfficialDate(listedAt.replaceAll("/", "")),
-    },
-  }));
+    });
+    return {
+      venue: "TWSE",
+      snapshotDate: metadata.retrievedAt.slice(0, 10),
+      retrievedAt: metadata.retrievedAt,
+      artifact: {
+        contentHash: metadata.contentHash,
+        sourceUrl: metadata.sourceUrl,
+      },
+      rawValues: {
+        legal_name: issuerName,
+        display_name: displayName,
+        note_type: "ETN",
+        ticker,
+        listed_at: listedAt,
+        issuer_identity_key: issuerIdentity.businessNumber,
+        official_product_identity: identityKey,
+      },
+      row: {
+        kind: "etn" as const,
+        ticker,
+        legalName: normalizedText(issuerName),
+        displayName: normalizedText(displayName),
+        identityKey,
+        issuerIdentityKey: issuerIdentity.businessNumber,
+        noteType: "ETN",
+        listedAt: normalizedListedAt,
+      },
+    };
+  });
 }
 
 export function parseTwseEtnRetirementSnapshot(response: unknown) {

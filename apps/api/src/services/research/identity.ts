@@ -32,7 +32,10 @@ export interface OfficialEtnIdentityRow {
   ticker: string;
   legalName: string;
   displayName: string;
-  issuerCode?: string;
+  /** Source-native contract identity, independent from mutable names and ticker corrections. */
+  identityKey: string;
+  /** Official securities-firm business number resolved from the exchange master. */
+  issuerIdentityKey: string;
   noteType: string;
   listedAt: string;
 }
@@ -103,6 +106,22 @@ export function researchIdentityRevisionPrecedence(record: ResearchIdentityRecor
     : 0;
 }
 
+export function researchIdentityRecordSortOrder(
+  left: ResearchIdentityRecord,
+  right: ResearchIdentityRecord,
+): number {
+  const effectiveOrder = (left.observations[0]?.effectiveAt ?? "")
+    .localeCompare(right.observations[0]?.effectiveAt ?? "");
+  if (effectiveOrder !== 0) return effectiveOrder;
+  const retrievedOrder = left.provenance.retrievedAt.localeCompare(right.provenance.retrievedAt);
+  if (retrievedOrder !== 0) return retrievedOrder;
+  const precedenceOrder = researchIdentityRevisionPrecedence(left)
+    - researchIdentityRevisionPrecedence(right);
+  return precedenceOrder !== 0
+    ? precedenceOrder
+    : researchIdentityRecordKey(left).localeCompare(researchIdentityRecordKey(right));
+}
+
 export interface ResearchIdentityRecordQuery {
   subject:
     | { kind: "listing_id"; listingId: string }
@@ -116,6 +135,25 @@ export interface ResearchIdentityRecordQuery {
 function opaqueId(prefix: string, ...parts: string[]): string {
   const digest = createHash("sha256").update(parts.join("\u001f")).digest("hex").slice(0, 32);
   return `${prefix}_${digest}`;
+}
+
+export function officialEtnContractIdentityKey(input: {
+  venue: ResearchListingVenue;
+  issuerIdentityKey: string;
+  underlyingIndex: string;
+  listedAt: string;
+  maturityAt: string;
+  noteType: string;
+}): string {
+  return opaqueId(
+    "etn_contract",
+    input.venue,
+    input.issuerIdentityKey,
+    input.underlyingIndex.normalize("NFKC").trim(),
+    input.listedAt,
+    input.maturityAt,
+    input.noteType,
+  );
 }
 
 function atStartOfDay(date: string): string {
@@ -169,9 +207,8 @@ function identityFacts(
     facts.push({ subject: { kind: "issuer", id: issuerId }, field: "fund_type", label: "fundType", value: input.row.fundType });
     facts.push({ subject: { kind: "issuer", id: issuerId }, field: "issued_units", label: "issuedUnits", value: input.row.issuedUnits ? normalizedNumber(input.row.issuedUnits) : undefined });
   } else if (input.row.kind === "etn") {
-    if (input.row.issuerCode) {
-      facts.push({ subject: { kind: "issuer", id: issuerId }, field: "issuer_code", label: "issuerCode", value: input.row.issuerCode });
-    }
+    facts.push({ subject: { kind: "issuer", id: issuerId }, field: "issuer_identity_key", label: "issuerIdentityKey", value: input.row.issuerIdentityKey });
+    facts.push({ subject: { kind: "security", id: securityId }, field: "official_product_identity", label: "officialProductIdentity", value: input.row.identityKey });
     facts.push({ subject: { kind: "security", id: securityId }, field: "note_type", label: "noteType", value: input.row.noteType });
   } else {
     facts.push({ subject: { kind: "security", id: securityId }, field: "declared_security_type", label: "declaredSecurityType", value: input.row.declaredSecurityType });
@@ -181,12 +218,7 @@ function identityFacts(
 
 export function canonicalizeOfficialIdentityRow(input: OfficialIdentityInput) {
   const issuerId = input.row.kind === "etn"
-    ? opaqueId(
-      "iss",
-      input.venue,
-      input.row.issuerCode ? "issuer_code" : "issuer_legal_name",
-      input.row.issuerCode ?? input.row.legalName,
-    )
+    ? opaqueId("iss", "business_number", input.row.issuerIdentityKey)
     : input.row.kind === "fund"
       ? input.row.unifiedBusinessNumber
         ? opaqueId("iss", "business_number", input.row.unifiedBusinessNumber)
@@ -200,7 +232,7 @@ export function canonicalizeOfficialIdentityRow(input: OfficialIdentityInput) {
       ? "etn" as const
       : input.row.kind === "unknown" ? "unknown" as const : "common_equity" as const;
   const securityId = input.row.kind === "etn"
-    ? opaqueId("sec", issuerId, securityType, input.venue, input.row.ticker, input.row.listedAt)
+    ? opaqueId("sec", issuerId, input.venue, "official_contract_identity", input.row.identityKey)
     : opaqueId("sec", issuerId, securityType);
   const listingId = opaqueId("lst", securityId, input.venue, input.row.listedAt);
   const provenanceId = opaqueId("prv", input.venue, input.artifact.contentHash, input.retrievedAt);
