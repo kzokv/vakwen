@@ -30,6 +30,7 @@ import {
   researchIdentityOutputSchema,
   researchIdentityToolOutputSchema,
   researchManifestOutputSchema,
+  researchManifestToolOutputSchema,
 } from "../../src/services/research/contracts.js";
 
 let app: Awaited<ReturnType<typeof buildApp>>;
@@ -766,6 +767,39 @@ describe("mcp routes", () => {
     expect(researchIdentityToolOutputSchema.parse(missing.result.structuredContent)).toMatchObject({
       code: "research_subject_not_found",
       statusCode: 422,
+    });
+  });
+
+  it("returns shared MCP policy errors through research tool output validation", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: true,
+      mcpExposureEnabled: true,
+      skillExposureEnabled: false,
+    });
+    await app.persistence.saveAiConnectorPolicySettings({ groupToggles: { research: true } });
+    const headers = {
+      authorization: `Bearer ${devToken({ userId: "user-1", scopes: ["research:read"] })}`,
+      accept: "application/json, text/event-stream",
+    };
+    const sessionId = await initializeMcpSession(headers);
+    await app.persistence.saveAiConnectorPolicySettings({ groupToggles: { research: false } });
+
+    const response = await callMcpTool(headers, sessionId, "get_research_manifest", {
+      subject: { kind: "ticker_venue", ticker: "2330", listingVenue: "TWSE" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = parseMcpJson<{
+      result: { structuredContent: Record<string, unknown>; isError?: boolean };
+    }>(response.body);
+    expect(body.result.isError, response.body).toBe(true);
+    expect(researchManifestToolOutputSchema.parse(body.result.structuredContent)).toMatchObject({
+      code: "mcp_tool_group_disabled",
+      statusCode: 403,
     });
   });
 

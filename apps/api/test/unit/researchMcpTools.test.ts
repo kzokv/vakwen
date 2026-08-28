@@ -25,6 +25,17 @@ describe("Taiwan research MCP tool contracts", () => {
       };
       expect(researchToolErrorOutputSchema.parse(structuredError)).toEqual(structuredError);
       expect(tool.outputSchema.safeParse(structuredError).success).toBe(true);
+      for (const sharedCode of [
+        "mcp_rate_limited",
+        "mcp_tool_group_disabled",
+        "mcp_tool_disabled",
+      ]) {
+        expect(tool.outputSchema.safeParse({
+          code: sharedCode,
+          message: "Shared MCP policy denied the tool call",
+          statusCode: sharedCode === "mcp_rate_limited" ? 429 : 403,
+        }).success).toBe(true);
+      }
     }
   });
 });
