@@ -1351,10 +1351,10 @@ export class PostgresPersistence implements Persistence {
          WHERE ${selectorSql}
            AND effective_at <= $${effectiveAtIndex}::timestamptz
            AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
-         ORDER BY listing_id, revision_precedence ASC, effective_at DESC,
+         ORDER BY listing_id, revision_precedence DESC, effective_at DESC,
                   retrieved_at DESC, record_key DESC
        ) AS latest
-       ORDER BY listing_id ASC, revision_precedence ASC`,
+       ORDER BY listing_id ASC, revision_precedence DESC`,
       [...selectorValues, query.effectiveAt, query.knowledgeAt],
     );
     const recordsByListing = new Map<string, ResearchIdentityRecord[]>();
