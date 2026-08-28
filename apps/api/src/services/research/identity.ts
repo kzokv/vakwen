@@ -195,8 +195,8 @@ export function officialHistoricalListingIdentityKey(input: {
   );
 }
 
-function atStartOfDay(date: string): string {
-  return `${date}T00:00:00.000Z`;
+function atStartOfTaiwanDay(date: string): string {
+  return new Date(`${date}T00:00:00.000+08:00`).toISOString();
 }
 
 function normalizedNumber(value: string): string {
@@ -291,7 +291,7 @@ export function canonicalizeOfficialIdentityRow(input: OfficialIdentityInput) {
       : opaqueId("sec", issuerId, securityType);
   const listingId = opaqueId("lst", securityId, input.venue, input.row.listedAt);
   const provenanceId = opaqueId("prv", input.venue, input.artifact.contentHash, input.retrievedAt);
-  const effectiveAt = atStartOfDay(input.snapshotDate);
+  const effectiveAt = atStartOfTaiwanDay(input.snapshotDate);
   const processedAt = input.retrievedAt;
   const listingStatus: "active" | "inactive" = input.listingStatus ?? "active";
   const facts = identityFacts(input, issuerId, securityId, listingId);
@@ -418,7 +418,7 @@ export function appendOfficialListingStatusRevision(
     input.artifact.contentHash,
     input.retrievedAt,
   );
-  const effectiveAt = atStartOfDay(input.effectiveDate);
+  const effectiveAt = atStartOfTaiwanDay(input.effectiveDate);
   const observation: CanonicalIdentityObservation = {
     id: opaqueId("obs", provenanceId, previous.listing.id, "listing_status", input.status),
     kind: "source_fact",

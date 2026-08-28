@@ -57,7 +57,7 @@ describe("Taiwan research identity", () => {
       kind: "source_fact",
       raw: { value: "台積電公司" },
       normalized: { state: "present", value: "台積電公司" },
-      effectiveAt: "2026-08-28T00:00:00.000Z",
+      effectiveAt: "2026-08-27T16:00:00.000Z",
       provenanceId: corrected.provenance.id,
     });
     expect(corrected.observations.find((item) => item.field === "industry_code")?.normalized).toEqual({
@@ -75,6 +75,39 @@ describe("Taiwan research identity", () => {
       raw: { state: "missing", reason: "not_reported" },
       normalized: { state: "missing", reason: "not_reported" },
     });
+  });
+
+  it("retrieval-dated identity: acquire after Taiwan midnight → make the snapshot effective immediately", async () => {
+    const persistence = new MemoryPersistence();
+    const retrievedAt = "2026-08-27T18:15:00.000Z";
+    const record = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-28",
+      retrievedAt,
+      artifact: {
+        contentHash: "sha256:taiwan-midnight",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+      },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+
+    await persistence.appendResearchIdentityRecords([record]);
+    const availableAtRetrieval = await persistence.listResearchIdentityRecords({
+      subject: { kind: "listing_id", listingId: record.listing.id },
+      effectiveAt: retrievedAt,
+      knowledgeAt: retrievedAt,
+    });
+
+    expect(record.observations[0]?.effectiveAt).toBe("2026-08-27T16:00:00.000Z");
+    expect(availableAtRetrieval).toHaveLength(1);
   });
 
   it("official fund snapshot: canonicalize a leading-zero ETF → preserve its ticker and apply the ETF-limited profile", () => {
@@ -370,9 +403,12 @@ describe("Taiwan research identity", () => {
     expect(twse.listing.predecessorListingId).toBe(tpex.listing.id);
     expect(inactive.listing).toMatchObject({ status: "inactive", inactiveAt: "2026-01-15" });
     expect(inactive.eligibility).toMatchObject({ state: "ineligible", reasonCode: "inactive_listing" });
-    expect(inactive.observations.find((item) => item.field === "listing_status")?.normalized).toEqual({
-      state: "present",
-      value: "inactive",
+    expect(inactive.observations.find((item) => item.field === "listing_status")).toMatchObject({
+      effectiveAt: "2026-01-14T16:00:00.000Z",
+      normalized: {
+        state: "present",
+        value: "inactive",
+      },
     });
     expect(inactive.provenance.publisherDataset).toBe("company/suspendListingCsvAndHtml");
   });
