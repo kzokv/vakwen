@@ -1174,7 +1174,10 @@ function AdminMcpSettingsPanel({ active }: { active: boolean }) {
 
   const groupToggles = settings.groupToggles as Record<string, boolean>;
   const bearerToolGroups = settings.bearerFallback.allowedToolGroups as ResearchAwareToolGroup[];
-  const researchGroupVisible = groupToggles.research === true || bearerToolGroups.includes("research");
+  const researchRollout = settings.researchRollout ?? null;
+  const researchGroupVisible = researchRollout !== null
+    || groupToggles.research === true
+    || bearerToolGroups.includes("research");
   const visibleToolGroups: Array<{
     key: ResearchAwareToolGroup;
     title: string;
@@ -1212,13 +1215,6 @@ function AdminMcpSettingsPanel({ active }: { active: boolean }) {
     },
   ];
   const allGroupsDisabled = visibleToolGroups.every((group) => groupToggles[group.key] !== true);
-  const researchRollout = (settings as AiConnectorPolicySettingsDto & {
-    researchRollout?: {
-      acquisitionEnabled: boolean;
-      mcpExposureEnabled: boolean;
-      skillExposureEnabled: boolean;
-    };
-  }).researchRollout ?? null;
   const currentNumericDrafts = numericDrafts ?? numericDraftsFromSettings(settings);
   let numericValidation: string | null = null;
   let numericPatch: Pick<AiConnectorPolicySettingsDto, McpNumericSettingKey> | null = null;

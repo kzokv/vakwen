@@ -5,6 +5,7 @@ import {
   resetMcpRateLimitBucketsForTest,
 } from "../../src/mcp/policy.js";
 import type { McpAuthContext } from "../../src/mcp/types.js";
+import { buildMcpPolicyToolScopes } from "../../src/mcp/registerMcpRoutes.js";
 
 function authContext(): McpAuthContext {
   return {
@@ -74,6 +75,13 @@ describe("DefaultMcpPolicyService", () => {
   afterEach(() => {
     vi.useRealTimers();
     resetMcpRateLimitBucketsForTest();
+  });
+
+  it("builds authorization from the complete tool registry independent of startup discovery policy", () => {
+    expect(buildMcpPolicyToolScopes()).toMatchObject({
+      search_instruments: "portfolio:mcp_read",
+      get_portfolio_overview: "portfolio:mcp_read",
+    });
   });
 
   it("rate limits reads by connector, user, IP, and portfolio context", async () => {

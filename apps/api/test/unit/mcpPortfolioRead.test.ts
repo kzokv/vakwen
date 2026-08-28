@@ -134,7 +134,7 @@ describe("mcp portfolio read services", () => {
     expect(Object.keys(result.quotes[0]!)).not.toContain("freshness");
   });
 
-  it("legacy search only broadens inactive rows when includeInactive is true and never emits researchIdentity when research MCP is off", async () => {
+  it("legacy search ignores additive includeInactive and never emits researchIdentity without a research grant", async () => {
     const persistence = app.persistence as MemoryPersistence;
     persistence._seedInstrument({
       ticker: "2330",
@@ -189,7 +189,8 @@ describe("mcp portfolio read services", () => {
     expect(defaultResult.items.every((item) => !("researchIdentity" in item))).toBe(true);
 
     expect(resultWithInactive.markets).toEqual(["TW"]);
-    expect(resultWithInactive.items.map((item) => item.ticker)).toEqual(expect.arrayContaining(["2330", "9105"]));
+    expect(resultWithInactive.items.map((item) => item.ticker)).toEqual(expect.arrayContaining(["2330"]));
+    expect(resultWithInactive.items.map((item) => item.ticker)).not.toContain("9105");
     expect(resultWithInactive.items.every((item) => !("researchIdentity" in item))).toBe(true);
   });
 });

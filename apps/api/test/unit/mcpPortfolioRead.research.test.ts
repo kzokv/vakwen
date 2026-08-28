@@ -36,6 +36,9 @@ describe("mcp portfolio research search", () => {
     setResearchRolloutOverrideForTest({ mcpExposureEnabled: true });
     const { buildApp } = await import("../../src/app.js");
     app = await buildApp({ persistenceBackend: "memory", seedMemoryCatalog: true });
+    await app.persistence.saveAiConnectorPolicySettings({
+      groupToggles: { research: true },
+    });
   });
 
   afterEach(async () => {
@@ -157,6 +160,45 @@ describe("mcp portfolio research search", () => {
         researchIdentity: { availability: "not_applicable" },
       }),
     ]));
+  });
+
+  it("portfolio-only scope cannot opt into inactive rows or researchIdentity when research rollout is enabled", async () => {
+    const { searchInstruments } = await import("../../src/services/mcpPortfolioRead.js");
+    const persistence = app.persistence as MemoryPersistence;
+    await app.persistence.saveAiConnectorPolicySettings({
+      groupToggles: { read: true, research: true },
+    });
+    persistence._seedInstrument({
+      ticker: "2330",
+      name: "TSMC",
+      instrumentType: "STOCK",
+      marketCode: "TW",
+      barsBackfillStatus: "ready",
+    });
+    persistence._seedInstrument({
+      ticker: "9105",
+      name: "Delisted TW",
+      instrumentType: "STOCK",
+      marketCode: "TW",
+      barsBackfillStatus: "failed",
+      delistedAt: "2026-08-01T00:00:00.000Z",
+    });
+
+    const result = await searchInstruments(
+      {
+        app,
+        requestContext: createRequestContext(["portfolio:mcp_read"]),
+        tradingCalendar: {
+          latestSettledTradingDay: async () => "2026-08-28",
+          isTradingDay: async () => true,
+        } as never,
+      },
+      { query: "T", limit: 10, markets: ["TW"], includeInactive: true },
+    );
+
+    expect(result.items.map((item) => item.ticker)).toContain("2330");
+    expect(result.items.map((item) => item.ticker)).not.toContain("9105");
+    expect(result.items.every((item) => !("researchIdentity" in item))).toBe(true);
   });
 
   it("combined scopes fall back to research-only search when the read group is disabled", async () => {

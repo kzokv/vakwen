@@ -217,6 +217,26 @@ describe("AdminSettingsClient — MCP settings", () => {
     expect(section?.textContent).toContain("adding research requires reconnect or recreate");
   });
 
+  it("renders the initial research controls when rollout metadata is present but every research policy toggle is off", async () => {
+    mockGetJson.mockResolvedValue({
+      ...buildPolicy(),
+      researchRollout: {
+        acquisitionEnabled: false,
+        mcpExposureEnabled: false,
+        skillExposureEnabled: false,
+      },
+    });
+
+    await act(async () => root.render(<AdminSettingsClient initial={buildAppConfigDto()} />));
+    await flushEffects();
+
+    const section = document.querySelector("[data-testid='admin-settings-mcp-section']");
+    expect(section?.textContent).toContain("Research rollout");
+    expect(section?.textContent).toContain("Research");
+    expect(section?.textContent).toContain("search_instruments (TW research path)");
+    expect(document.querySelector("#bearer-tool-groups")?.textContent).toContain("research");
+  });
+
   it("edits numeric MCP limits locally and saves them explicitly", async () => {
     mockGetJson.mockResolvedValue(buildPolicy({ groupToggles: { read: true, research: false, drafts: true, write: false } }));
     mockPostJson.mockResolvedValue({ freshAuthToken: "fresh-1" });

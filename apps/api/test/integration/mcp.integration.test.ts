@@ -797,6 +797,59 @@ describe("mcp routes", () => {
     ]));
   });
 
+  it("does not grant additive research output to a portfolio-only connector", async () => {
+    setResearchRolloutOverrideForTest({
+      acquisitionEnabled: true,
+      mcpExposureEnabled: true,
+      skillExposureEnabled: false,
+    });
+    await app.persistence.saveAiConnectorPolicySettings({
+      groupToggles: { read: true, research: true },
+    });
+    const persistence = app.persistence as MemoryPersistence;
+    persistence._seedInstrument({
+      ticker: "2330",
+      name: "TSMC",
+      instrumentType: "STOCK",
+      marketCode: "TW",
+      barsBackfillStatus: "ready",
+    });
+    persistence._seedInstrument({
+      ticker: "9105",
+      name: "Delisted TW",
+      instrumentType: "STOCK",
+      marketCode: "TW",
+      barsBackfillStatus: "failed",
+      delistedAt: "2026-08-01T00:00:00.000Z",
+    });
+
+    const headers = {
+      authorization: `Bearer ${devToken({ userId: "user-1", scopes: ["portfolio:mcp_read"] })}`,
+      accept: "application/json, text/event-stream",
+    };
+    const sessionId = await initializeMcpSession(headers);
+    const response = await callMcpTool(headers, sessionId, "search_instruments", {
+      query: "T",
+      markets: ["TW"],
+      limit: 10,
+      includeInactive: true,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = parseMcpJson<{
+      result: {
+        isError?: boolean;
+        structuredContent: {
+          items: Array<{ ticker: string; researchIdentity?: { availability: string } }>;
+        };
+      };
+    }>(response.body);
+    expect(body.result.isError).not.toBe(true);
+    expect(body.result.structuredContent.items.map((item) => item.ticker)).toContain("2330");
+    expect(body.result.structuredContent.items.map((item) => item.ticker)).not.toContain("9105");
+    expect(body.result.structuredContent.items.every((item) => item.researchIdentity === undefined)).toBe(true);
+  });
+
   it("constrains posted transaction mutation quantities and prices at the MCP boundary", () => {
     const tool = listMcpToolDefinitions().find(({ name }) => name === "preview_update_posted_transactions");
     expect(tool).toBeDefined();

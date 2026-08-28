@@ -99,6 +99,16 @@ export function resolveSearchInstrumentScopePath(
   return usablePath ?? grantedPaths[0] ?? null;
 }
 
+export function hasUsableResearchSearchAccess(
+  auth: McpAuthContext,
+  settings: Awaited<ReturnType<FastifyInstance["persistence"]["getAiConnectorPolicySettings"]>>,
+): boolean {
+  if (!auth.scopes.includes("research:read")) return false;
+  if (!researchMcpExposureEnabled() || !settings.groupToggles.research) return false;
+  if (auth.authMode === "bearer" && !settings.bearerFallback.allowedToolGroups.includes("research")) return false;
+  return true;
+}
+
 export function assertMcpScopesGranted(auth: McpAuthContext, scopes: readonly AiConnectorScope[]): void {
   requireAnyScope(auth, scopes);
 }

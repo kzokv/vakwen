@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AiConnectorScope } from "@vakwen/shared-types";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -312,15 +313,22 @@ export function toReportInput(args: unknown): BuildReportInput {
   };
 }
 
+export function buildMcpPolicyToolScopes(): Record<string, AiConnectorScope> {
+  return Object.fromEntries(
+    listMcpToolDefinitions().map((tool) => [tool.name, tool.scope]),
+  );
+}
+
 export async function registerMcpRoutes(
   app: FastifyInstance,
   options: RegisterMcpRoutesOptions = {},
 ): Promise<void> {
   const authService = options.authService ?? new DefaultMcpAuthService();
-  const initialPolicySettings = await app.persistence.getAiConnectorPolicySettings();
-  const initialListedTools = listMcpToolDefinitions({ legacyReadGroupEnabled: initialPolicySettings.groupToggles.read });
   const policyService = options.policyService ?? new DefaultMcpPolicyService(
-    Object.fromEntries(initialListedTools.map((tool) => [tool.name, tool.scope])),
+    // Authorization must know the complete registry even when discovery hides a
+    // policy-disabled tool at startup. Admin policy changes take effect without
+    // requiring an API restart.
+    buildMcpPolicyToolScopes(),
   );
   const sessions = new Map<string, StreamableHTTPServerTransport>();
 

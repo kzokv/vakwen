@@ -15,9 +15,8 @@ import {
 } from "./market-data/quoteSnapshotService.js";
 import { isInstrumentQuoteable } from "./instrumentRegistry.js";
 import { routeError } from "../lib/routeError.js";
-import { resolveSearchInstrumentScopePath } from "../mcp/policy.js";
+import { hasUsableResearchSearchAccess, resolveSearchInstrumentScopePath } from "../mcp/policy.js";
 import type { McpReadServiceDeps } from "../mcp/types.js";
-import { researchMcpExposureEnabled } from "../mcp/tools.js";
 import type { Store } from "../types/store.js";
 import { resolveAccountDisplayName } from "./mcpAccountHelpers.js";
 
@@ -383,6 +382,7 @@ export async function searchInstruments(
   const policySettings = await deps.app.persistence.getAiConnectorPolicySettings();
   const searchPath = resolveSearchInstrumentScopePath(deps.requestContext.auth, policySettings);
   const researchOnly = searchPath?.group === "research";
+  const researchAccess = hasUsableResearchSearchAccess(deps.requestContext.auth, policySettings);
   const markets = input.markets && input.markets.length > 0
     ? input.markets
     : researchOnly
@@ -397,7 +397,7 @@ export async function searchInstruments(
       undefined,
       market,
       deps.requestContext.auth.sessionUserId,
-      { includeInactive: input.includeInactive },
+      { includeInactive: researchAccess && input.includeInactive === true },
     )),
   );
   const merged = rows
@@ -413,7 +413,7 @@ export async function searchInstruments(
         lastRepairAt: instrument.lastRepairAt,
         gicsIndustryGroup: instrument.gicsIndustryGroup,
       };
-      if (!researchMcpExposureEnabled()) {
+      if (!researchAccess) {
         return baseItem;
       }
       return {
