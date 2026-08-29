@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
+import { researchIdentityQuerySchema } from "../../src/services/research/contracts.js";
 import {
   appendOfficialListingStatusRevision,
   canonicalizeOfficialIdentityRow,
@@ -227,6 +228,12 @@ describe("Taiwan research store-only service", () => {
       history: { limit: 1 },
     });
     expect(firstPage.history.nextCursor).toEqual(expect.any(String));
+    expect(firstPage.history.nextCursor!.length).toBeGreaterThan(200);
+    expect(researchIdentityQuerySchema.safeParse({
+      subject: firstPage.selector,
+      context,
+      history: { limit: 1, cursor: firstPage.history.nextCursor! },
+    }).success).toBe(true);
 
     const secondPage = await getResearchIdentity(persistence, {
       subject: firstPage.selector,

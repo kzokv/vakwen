@@ -156,7 +156,9 @@ function latestFacts(records: ResearchIdentityRecord[]): CanonicalIdentityObserv
   const terminalStatusFacts: CanonicalIdentityObservation[] = [];
   for (const record of records) {
     for (const observation of record.observations) {
-      if (researchIdentityRevisionPrecedence(record) > 0 && observation.field === "listing_status") {
+      const precedence = researchIdentityRevisionPrecedence(record);
+      if (precedence === 2) continue;
+      if (precedence === 1 && observation.field === "listing_status") {
         terminalStatusFacts.push(observation);
         continue;
       }

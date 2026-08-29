@@ -56,7 +56,7 @@ export const researchQuerySchema = z.object({
 }).strict();
 
 export const researchHistoryPageSchema = z.object({
-  cursor: z.string().min(1).max(200).optional(),
+  cursor: z.string().min(1).max(512).optional(),
   limit: z.number().int().min(1).max(100).default(25),
 }).strict();
 

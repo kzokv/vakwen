@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { PostgresPersistence } from "../../src/persistence/postgres.js";
 import {
+  appendOfficialListingAbsenceObservation,
   appendOfficialListingStatusRevision,
   canonicalizeOfficialIdentityRow,
 } from "../../src/services/research/identity.js";
@@ -153,6 +154,40 @@ describePostgres("research identity memory/Postgres parity", () => {
     expect(firstPage.history.items).toEqual([first]);
     expect(secondPage.history.items).toEqual([correction]);
     expect(secondPage.history.nextCursor).toBeNull();
+
+    const absenceCandidate = appendOfficialListingAbsenceObservation(correction, {
+      effectiveDate: "2026-08-29",
+      retrievedAt: "2026-08-29T02:00:00.000Z",
+      acquisitionRunId: "pg-absence-candidate",
+      artifact: {
+        contentHash: "sha256:pg-absence-candidate",
+        sourceUrl: "https://info.tpex.org.tw/api/etfFilter",
+        publisherDataset: "etfFilter:absence-candidate",
+        accessProvider: "TPEX_WEB_JSON",
+      },
+    });
+    await memory.appendResearchIdentityRecords([absenceCandidate]);
+    await postgres.appendResearchIdentityRecords([absenceCandidate]);
+    const absenceQuery = {
+      subject: { kind: "listing_id" as const, listingId: correction.listing.id },
+      effectiveAt: "2026-08-29T23:59:59.999Z",
+      knowledgeAt: "2026-08-29T23:59:59.999Z",
+    };
+    expect(await postgres.listResearchIdentityLatestRevisions(absenceQuery)).toEqual(
+      await memory.listResearchIdentityLatestRevisions(absenceQuery),
+    );
+    expect(await postgres.listLatestResearchIdentityRecords(absenceQuery)).toEqual([correction]);
+    const pendingIdentity = await getResearchIdentity(postgres, {
+      subject: absenceQuery.subject,
+      context: {
+        effectiveAt: absenceQuery.effectiveAt,
+        knowledgeAt: absenceQuery.knowledgeAt,
+        assessmentMode: "effective",
+      },
+      history: { limit: 25 },
+    });
+    expect(pendingIdentity.identity.listing.status).toBe("active");
+    expect(pendingIdentity.identity.facts.some((fact) => fact.field === "listing_presence")).toBe(false);
 
     const tiedActive = canonicalizeOfficialIdentityRow({
       venue: "TWSE",

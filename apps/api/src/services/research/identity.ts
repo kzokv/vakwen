@@ -100,12 +100,15 @@ export function researchIdentityRecordKey(record: ResearchIdentityRecord): strin
 }
 
 /**
- * A listing lifecycle is terminal: once an explicit inactive revision is
- * effective and known, lagging active snapshots for the same immutable
- * Listing must not resurrect it. Keep this semantic order shared by every
- * persistence backend instead of relying on append order or opaque hashes.
+ * Classify immutable revisions consistently across persistence backends.
+ * Full identity bases are 0, terminal status overlays are 1, and non-terminal
+ * absence evidence is 2. Latest-state resolution applies only the identity
+ * and terminal classes; absence evidence remains history until corroborated.
  */
 export function researchIdentityRevisionPrecedence(record: ResearchIdentityRecord): number {
+  if (record.observations.length === 1 && record.observations[0]?.field === "listing_presence") {
+    return 2;
+  }
   return record.observations.length === 1 && record.observations[0]?.field === "listing_status"
     ? 1
     : 0;
@@ -135,7 +138,7 @@ export function resolveResearchIdentityLatestState(
     .filter((record) => researchIdentityRevisionPrecedence(record) === 0)
     .at(-1);
   const terminalStatus = ordered
-    .filter((record) => researchIdentityRevisionPrecedence(record) > 0)
+    .filter((record) => researchIdentityRevisionPrecedence(record) === 1)
     .at(-1);
   if (!identityBasis) return terminalStatus;
   if (!terminalStatus) return identityBasis;
@@ -470,6 +473,72 @@ interface OfficialListingStatusRevisionInput {
     sourceUrl: string;
     publisherDataset: string;
     accessProvider?: "TWSE_OPENAPI" | "TPEX_OPENAPI" | "TWSE_WEB_JSON" | "TPEX_WEB_JSON";
+  };
+}
+
+interface OfficialListingAbsenceObservationInput {
+  effectiveDate: string;
+  retrievedAt: string;
+  acquisitionRunId?: string;
+  artifact: {
+    contentHash: string;
+    sourceUrl: string;
+    publisherDataset: string;
+    accessProvider?: "TWSE_OPENAPI" | "TPEX_OPENAPI" | "TWSE_WEB_JSON" | "TPEX_WEB_JSON";
+  };
+}
+
+export function appendOfficialListingAbsenceObservation(
+  previous: ResearchIdentityRecord,
+  input: OfficialListingAbsenceObservationInput,
+): ResearchIdentityRecord {
+  const provenanceId = opaqueId(
+    "prv",
+    previous.listing.venue,
+    input.artifact.contentHash,
+    input.retrievedAt,
+    "listing_absence",
+  );
+  const effectiveAt = atStartOfTaiwanDay(input.effectiveDate);
+  const observation: CanonicalIdentityObservation = {
+    id: opaqueId("obs", provenanceId, previous.listing.id, "listing_presence", "absent"),
+    kind: "source_fact",
+    subject: { kind: "listing", id: previous.listing.id },
+    field: "listing_presence",
+    raw: { state: "present", label: "listingPresence", value: "absent" },
+    normalized: { state: "present", value: "absent" },
+    effectiveAt,
+    publishedAt: { state: "missing", reason: "unknown" },
+    retrievedAt: input.retrievedAt,
+    processedAt: input.retrievedAt,
+    provenanceId,
+    contractVersion: "research-observation/1.0.0",
+    normalizationVersion: "identity-normalization/1.0.0",
+  };
+  return {
+    issuer: previous.issuer,
+    security: previous.security,
+    listing: previous.listing,
+    eligibility: previous.eligibility,
+    observations: [observation],
+    provenance: {
+      id: provenanceId,
+      publisher: previous.listing.venue,
+      accessProvider: input.artifact.accessProvider
+        ?? (previous.listing.venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI"),
+      authorityRole: "authoritative",
+      canonicalDatasetId: "research_identity",
+      publisherDataset: input.artifact.publisherDataset,
+      sourceUrl: input.artifact.sourceUrl,
+      contentHash: input.artifact.contentHash,
+      acquisitionPath: "scheduled_official_snapshot",
+      acquisitionRunId: input.acquisitionRunId ?? "manual-absence-observation",
+      retrievedAt: input.retrievedAt,
+      parserVersion: "research-identity-parser/1.0.0",
+      usagePolicyVersion: "taiwan-open-data/1.0.0",
+      retentionStatus: "retained",
+      contentExposure: "allowed",
+    },
   };
 }
 

@@ -12,4 +12,4 @@ WHERE EXISTS (
 AND jsonb_array_length(record -> 'observations') = 1;
 
 COMMENT ON COLUMN research.identity_records.revision_precedence IS
-  'Terminal lifecycle priority; effective explicit status-only revisions sort after full snapshots.';
+  'Semantic revision kind: full identity 0, terminal status 1, non-terminal absence evidence 2.';

@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import type { Persistence } from "../../persistence/types.js";
 import {
+  appendOfficialListingAbsenceObservation,
   appendOfficialListingStatusRevision,
   canonicalizeOfficialIdentityRow,
   officialHistoricalListingIdentityKey,
+  researchIdentityRevisionPrecedence,
+  resolveResearchIdentityLatestState,
   withListingPredecessor,
   type OfficialIdentityInput,
   type ResearchIdentityRecord,
@@ -365,13 +368,25 @@ export async function runOfficialIdentityAcquisition(
       },
     })),
   ];
-  const historicalLatest = (await Promise.all((["TWSE", "TPEX"] as const).map((venue) =>
-    persistence.listLatestResearchIdentityRecords({
+  const historicalRevisions = (await Promise.all((["TWSE", "TPEX"] as const).map((venue) =>
+    persistence.listResearchIdentityLatestRevisions({
       subject: { kind: "venue", venue },
       effectiveAt: retrievedAt,
       knowledgeAt: retrievedAt,
     })
   ))).flat();
+  const historicalByListing = new Map<string, ResearchIdentityRecord[]>();
+  for (const record of historicalRevisions) {
+    const revisions = historicalByListing.get(record.listing.id) ?? [];
+    revisions.push(record);
+    historicalByListing.set(record.listing.id, revisions);
+  }
+  const historicalLatest = [...historicalByListing.values()]
+    .map((revisions) => resolveResearchIdentityLatestState(revisions))
+    .filter((record): record is ResearchIdentityRecord => record !== undefined);
+  const historicalAbsenceObservations = historicalRevisions.filter((record) =>
+    researchIdentityRevisionPrecedence(record) === 2
+  );
   const provisionalRecords = inputs.map(canonicalizeOfficialIdentityRow);
   const reconciledInputs = inputs.map((input, index) =>
     reconcileExistingProductIdentity(input, provisionalRecords[index]!, historicalLatest)
@@ -405,6 +420,7 @@ export async function runOfficialIdentityAcquisition(
     records.push(predecessor ? withListingPredecessor(record, predecessor.listing.id) : record);
   }
   const statusRevisions: ResearchIdentityRecord[] = [];
+  const absenceObservations: ResearchIdentityRecord[] = [];
   for (const delisting of delistings) {
     const candidates = [
       ...historicalLatest,
@@ -492,24 +508,44 @@ export async function runOfficialIdentityAcquisition(
         || previous.listing.status !== "active"
         || currentEtfListingIds.has(previous.listing.id)
       ) continue;
-      statusRevisions.push(appendOfficialListingStatusRevision(previous, {
-        status: "inactive",
-        effectiveDate: retrievalBusinessDate,
-        retrievedAt,
-        acquisitionRunId,
-        artifact: {
-          ...fundArtifact.metadata,
-          publisherDataset: venue === "TWSE" ? "opendata/t187ap47_L:absence" : "etfFilter:absence",
-          accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_WEB_JSON",
-        },
-      }));
+      const priorAbsence = historicalAbsenceObservations
+        .filter((record) => record.listing.id === previous.listing.id)
+        .sort(recordOrder)
+        .at(-1);
+      const consecutiveAbsence = priorAbsence !== undefined
+        && priorAbsence.provenance.retrievedAt > previous.provenance.retrievedAt
+        && taiwanBusinessDate(priorAbsence.provenance.retrievedAt) < retrievalBusinessDate;
+      const artifact = {
+        ...fundArtifact.metadata,
+        publisherDataset: venue === "TWSE" ? "opendata/t187ap47_L:absence" : "etfFilter:absence",
+        accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" as const : "TPEX_WEB_JSON" as const,
+      };
+      if (consecutiveAbsence) {
+        statusRevisions.push(appendOfficialListingStatusRevision(previous, {
+          status: "inactive",
+          effectiveDate: retrievalBusinessDate,
+          retrievedAt,
+          acquisitionRunId,
+          artifact,
+        }));
+      } else {
+        absenceObservations.push(appendOfficialListingAbsenceObservation(previous, {
+          effectiveDate: retrievalBusinessDate,
+          retrievedAt,
+          acquisitionRunId,
+          artifact: {
+            ...artifact,
+            publisherDataset: `${artifact.publisherDataset}-candidate`,
+          },
+        }));
+      }
     }
   }
-  await persistence.appendResearchIdentityRecords([...records, ...statusRevisions]);
+  await persistence.appendResearchIdentityRecords([...records, ...statusRevisions, ...absenceObservations]);
   return {
     acquisitionRunId,
     sourceCount: Object.keys(OFFICIAL_IDENTITY_SOURCES).length,
-    recordCount: records.length + statusRevisions.length,
+    recordCount: records.length + statusRevisions.length + absenceObservations.length,
     retrievedAt,
   };
 }

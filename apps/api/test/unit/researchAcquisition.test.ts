@@ -214,7 +214,8 @@ describe("official Taiwan identity acquisition", () => {
       retiredTpexEtn,
     ]);
     const listHistorySpy = vi.spyOn(persistence, "listResearchIdentityRecords");
-    const listLatestSpy = vi.spyOn(persistence, "listLatestResearchIdentityRecords");
+    const listLatestSpy = vi.spyOn(persistence, "listResearchIdentityLatestRevisions");
+    const listResolvedLatestSpy = vi.spyOn(persistence, "listLatestResearchIdentityRecords");
 
     const result = await runOfficialIdentityAcquisition(persistence, {
       fetchImpl,
@@ -223,6 +224,7 @@ describe("official Taiwan identity acquisition", () => {
     });
     expect(listHistorySpy).not.toHaveBeenCalled();
     expect(listLatestSpy).toHaveBeenCalledTimes(2);
+    expect(listResolvedLatestSpy).not.toHaveBeenCalled();
 
     expect(requested.sort()).toEqual([
       ...Object.values(OFFICIAL_IDENTITY_SOURCES).filter((url) => url !== OFFICIAL_IDENTITY_SOURCES.tpexDelistings),
@@ -315,9 +317,23 @@ describe("official Taiwan identity acquisition", () => {
     expect([...latestByListing.values()].filter((record) => record.listing.status === "active")).toHaveLength(1);
     expect([...latestByListing.values()].find((record) => record.listing.status === "active")?.listing.listedAt).toBe("2026-08-27");
 
+    for (const [listingId, accessProvider] of [
+      [absentTwseEtf.listing.id, "TWSE_OPENAPI"],
+      [absentTpexEtf.listing.id, "TPEX_WEB_JSON"],
+    ] as const) {
+      const history = await persistence.listResearchIdentityRecords({
+        subject: { kind: "listing_id", listingId },
+        effectiveAt: "2026-08-28T23:59:59.999Z",
+        knowledgeAt: "2026-08-28T23:59:59.999Z",
+      });
+      expect(history.at(-1)?.listing.status).toBe("active");
+      expect(history.at(-1)?.observations).toEqual([
+        expect.objectContaining({ field: "listing_presence", normalized: { state: "present", value: "absent" } }),
+      ]);
+      expect(history.at(-1)?.provenance.accessProvider).toBe(accessProvider);
+    }
+
     for (const [listingId, inactiveAt, accessProvider] of [
-      [absentTwseEtf.listing.id, "2026-08-28", "TWSE_OPENAPI"],
-      [absentTpexEtf.listing.id, "2026-08-28", "TPEX_WEB_JSON"],
       [retiredTwseEtn.listing.id, "2020-04-30", "TWSE_WEB_JSON"],
       [retiredTpexEtn.listing.id, "2021-06-16", "TPEX_WEB_JSON"],
     ] as const) {
@@ -328,6 +344,20 @@ describe("official Taiwan identity acquisition", () => {
       });
       expect(history.at(-1)?.listing).toMatchObject({ status: "inactive", inactiveAt });
       expect(history.at(-1)?.provenance.accessProvider).toBe(accessProvider);
+    }
+
+    await runOfficialIdentityAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-28T18:15:00.000Z",
+      acquisitionRunId: "run-test-2",
+    });
+    for (const listingId of [absentTwseEtf.listing.id, absentTpexEtf.listing.id]) {
+      const history = await persistence.listResearchIdentityRecords({
+        subject: { kind: "listing_id", listingId },
+        effectiveAt: "2026-08-29T23:59:59.999Z",
+        knowledgeAt: "2026-08-29T23:59:59.999Z",
+      });
+      expect(history.at(-1)?.listing).toMatchObject({ status: "inactive", inactiveAt: "2026-08-29" });
     }
   });
 
@@ -516,6 +546,7 @@ describe("official Taiwan identity acquisition", () => {
     );
     await persistence.appendResearchIdentityRecords(historicalTpexEtfs);
 
+    let currentTpexTickers = ["00610"];
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
       let payload: unknown;
@@ -529,7 +560,16 @@ describe("official Taiwan identity acquisition", () => {
       } else if (url === OFFICIAL_IDENTITY_SOURCES.tpexFunds) {
         payload = {
           status: true,
-          data: [{ issuerID: "issuer-0", issuer: "歷史投信 0", listingDate: "20200101", stockName: "歷史ETF 00610", stockNo: "00610" }],
+          data: currentTpexTickers.map((ticker) => {
+            const index = Number(ticker.slice(-1));
+            return {
+              issuerID: `issuer-${index}`,
+              issuer: `歷史投信 ${index}`,
+              listingDate: "20200101",
+              stockName: `歷史ETF ${ticker}`,
+              stockNo: ticker,
+            };
+          }),
         };
       } else if (url === OFFICIAL_IDENTITY_SOURCES.twseSecuritiesFirms) {
         payload = [{
@@ -566,5 +606,37 @@ describe("official Taiwan identity acquisition", () => {
       expect(history).toHaveLength(1);
       expect(history[0]?.listing.status).toBe("active");
     }
+
+    currentTpexTickers = ["00610", "00611"];
+    await runOfficialIdentityAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-29T04:00:00.000Z",
+      acquisitionRunId: "run-single-etf-absence",
+    });
+    const transientListingId = historicalTpexEtfs[2]!.listing.id;
+    const pendingHistory = await persistence.listResearchIdentityRecords({
+      subject: { kind: "listing_id", listingId: transientListingId },
+      effectiveAt: "2026-08-29T23:59:59.999Z",
+      knowledgeAt: "2026-08-29T23:59:59.999Z",
+    });
+    expect(pendingHistory.at(-1)?.listing.status).toBe("active");
+    expect(pendingHistory.at(-1)?.observations[0]).toMatchObject({
+      field: "listing_presence",
+      normalized: { state: "present", value: "absent" },
+    });
+
+    currentTpexTickers = ["00610", "00611", "00612"];
+    await runOfficialIdentityAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-30T04:00:00.000Z",
+      acquisitionRunId: "run-etf-reappeared",
+    });
+    const reappearedHistory = await persistence.listResearchIdentityRecords({
+      subject: { kind: "listing_id", listingId: transientListingId },
+      effectiveAt: "2026-08-30T23:59:59.999Z",
+      knowledgeAt: "2026-08-30T23:59:59.999Z",
+    });
+    expect(reappearedHistory.at(-1)?.listing.status).toBe("active");
+    expect(reappearedHistory.some((record) => record.listing.status === "inactive")).toBe(false);
   });
 });
