@@ -29,6 +29,7 @@ import {
   researchIdentityRecordSortOrder,
   researchIdentityRevisionPrecedence,
   resolveResearchIdentityLatestState,
+  type ResearchIdentityHistoryPageQuery,
   type ResearchIdentityRecord,
   type ResearchIdentityRecordQuery,
 } from "../services/research/identity.js";
@@ -1325,7 +1326,9 @@ export class PostgresPersistence implements Persistence {
     return result.rows.map((row) => row.record);
   }
 
-  async listLatestResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]> {
+  async listResearchIdentityLatestRevisions(
+    query: ResearchIdentityRecordQuery,
+  ): Promise<ResearchIdentityRecord[]> {
     const selectorSql = query.subject.kind === "listing_id"
       ? "listing_id = $1"
       : query.subject.kind === "security_id"
@@ -1342,23 +1345,52 @@ export class PostgresPersistence implements Persistence {
           : [query.subject.venue];
     const effectiveAtIndex = selectorValues.length + 1;
     const knowledgeAtIndex = selectorValues.length + 2;
+    const sql = query.subject.kind === "ticker_venue"
+      ? `WITH candidates AS (
+           SELECT DISTINCT listing_id
+           FROM research.identity_records
+           WHERE ticker = $1
+             AND venue = $2
+             AND effective_at <= $${effectiveAtIndex}::timestamptz
+             AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
+         )
+         SELECT record
+         FROM (
+           SELECT DISTINCT ON (records.listing_id, records.revision_precedence)
+             records.record_key, records.listing_id, records.effective_at,
+             records.retrieved_at, records.revision_precedence, records.record
+           FROM research.identity_records AS records
+           INNER JOIN candidates USING (listing_id)
+           WHERE records.effective_at <= $${effectiveAtIndex}::timestamptz
+             AND records.retrieved_at <= $${knowledgeAtIndex}::timestamptz
+           ORDER BY records.listing_id, records.revision_precedence DESC,
+                    records.effective_at DESC, records.retrieved_at DESC,
+                    records.record_key DESC
+         ) AS latest
+         ORDER BY listing_id ASC, revision_precedence DESC`
+      : `SELECT record
+         FROM (
+           SELECT DISTINCT ON (listing_id, revision_precedence)
+             record_key, listing_id, effective_at, retrieved_at, revision_precedence, record
+           FROM research.identity_records
+           WHERE ${selectorSql}
+             AND effective_at <= $${effectiveAtIndex}::timestamptz
+             AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
+           ORDER BY listing_id, revision_precedence DESC, effective_at DESC,
+                    retrieved_at DESC, record_key DESC
+         ) AS latest
+         ORDER BY listing_id ASC, revision_precedence DESC`;
     const result = await this.pool.query<{ record: ResearchIdentityRecord }>(
-      `SELECT record
-       FROM (
-         SELECT DISTINCT ON (listing_id, revision_precedence)
-           record_key, listing_id, effective_at, retrieved_at, revision_precedence, record
-         FROM research.identity_records
-         WHERE ${selectorSql}
-           AND effective_at <= $${effectiveAtIndex}::timestamptz
-           AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
-         ORDER BY listing_id, revision_precedence DESC, effective_at DESC,
-                  retrieved_at DESC, record_key DESC
-       ) AS latest
-       ORDER BY listing_id ASC, revision_precedence DESC`,
+      sql,
       [...selectorValues, query.effectiveAt, query.knowledgeAt],
     );
+    return result.rows.map(({ record }) => record);
+  }
+
+  async listLatestResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]> {
+    const revisions = await this.listResearchIdentityLatestRevisions(query);
     const recordsByListing = new Map<string, ResearchIdentityRecord[]>();
-    for (const { record } of result.rows) {
+    for (const record of revisions) {
       const records = recordsByListing.get(record.listing.id) ?? [];
       records.push(record);
       recordsByListing.set(record.listing.id, records);
@@ -1366,6 +1398,44 @@ export class PostgresPersistence implements Persistence {
     return [...recordsByListing.values()]
       .map((records) => resolveResearchIdentityLatestState(records)!)
       .sort(researchIdentityRecordSortOrder);
+  }
+
+  async listResearchIdentityHistoryPage(
+    query: ResearchIdentityHistoryPageQuery,
+  ): Promise<ResearchIdentityRecord[]> {
+    const result = query.after
+      ? await this.pool.query<{ record: ResearchIdentityRecord }>(
+          `SELECT record
+           FROM research.identity_records
+           WHERE listing_id = $1
+             AND effective_at <= $2::timestamptz
+             AND retrieved_at <= $3::timestamptz
+             AND (effective_at, retrieved_at, revision_precedence, record_key)
+               > ($4::timestamptz, $5::timestamptz, $6::smallint, $7::text)
+           ORDER BY effective_at ASC, retrieved_at ASC, revision_precedence ASC, record_key ASC
+           LIMIT $8`,
+          [
+            query.subject.listingId,
+            query.effectiveAt,
+            query.knowledgeAt,
+            query.after.effectiveAt,
+            query.after.retrievedAt,
+            query.after.revisionPrecedence,
+            query.after.recordKey,
+            query.limit,
+          ],
+        )
+      : await this.pool.query<{ record: ResearchIdentityRecord }>(
+          `SELECT record
+           FROM research.identity_records
+           WHERE listing_id = $1
+             AND effective_at <= $2::timestamptz
+             AND retrieved_at <= $3::timestamptz
+           ORDER BY effective_at ASC, retrieved_at ASC, revision_precedence ASC, record_key ASC
+           LIMIT $4`,
+          [query.subject.listingId, query.effectiveAt, query.knowledgeAt, query.limit],
+        );
+    return result.rows.map(({ record }) => record);
   }
 
   private async getLatestQuoteFallbackSnapshotsForPolicyIds(

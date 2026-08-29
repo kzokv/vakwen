@@ -176,9 +176,6 @@ function historicalIdentitySeed(
     securityType,
     ticker: delisting.ticker,
     inactiveAt: delisting.inactiveAt,
-    identityDiscriminator: delisting.securityType === "etn"
-      ? `${delisting.issuerName ?? ""}\u001f${delisting.displayName ?? ""}`
-      : delisting.companyName ?? "",
   });
   const common = {
     venue: delisting.venue,

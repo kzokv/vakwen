@@ -76,6 +76,18 @@ describePostgres("research identity memory/Postgres parity", () => {
       expect(await postgres.listLatestResearchIdentityRecords(query)).toEqual(
         await memory.listLatestResearchIdentityRecords(query),
       );
+      expect(await postgres.listResearchIdentityLatestRevisions(query)).toEqual(
+        await memory.listResearchIdentityLatestRevisions(query),
+      );
+      expect(await postgres.listResearchIdentityHistoryPage({
+        ...query,
+        subject: { kind: "listing_id", listingId: first.listing.id },
+        limit: 1,
+      })).toEqual(await memory.listResearchIdentityHistoryPage({
+        ...query,
+        subject: { kind: "listing_id", listingId: first.listing.id },
+        limit: 1,
+      }));
       const serviceQuery = {
         subject: { kind: "listing_id" as const, listingId: first.listing.id },
         context: {
@@ -108,6 +120,21 @@ describePostgres("research identity memory/Postgres parity", () => {
       [first.listing.id],
     );
     expect(count.rows[0]?.count).toBe("2");
+    const requestIndexes = await pool.query<{ indexname: string }>(
+      `SELECT indexname
+       FROM pg_indexes
+       WHERE schemaname = 'research'
+         AND indexname = ANY($1::text[])
+       ORDER BY indexname`,
+      [[
+        "research_identity_records_listing_history_page_idx",
+        "research_identity_records_listing_latest_revision_idx",
+      ]],
+    );
+    expect(requestIndexes.rows.map(({ indexname }) => indexname)).toEqual([
+      "research_identity_records_listing_history_page_idx",
+      "research_identity_records_listing_latest_revision_idx",
+    ]);
 
     const firstPage = await getResearchIdentity(postgres, {
       subject: { kind: "ticker_venue", ticker: "5274", listingVenue: "TPEX" },

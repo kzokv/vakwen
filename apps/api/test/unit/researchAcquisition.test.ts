@@ -333,6 +333,8 @@ describe("official Taiwan identity acquisition", () => {
 
   it("fresh database: historical company and ETN retirements → seed queryable inactive identities", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    let historicalTpexCompanyName = "歷史上櫃公司";
+    let historicalTwseEtnName = "元大歷史N";
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
       let payload: unknown;
@@ -361,7 +363,7 @@ describe("official Taiwan identity acquisition", () => {
       } else if (url === OFFICIAL_IDENTITY_SOURCES.twseEtnRetirements) {
         payload = {
           stat: "ok",
-          data: [["2020/04/30", "020005", "元大歷史N", "元大證券股份有限公司", "到期"]],
+          data: [["2020/04/30", "020005", historicalTwseEtnName, "元大證券股份有限公司", "到期"]],
         };
       } else if (url === OFFICIAL_IDENTITY_SOURCES.tpexEtnRetirements) {
         payload = {
@@ -378,7 +380,7 @@ describe("official Taiwan identity acquisition", () => {
         payload = {
           stat: "ok",
           tables: [{ data: url.endsWith("date=2024")
-            ? [["5678", "歷史上櫃公司", "113-11-29", "終止上櫃原因", "https://mops.twse.com.tw/"]]
+            ? [["5678", historicalTpexCompanyName, "113-11-29", "終止上櫃原因", "https://mops.twse.com.tw/"]]
             : [] }],
         };
       }
@@ -429,6 +431,55 @@ describe("official Taiwan identity acquisition", () => {
       });
       expect(identity.history.items).toHaveLength(1);
     }
+
+    const companyBeforeCorrection = await getResearchIdentity(persistence, {
+      subject: { kind: "ticker_venue", ticker: "5678", listingVenue: "TPEX" },
+      context: {
+        effectiveAt: "2026-08-29T23:59:59.999Z",
+        knowledgeAt: "2026-08-29T23:59:59.999Z",
+        assessmentMode: "effective",
+      },
+      history: { limit: 25 },
+    });
+    const etnBeforeCorrection = await getResearchIdentity(persistence, {
+      subject: { kind: "ticker_venue", ticker: "020005", listingVenue: "TWSE" },
+      context: {
+        effectiveAt: "2026-08-29T23:59:59.999Z",
+        knowledgeAt: "2026-08-29T23:59:59.999Z",
+        assessmentMode: "effective",
+      },
+      history: { limit: 25 },
+    });
+    historicalTpexCompanyName = "歷史上櫃公司更正";
+    historicalTwseEtnName = "元大歷史更正N";
+    await runOfficialIdentityAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-30T04:00:00.000Z",
+      acquisitionRunId: "run-corrected-history",
+    });
+
+    const companyAfterCorrection = await getResearchIdentity(persistence, {
+      subject: { kind: "ticker_venue", ticker: "5678", listingVenue: "TPEX" },
+      context: {
+        effectiveAt: "2026-08-30T23:59:59.999Z",
+        knowledgeAt: "2026-08-30T23:59:59.999Z",
+        assessmentMode: "effective",
+      },
+      history: { limit: 25 },
+    });
+    const etnAfterCorrection = await getResearchIdentity(persistence, {
+      subject: { kind: "ticker_venue", ticker: "020005", listingVenue: "TWSE" },
+      context: companyAfterCorrection.context,
+      history: { limit: 25 },
+    });
+    expect(companyAfterCorrection.selector).toEqual(companyBeforeCorrection.selector);
+    expect(companyAfterCorrection.history.items).toHaveLength(2);
+    expect(companyAfterCorrection.identity.facts.find((fact) => fact.field === "legal_name")?.normalized)
+      .toEqual({ state: "present", value: historicalTpexCompanyName });
+    expect(etnAfterCorrection.selector).toEqual(etnBeforeCorrection.selector);
+    expect(etnAfterCorrection.history.items).toHaveLength(2);
+    expect(etnAfterCorrection.identity.facts.find((fact) => fact.field === "display_name")?.normalized)
+      .toEqual({ state: "present", value: historicalTwseEtnName });
   });
 
   it("partial ETF snapshot: unexplained absences exceed the completeness guard → reject without retiring listings", async () => {

@@ -6,9 +6,12 @@ import type {
   ResearchTemporalContext,
 } from "./contracts.js";
 import {
+  researchIdentityHistoryPosition,
+  researchIdentityRecordSortOrder,
   researchIdentityRevisionPrecedence,
   resolveResearchIdentityLatestState,
   type CanonicalIdentityObservation,
+  type ResearchIdentityHistoryPosition,
   type ResearchIdentityRecord,
 } from "./identity.js";
 import { researchSkillExposureEnabled } from "./rollout.js";
@@ -56,12 +59,12 @@ function historyCursorBinding(
     .slice(0, 32);
 }
 
-function cursorOffset(
+function cursorPosition(
   cursor: string | undefined,
   listingId: string,
   context: ResearchTemporalContext,
-): number {
-  if (!cursor) return 0;
+): ResearchIdentityHistoryPosition | undefined {
+  if (!cursor) return undefined;
   let decoded: unknown;
   try {
     decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
@@ -72,9 +75,7 @@ function cursorOffset(
     !decoded
     || typeof decoded !== "object"
     || Array.isArray(decoded)
-    || (decoded as { version?: unknown }).version !== 1
-    || !Number.isSafeInteger((decoded as { offset?: unknown }).offset)
-    || Number((decoded as { offset?: unknown }).offset) < 0
+    || (decoded as { version?: unknown }).version !== 2
     || (decoded as { binding?: unknown }).binding !== historyCursorBinding(listingId, context)
   ) {
     throw new ResearchServiceError(
@@ -82,54 +83,72 @@ function cursorOffset(
       "The research history cursor does not match the immutable listing and temporal context",
     );
   }
-  return Number((decoded as { offset: number }).offset);
+  const position = (decoded as { position?: unknown }).position;
+  if (
+    !position
+    || typeof position !== "object"
+    || Array.isArray(position)
+    || typeof (position as { effectiveAt?: unknown }).effectiveAt !== "string"
+    || typeof (position as { retrievedAt?: unknown }).retrievedAt !== "string"
+    || Number.isNaN(Date.parse((position as { effectiveAt: string }).effectiveAt))
+    || Number.isNaN(Date.parse((position as { retrievedAt: string }).retrievedAt))
+    || !Number.isSafeInteger((position as { revisionPrecedence?: unknown }).revisionPrecedence)
+    || Number((position as { revisionPrecedence: number }).revisionPrecedence) < 0
+    || Number((position as { revisionPrecedence: number }).revisionPrecedence) > 32_767
+    || typeof (position as { recordKey?: unknown }).recordKey !== "string"
+    || (position as { recordKey: string }).recordKey.length === 0
+  ) {
+    throw new ResearchServiceError("research_cursor_invalid", "The research history cursor is invalid");
+  }
+  return position as ResearchIdentityHistoryPosition;
 }
 
 function encodeCursor(
-  offset: number,
+  position: ResearchIdentityHistoryPosition,
   listingId: string,
   context: ResearchTemporalContext,
 ): string {
   return Buffer.from(JSON.stringify({
-    version: 1,
-    offset,
+    version: 2,
+    position,
     binding: historyCursorBinding(listingId, context),
   }), "utf8").toString("base64url");
 }
 
 function resolvableListingIds(records: ResearchIdentityRecord[]): string[] {
-  const latestByListing = new Map<string, ResearchIdentityRecord>();
-  for (const record of records) latestByListing.set(record.listing.id, record);
-  const activeIds = [...latestByListing.values()]
+  const revisionsByListing = new Map<string, ResearchIdentityRecord[]>();
+  for (const record of records) {
+    const revisions = revisionsByListing.get(record.listing.id) ?? [];
+    revisions.push(record);
+    revisionsByListing.set(record.listing.id, revisions);
+  }
+  const latestByListing = [...revisionsByListing.values()]
+    .map((revisions) => resolveResearchIdentityLatestState(revisions)!)
+    .filter((record): record is ResearchIdentityRecord => record !== undefined);
+  const activeIds = latestByListing
     .filter((record) => record.listing.status === "active")
     .map((record) => record.listing.id);
-  return activeIds.length > 0 ? activeIds : [...latestByListing.keys()];
+  return activeIds.length > 0
+    ? activeIds
+    : latestByListing.map((record) => record.listing.id);
 }
 
-async function resolveEffectiveTickerListings(
-  persistence: Persistence,
+function resolveEffectiveTickerListings(
   query: ResearchIdentityQuery & { subject: { kind: "ticker_venue"; ticker: string; listingVenue: "TWSE" | "TPEX" } },
   matchedRecords: ResearchIdentityRecord[],
 ) {
-  const candidateIds = [...new Set(matchedRecords.map((record) => record.listing.id))];
-  const candidateHistories = await Promise.all(candidateIds.map(async (listingId) => [
-    listingId,
-    await persistence.listResearchIdentityRecords({
-      subject: { kind: "listing_id", listingId },
-      effectiveAt: query.context.effectiveAt,
-      knowledgeAt: query.context.knowledgeAt,
-    }),
-  ] as const));
-  const historiesByListing = new Map(candidateHistories);
-  const effectiveMatches = candidateHistories
-    .map(([, history]) => resolveResearchIdentityLatestState(history))
+  const revisionsByListing = new Map<string, ResearchIdentityRecord[]>();
+  for (const record of matchedRecords) {
+    const revisions = revisionsByListing.get(record.listing.id) ?? [];
+    revisions.push(record);
+    revisionsByListing.set(record.listing.id, revisions);
+  }
+  const effectiveMatches = [...revisionsByListing.values()]
+    .map((revisions) => resolveResearchIdentityLatestState(revisions))
     .filter((record): record is ResearchIdentityRecord => record !== undefined)
     .filter((record) => record.listing.ticker === query.subject.ticker
       && record.listing.venue === query.subject.listingVenue);
-  return {
-    historiesByListing,
-    listingIds: resolvableListingIds(effectiveMatches),
-  };
+  return resolvableListingIds(effectiveMatches);
 }
 
 function latestFacts(records: ResearchIdentityRecord[]): CanonicalIdentityObservation[] {
@@ -159,9 +178,12 @@ function supportingProvenance(
     ...facts.map((fact) => fact.provenanceId),
     ...historyItems.map((record) => record.provenance.id),
   ]);
-  return records
+  const provenanceById = new Map([...records]
+    .sort(researchIdentityRecordSortOrder)
     .map((record) => record.provenance)
-    .filter((provenance) => provenanceIds.has(provenance.id));
+    .filter((provenance) => provenanceIds.has(provenance.id))
+    .map((provenance) => [provenance.id, provenance]));
+  return [...provenanceById.values()];
 }
 
 export async function getResearchIdentity(
@@ -175,7 +197,7 @@ export async function getResearchIdentity(
       { policySetVersion: query.context.policySetVersion },
     );
   }
-  const matchedRecords = await persistence.listResearchIdentityRecords({
+  const matchedRecords = await persistence.listResearchIdentityLatestRevisions({
     subject: persistenceSubject(query),
     effectiveAt: query.context.effectiveAt,
     knowledgeAt: query.context.knowledgeAt,
@@ -187,14 +209,14 @@ export async function getResearchIdentity(
     );
   }
   const tickerResolution = query.subject.kind === "ticker_venue"
-    ? await resolveEffectiveTickerListings(persistence, {
+    ? resolveEffectiveTickerListings({
         ...query,
         subject: query.subject,
       }, matchedRecords)
     : null;
   const listingIds = query.subject.kind === "listing_id"
     ? [query.subject.listingId]
-    : tickerResolution!.listingIds;
+    : tickerResolution!;
   if (listingIds.length === 0) {
     throw new ResearchServiceError(
       "research_subject_not_found",
@@ -208,19 +230,23 @@ export async function getResearchIdentity(
       { listingIds },
     );
   }
-  const records = query.subject.kind === "listing_id"
-    ? matchedRecords
-    : tickerResolution!.historiesByListing.get(listingIds[0]!)!;
-
   const listingId = listingIds[0]!;
-  const latest = resolveResearchIdentityLatestState(records)!;
-  const offset = cursorOffset(query.history.cursor, listingId, query.context);
-  if (offset >= records.length && offset !== 0) {
+  const latestRevisions = matchedRecords.filter((record) => record.listing.id === listingId);
+  const latest = resolveResearchIdentityLatestState(latestRevisions)!;
+  const after = cursorPosition(query.history.cursor, listingId, query.context);
+  const page = await persistence.listResearchIdentityHistoryPage({
+    subject: { kind: "listing_id", listingId },
+    effectiveAt: query.context.effectiveAt,
+    knowledgeAt: query.context.knowledgeAt,
+    ...(after ? { after } : {}),
+    limit: query.history.limit + 1,
+  });
+  if (after && page.length === 0) {
     throw new ResearchServiceError("research_cursor_invalid", "The research history cursor is outside the available history");
   }
-  const items = records.slice(offset, offset + query.history.limit);
-  const nextOffset = offset + items.length;
-  const facts = latestFacts(records);
+  const items = page.slice(0, query.history.limit);
+  const hasMore = page.length > query.history.limit;
+  const facts = latestFacts(latestRevisions);
   return {
     contractVersion: "research-identity/1.0.0" as const,
     selector: { kind: "listing_id" as const, listingId },
@@ -231,12 +257,12 @@ export async function getResearchIdentity(
       listing: latest.listing,
       eligibility: latest.eligibility,
       facts,
-      provenance: supportingProvenance(records, facts, items),
+      provenance: supportingProvenance([...latestRevisions, ...items], facts, items),
     },
     history: {
       items,
-      nextCursor: nextOffset < records.length
-        ? encodeCursor(nextOffset, listingId, query.context)
+      nextCursor: hasMore
+        ? encodeCursor(researchIdentityHistoryPosition(items.at(-1)!), listingId, query.context)
         : null,
     },
   };

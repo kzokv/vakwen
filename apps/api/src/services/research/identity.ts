@@ -166,6 +166,44 @@ export interface ResearchIdentityRecordQuery {
   knowledgeAt: string;
 }
 
+export interface ResearchIdentityHistoryPosition {
+  effectiveAt: string;
+  retrievedAt: string;
+  revisionPrecedence: number;
+  recordKey: string;
+}
+
+export interface ResearchIdentityHistoryPageQuery extends ResearchIdentityRecordQuery {
+  subject: { kind: "listing_id"; listingId: string };
+  after?: ResearchIdentityHistoryPosition;
+  limit: number;
+}
+
+export function researchIdentityHistoryPosition(
+  record: ResearchIdentityRecord,
+): ResearchIdentityHistoryPosition {
+  return {
+    effectiveAt: record.observations[0]?.effectiveAt ?? "",
+    retrievedAt: record.provenance.retrievedAt,
+    revisionPrecedence: researchIdentityRevisionPrecedence(record),
+    recordKey: researchIdentityRecordKey(record),
+  };
+}
+
+export function compareResearchIdentityHistoryPosition(
+  left: ResearchIdentityHistoryPosition,
+  right: ResearchIdentityHistoryPosition,
+): number {
+  const effectiveOrder = left.effectiveAt.localeCompare(right.effectiveAt);
+  if (effectiveOrder !== 0) return effectiveOrder;
+  const retrievedOrder = left.retrievedAt.localeCompare(right.retrievedAt);
+  if (retrievedOrder !== 0) return retrievedOrder;
+  const precedenceOrder = left.revisionPrecedence - right.revisionPrecedence;
+  return precedenceOrder !== 0
+    ? precedenceOrder
+    : left.recordKey.localeCompare(right.recordKey);
+}
+
 function opaqueId(prefix: string, ...parts: string[]): string {
   const digest = createHash("sha256").update(parts.join("\u001f")).digest("hex").slice(0, 32);
   return `${prefix}_${digest}`;
@@ -212,7 +250,6 @@ export function officialHistoricalListingIdentityKey(input: {
   securityType: "common_equity" | "etn";
   ticker: string;
   inactiveAt: string;
-  identityDiscriminator: string;
 }): string {
   return opaqueId(
     "historical_listing",
@@ -220,7 +257,6 @@ export function officialHistoricalListingIdentityKey(input: {
     input.securityType,
     input.ticker,
     input.inactiveAt,
-    input.identityDiscriminator.normalize("NFKC").trim(),
   );
 }
 

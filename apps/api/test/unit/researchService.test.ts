@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import {
   appendOfficialListingStatusRevision,
@@ -284,6 +284,58 @@ describe("Taiwan research store-only service", () => {
     ]);
   });
 
+  it("identity history: request one page → use bounded latest-revision and keyset page reads", async () => {
+    const persistence = new MemoryPersistence();
+    const records = ["2026-08-25", "2026-08-26", "2026-08-27"].map((snapshotDate, index) =>
+      canonicalizeOfficialIdentityRow({
+        venue: "TWSE",
+        snapshotDate,
+        retrievedAt: `${snapshotDate}T02:00:00.000Z`,
+        artifact: {
+          contentHash: `sha256:bounded-page-${index}`,
+          sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+        },
+        row: {
+          kind: "company" as const,
+          ticker: "2330",
+          legalName: "台灣積體電路製造股份有限公司",
+          displayName: `台積電${index}`,
+          unifiedBusinessNumber: "22099131",
+          industryCode: "24",
+          listedAt: "1994-09-05",
+        },
+      })
+    );
+    await persistence.appendResearchIdentityRecords(records);
+    const unboundedSpy = vi.spyOn(persistence, "listResearchIdentityRecords");
+    const latestSpy = vi.spyOn(persistence, "listResearchIdentityLatestRevisions");
+    const pageSpy = vi.spyOn(persistence, "listResearchIdentityHistoryPage");
+    const context = {
+      knowledgeAt: "2026-08-28T00:00:00.000Z",
+      effectiveAt: "2026-08-28T00:00:00.000Z",
+      assessmentMode: "effective" as const,
+    };
+
+    const firstPage = await getResearchIdentity(persistence, {
+      subject: { kind: "ticker_venue", ticker: "2330", listingVenue: "TWSE" },
+      context,
+      history: { limit: 1 },
+    });
+    expect(unboundedSpy).not.toHaveBeenCalled();
+    expect(latestSpy).toHaveBeenCalledTimes(1);
+    expect(pageSpy).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 2 }));
+
+    await getResearchIdentity(persistence, {
+      subject: firstPage.selector,
+      context,
+      history: { limit: 1, cursor: firstPage.history.nextCursor! },
+    });
+    expect(pageSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+      limit: 2,
+      after: expect.objectContaining({ recordKey: expect.any(String) }),
+    }));
+  });
+
   it("ticker correction: resolve the current ticker → return the immutable listing's earlier ticker history", async () => {
     const persistence = new MemoryPersistence();
     const original = canonicalizeOfficialIdentityRow({
@@ -402,6 +454,9 @@ describe("Taiwan research store-only service", () => {
       },
     });
     await persistence.appendResearchIdentityRecords([record]);
+    const unboundedSpy = vi.spyOn(persistence, "listResearchIdentityRecords");
+    const latestSpy = vi.spyOn(persistence, "listResearchIdentityLatestRevisions");
+    const pageSpy = vi.spyOn(persistence, "listResearchIdentityHistoryPage");
 
     const manifest = await getResearchManifest(persistence, {
       subject: { kind: "listing_id", listingId: record.listing.id },
@@ -429,5 +484,8 @@ describe("Taiwan research store-only service", () => {
     expect(manifest.datasets.slice(1).every((dataset) => dataset.status === "unavailable")).toBe(true);
     expect(manifest).not.toHaveProperty("observations");
     expect(manifest.orchestration).toEqual({ skillExposure: "disabled" });
+    expect(unboundedSpy).not.toHaveBeenCalled();
+    expect(latestSpy).toHaveBeenCalledTimes(1);
+    expect(pageSpy).toHaveBeenCalledWith(expect.objectContaining({ limit: 2 }));
   });
 });

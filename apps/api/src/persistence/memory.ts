@@ -67,9 +67,13 @@ import type {
 } from "@vakwen/domain";
 import type { FxRate } from "../services/market-data/types.js";
 import {
+  compareResearchIdentityHistoryPosition,
+  researchIdentityHistoryPosition,
   researchIdentityRecordKey,
   researchIdentityRecordSortOrder,
+  researchIdentityRevisionPrecedence,
   resolveResearchIdentityLatestState,
+  type ResearchIdentityHistoryPageQuery,
   type ResearchIdentityRecord,
   type ResearchIdentityRecordQuery,
 } from "../services/research/identity.js";
@@ -866,6 +870,35 @@ export class MemoryPersistence implements Persistence {
   }
 
   async listLatestResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]> {
+    const revisions = await this.listResearchIdentityLatestRevisions(query);
+    const recordsByListing = new Map<string, ResearchIdentityRecord[]>();
+    for (const record of revisions) {
+      const records = recordsByListing.get(record.listing.id) ?? [];
+      records.push(record);
+      recordsByListing.set(record.listing.id, records);
+    }
+    return [...recordsByListing.values()]
+      .map((records) => resolveResearchIdentityLatestState(records)!)
+      .sort(researchIdentityRecordSortOrder)
+      .map((record) => structuredClone(record));
+  }
+
+  async listResearchIdentityLatestRevisions(
+    query: ResearchIdentityRecordQuery,
+  ): Promise<ResearchIdentityRecord[]> {
+    const tickerSubject = query.subject.kind === "ticker_venue" ? query.subject : null;
+    const candidateListingIds = tickerSubject
+      ? new Set([...this.researchIdentityRecords.values()]
+          .filter((record) => {
+            const effectiveAt = record.observations[0]?.effectiveAt;
+            return record.listing.ticker === tickerSubject.ticker
+              && record.listing.venue === tickerSubject.venue
+              && effectiveAt !== undefined
+              && effectiveAt <= query.effectiveAt
+              && record.provenance.retrievedAt <= query.knowledgeAt;
+          })
+          .map((record) => record.listing.id))
+      : null;
     const recordsByListing = new Map<string, ResearchIdentityRecord[]>();
     for (const record of this.researchIdentityRecords.values()) {
       const subjectMatches = query.subject.kind === "listing_id"
@@ -873,7 +906,7 @@ export class MemoryPersistence implements Persistence {
         : query.subject.kind === "security_id"
           ? record.security.id === query.subject.securityId
           : query.subject.kind === "ticker_venue"
-            ? record.listing.ticker === query.subject.ticker && record.listing.venue === query.subject.venue
+            ? candidateListingIds!.has(record.listing.id)
             : record.listing.venue === query.subject.venue;
       const effectiveAt = record.observations[0]?.effectiveAt;
       if (
@@ -886,9 +919,40 @@ export class MemoryPersistence implements Persistence {
       records.push(record);
       recordsByListing.set(record.listing.id, records);
     }
-    return [...recordsByListing.values()]
-      .map((records) => resolveResearchIdentityLatestState(records)!)
+    return [...recordsByListing.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .flatMap(([, records]) => {
+        const latestByPrecedence = new Map<number, ResearchIdentityRecord>();
+        for (const record of [...records].sort(researchIdentityRecordSortOrder)) {
+          latestByPrecedence.set(
+            researchIdentityRevisionPrecedence(record),
+            record,
+          );
+        }
+        return [...latestByPrecedence.entries()]
+          .sort(([left], [right]) => right - left)
+          .map(([, record]) => structuredClone(record));
+      });
+  }
+
+  async listResearchIdentityHistoryPage(
+    query: ResearchIdentityHistoryPageQuery,
+  ): Promise<ResearchIdentityRecord[]> {
+    return [...this.researchIdentityRecords.values()]
+      .filter((record) => {
+        const effectiveAt = record.observations[0]?.effectiveAt;
+        return record.listing.id === query.subject.listingId
+          && effectiveAt !== undefined
+          && effectiveAt <= query.effectiveAt
+          && record.provenance.retrievedAt <= query.knowledgeAt
+          && (query.after === undefined
+            || compareResearchIdentityHistoryPosition(
+              researchIdentityHistoryPosition(record),
+              query.after,
+            ) > 0);
+      })
       .sort(researchIdentityRecordSortOrder)
+      .slice(0, query.limit)
       .map((record) => structuredClone(record));
   }
 

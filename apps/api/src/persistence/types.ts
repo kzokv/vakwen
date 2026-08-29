@@ -36,6 +36,7 @@ import type {
 import type { DividendLedgerRecomputeChange } from "../services/dividends.js";
 import type { FxRate, MarketDataResolverMode } from "../services/market-data/types.js";
 import type {
+  ResearchIdentityHistoryPageQuery,
   ResearchIdentityRecord,
   ResearchIdentityRecordQuery,
 } from "../services/research/identity.js";
@@ -2838,7 +2839,9 @@ export interface Persistence {
   close(): Promise<void>;
   appendResearchIdentityRecords(records: ResearchIdentityRecord[]): Promise<void>;
   listResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]>;
+  listResearchIdentityLatestRevisions(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]>;
   listLatestResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]>;
+  listResearchIdentityHistoryPage(query: ResearchIdentityHistoryPageQuery): Promise<ResearchIdentityRecord[]>;
   /**
    * Resolve an existing user by email or create a new one.
    * Returns the internal UUID for the user.
