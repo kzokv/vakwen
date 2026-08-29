@@ -72,6 +72,43 @@ describe("official Taiwan identity providers", () => {
     });
   });
 
+  it("TWSE TDR snapshot: declared industry 91 → keep identity but return unknown and indeterminate support", () => {
+    const input = parseTwseCompanyIdentitySnapshot([{
+      出表日期: "1150827",
+      公司代號: "910322",
+      公司名稱: "康師傅控股有限公司",
+      公司簡稱: "康師傅-DR",
+      產業別: "91",
+      營利事業統一編號: "00000000",
+      上市日期: "20091216",
+      已發行普通股數或TDR原股發行股數: "5,620,600,000",
+    }], {
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      contentHash: "sha256:twse-tdr",
+      sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+    })[0]!;
+
+    expect(input.row).toMatchObject({
+      kind: "unknown",
+      ticker: "910322",
+      identityKey: expect.stringMatching(/^tdr_product_[a-f0-9]{32}$/),
+      declaredSecurityType: "taiwan_depositary_receipt",
+      listedAt: "2009-12-16",
+    });
+    const record = canonicalizeOfficialIdentityRow(input);
+    expect(record.issuer.classification).toBe("unknown");
+    expect(record.security).toMatchObject({ type: "unknown", rights: "unknown" });
+    expect(record.eligibility).toEqual({
+      profile: "unknown",
+      state: "indeterminate",
+      reasonCode: "unsupported_security_type",
+    });
+    expect(record.observations.find((item) => item.field === "declared_security_type")).toMatchObject({
+      raw: { state: "present", value: "91" },
+      normalized: { state: "present", value: "taiwan_depositary_receipt" },
+    });
+  });
+
   it("TPEx company snapshot: parse the official dotted keys → retain the exact alphanumeric ticker", () => {
     const inputs = parseTpexCompanyIdentitySnapshot([{
       Date: "1150827",

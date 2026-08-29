@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   officialEtnContractIdentityKey,
+  officialTdrIdentityKey,
   type OfficialIdentityInput,
 } from "../identity.js";
 
@@ -74,6 +75,8 @@ interface SnapshotMetadata {
   contentHash: string;
   sourceUrl: string;
 }
+
+const TWSE_TDR_INDUSTRY_CODE = "91";
 
 const taiwanBusinessDateFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "Asia/Taipei",
@@ -165,42 +168,68 @@ export function parseTwseCompanyIdentitySnapshot(
   rows: unknown,
   metadata: SnapshotMetadata,
 ): OfficialIdentityInput[] {
-  return z.array(twseCompanyRowSchema).parse(rows).map((row) => ({
-    venue: "TWSE",
-    snapshotDate: parseTaiwanOfficialDate(row.出表日期),
-    retrievedAt: metadata.retrievedAt,
-    artifact: {
-      contentHash: metadata.contentHash,
-      sourceUrl: metadata.sourceUrl,
-    },
-    rawValues: {
-      legal_name: row.公司名稱,
-      display_name: row.公司簡稱,
-      unified_business_number: row.營利事業統一編號,
-      industry_code: row.產業別,
-      ticker: row.公司代號,
-      listed_at: row.上市日期,
-      ...(row.普通股每股面額 !== undefined ? { par_value: row.普通股每股面額 } : {}),
-      ...(row.實收資本額 !== undefined ? { paid_in_capital: row.實收資本額 } : {}),
-      ...(row.已發行普通股數或TDR原股發行股數 !== undefined
-        ? { issued_shares: row.已發行普通股數或TDR原股發行股數 }
-        : {}),
-    },
-    row: {
-      kind: "company",
-      ticker: row.公司代號,
-      legalName: normalizedText(row.公司名稱),
-      displayName: normalizedText(row.公司簡稱),
-      unifiedBusinessNumber: row.營利事業統一編號.trim(),
-      industryCode: row.產業別.trim(),
-      listedAt: parseTaiwanOfficialDate(row.上市日期),
-      ...(normalizedParValue(row.普通股每股面額) ? { parValue: normalizedParValue(row.普通股每股面額) } : {}),
-      ...(normalizedNumber(row.實收資本額) ? { paidInCapital: normalizedNumber(row.實收資本額) } : {}),
-      ...(normalizedNumber(row.已發行普通股數或TDR原股發行股數)
-        ? { issuedShares: normalizedNumber(row.已發行普通股數或TDR原股發行股數) }
-        : {}),
-    },
-  }));
+  return z.array(twseCompanyRowSchema).parse(rows).map((row) => {
+    const listedAt = parseTaiwanOfficialDate(row.上市日期);
+    const industryCode = row.產業別.trim();
+    const common = {
+      venue: "TWSE",
+      snapshotDate: parseTaiwanOfficialDate(row.出表日期),
+      retrievedAt: metadata.retrievedAt,
+      artifact: {
+        contentHash: metadata.contentHash,
+        sourceUrl: metadata.sourceUrl,
+      },
+      rawValues: {
+        legal_name: row.公司名稱,
+        display_name: row.公司簡稱,
+        unified_business_number: row.營利事業統一編號,
+        industry_code: row.產業別,
+        ticker: row.公司代號,
+        listed_at: row.上市日期,
+        ...(industryCode === TWSE_TDR_INDUSTRY_CODE ? { declared_security_type: row.產業別 } : {}),
+        ...(row.普通股每股面額 !== undefined ? { par_value: row.普通股每股面額 } : {}),
+        ...(row.實收資本額 !== undefined ? { paid_in_capital: row.實收資本額 } : {}),
+        ...(row.已發行普通股數或TDR原股發行股數 !== undefined
+          ? { issued_shares: row.已發行普通股數或TDR原股發行股數 }
+          : {}),
+      },
+    } as const;
+    if (industryCode === TWSE_TDR_INDUSTRY_CODE) {
+      return {
+        ...common,
+        row: {
+          kind: "unknown",
+          ticker: row.公司代號,
+          legalName: normalizedText(row.公司名稱),
+          displayName: normalizedText(row.公司簡稱),
+          identityKey: officialTdrIdentityKey({
+            venue: "TWSE",
+            officialProductCode: row.公司代號,
+            listedAt,
+          }),
+          declaredSecurityType: "taiwan_depositary_receipt",
+          listedAt,
+        },
+      };
+    }
+    return {
+      ...common,
+      row: {
+        kind: "company",
+        ticker: row.公司代號,
+        legalName: normalizedText(row.公司名稱),
+        displayName: normalizedText(row.公司簡稱),
+        unifiedBusinessNumber: row.營利事業統一編號.trim(),
+        industryCode,
+        listedAt,
+        ...(normalizedParValue(row.普通股每股面額) ? { parValue: normalizedParValue(row.普通股每股面額) } : {}),
+        ...(normalizedNumber(row.實收資本額) ? { paidInCapital: normalizedNumber(row.實收資本額) } : {}),
+        ...(normalizedNumber(row.已發行普通股數或TDR原股發行股數)
+          ? { issuedShares: normalizedNumber(row.已發行普通股數或TDR原股發行股數) }
+          : {}),
+      },
+    };
+  });
 }
 
 export function parseTwseFundIdentitySnapshot(

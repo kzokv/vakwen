@@ -248,6 +248,19 @@ export function officialFundProductIdentityKey(input: {
   );
 }
 
+export function officialTdrIdentityKey(input: {
+  venue: ResearchListingVenue;
+  officialProductCode: string;
+  listedAt: string;
+}): string {
+  return opaqueId(
+    "tdr_product",
+    input.venue,
+    input.officialProductCode.normalize("NFKC").trim(),
+    input.listedAt,
+  );
+}
+
 export function officialHistoricalListingIdentityKey(input: {
   venue: ResearchListingVenue;
   securityType: "common_equity" | "etn";
