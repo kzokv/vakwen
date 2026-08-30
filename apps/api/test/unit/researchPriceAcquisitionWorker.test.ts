@@ -58,6 +58,7 @@ describe("registerResearchPriceAcquisitionWorker", () => {
     expect(runOfficialIdentityAcquisition).toHaveBeenCalledWith(expect.anything(), {
       acquisitionRunId: "pg-boss:price-job-1:identity",
       retrievedAt: "2026-08-28T10:30:00.000Z",
+      recordEtfAbsenceEvidence: false,
     });
     expect(runOfficialPriceAcquisition).toHaveBeenCalledWith(expect.anything(), {
       acquisitionRunId: "pg-boss:price-job-1:price",

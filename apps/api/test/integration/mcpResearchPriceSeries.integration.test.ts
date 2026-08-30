@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@vakwen/config", async (importOriginal) => {
@@ -446,6 +447,41 @@ describe("MCP get_price_series QA", () => {
     const authBody = parseMcpJson<{ result: { structuredContent: Record<string, unknown>; isError?: boolean } }>(authChanged.body);
     expect(authBody.result.isError).toBe(true);
     expect(researchPriceSeriesToolOutputSchema.parse(authBody.result.structuredContent)).toMatchObject({
+      result: { code: "research_cursor_invalid", statusCode: 422 },
+    });
+
+    const forgedForUserTwo = Buffer.from(JSON.stringify({
+      ...decoded,
+      binding: createHash("sha256")
+        .update(JSON.stringify({
+          sessionUserId: "user-2",
+          clientId: "vakwen-dev-client",
+          scopes: ["research:read"],
+          toolName: "get_price_series",
+          cursor: decoded.innerCursor,
+          issuedAt: decoded.issuedAt,
+          sessionDate: decoded.sessionDate,
+          version: decoded.version,
+        }))
+        .digest("base64url")
+        .slice(0, 48),
+    }), "utf8").toString("base64url");
+    const forgedAuthChanged = await callMcpTool(userTwoHeaders, userTwoSession, "get_price_series", {
+      subject: { kind: "listing_id", listingId: record.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T15:00:00.000Z",
+        effectiveAt: "2026-08-28T15:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      scope: { kind: "latest_sessions", count: 2 },
+      basis: "raw",
+      order: "desc",
+      page: { limit: 1, cursor: forgedForUserTwo },
+      metrics: [],
+    });
+    const forgedAuthBody = parseMcpJson<{ result: { structuredContent: Record<string, unknown>; isError?: boolean } }>(forgedAuthChanged.body);
+    expect(forgedAuthBody.result.isError).toBe(true);
+    expect(researchPriceSeriesToolOutputSchema.parse(forgedAuthBody.result.structuredContent)).toMatchObject({
       result: { code: "research_cursor_invalid", statusCode: 422 },
     });
 
