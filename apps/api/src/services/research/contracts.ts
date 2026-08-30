@@ -64,7 +64,13 @@ export const researchIdentityQuerySchema = researchQuerySchema.extend({
   history: researchHistoryPageSchema.default({ limit: 25 }),
 }).strict();
 
-const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const isoDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((value) => {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  }, "Date must be a valid calendar date");
 const researchPriceSeriesPageSchema = z.object({
   cursor: z.string().min(1).max(1024).optional(),
   limit: z.number().int().min(1).max(260).default(60),

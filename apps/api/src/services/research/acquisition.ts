@@ -612,11 +612,16 @@ export async function runOfficialPriceAcquisition(
   const twseSnapshotDate = officialSnapshotSessionDate(twseRows);
   const tpexSnapshotDate = officialSnapshotSessionDate(tpexRows);
   const twseSuspended = twseSnapshotDate ? parseTwseSuspensionSnapshot(twseSuspensions.payload, twseSnapshotDate) : new Set<string>();
+  const tpexSuspensionHistoryRows = z.array(z.object({}).passthrough()).parse(tpexSuspensionsHistory.payload);
+  const tpexSuspensionTodayRows = z.array(z.object({}).passthrough()).parse(tpexSuspensionsToday.payload);
   const tpexSuspended = tpexSnapshotDate
     ? parseTpexSuspensionSnapshot([
-        ...z.array(z.object({}).passthrough()).parse(tpexSuspensionsHistory.payload),
-        ...z.array(z.object({}).passthrough()).parse(tpexSuspensionsToday.payload),
+        ...tpexSuspensionHistoryRows,
+        ...tpexSuspensionTodayRows,
       ], tpexSnapshotDate)
+    : new Set<string>();
+  const tpexSuspendedToday = tpexSnapshotDate
+    ? parseTpexSuspensionSnapshot(tpexSuspensionTodayRows, tpexSnapshotDate)
     : new Set<string>();
   const twseByTicker = new Map(twseRows.map((row) => [row.ticker, row] as const));
   const tpexByTicker = new Map(tpexRows.map((row) => [row.ticker, row] as const));
@@ -624,7 +629,9 @@ export async function runOfficialPriceAcquisition(
   const records: ResearchPriceRecord[] = [];
   for (const listing of activeTwseListings) {
     const row = twseByTicker.get(listing.listing.ticker);
-    if (!row && !twseSuspended.has(listing.listing.ticker)) continue;
+    const isSuspended = twseSuspended.has(listing.listing.ticker);
+    const canonicalRow = isSuspended ? { state: "suspended" as const } : row;
+    if (!canonicalRow) continue;
     const sessionDate = row?.sessionDate ?? twseSnapshotDate;
     if (!sessionDate) continue;
     records.push(canonicalizeOfficialPriceRow({
@@ -635,19 +642,24 @@ export async function runOfficialPriceAcquisition(
       retrievedAt,
       acquisitionRunId,
       artifact: {
-        contentHash: (row ? twsePrices : twseSuspensions).metadata.contentHash,
-        sourceUrl: (row ? twsePrices : twseSuspensions).metadata.sourceUrl,
-        publisherDataset: row ? "exchangeReport/STOCK_DAY_ALL" : "exchangeReport/TWTAWU",
+        contentHash: (isSuspended ? twseSuspensions : twsePrices).metadata.contentHash,
+        sourceUrl: (isSuspended ? twseSuspensions : twsePrices).metadata.sourceUrl,
+        publisherDataset: isSuspended ? "exchangeReport/TWTAWU" : "exchangeReport/STOCK_DAY_ALL",
         accessProvider: "TWSE_OPENAPI",
       },
-      row: row ?? { state: "suspended" },
+      row: canonicalRow,
     }));
   }
   for (const listing of activeTpexListings) {
     const row = tpexByTicker.get(listing.listing.ticker);
-    if (!row && !tpexSuspended.has(listing.listing.ticker)) continue;
+    const isSuspended = tpexSuspended.has(listing.listing.ticker);
+    const canonicalRow = isSuspended ? { state: "suspended" as const } : row;
+    if (!canonicalRow) continue;
     const sessionDate = row?.sessionDate ?? tpexSnapshotDate;
     if (!sessionDate) continue;
+    const suspensionArtifact = tpexSuspendedToday.has(listing.listing.ticker)
+      ? tpexSuspensionsToday
+      : tpexSuspensionsHistory;
     records.push(canonicalizeOfficialPriceRow({
       listingId: listing.listing.id,
       ticker: listing.listing.ticker,
@@ -656,16 +668,14 @@ export async function runOfficialPriceAcquisition(
       retrievedAt,
       acquisitionRunId,
       artifact: {
-        contentHash: row
-          ? tpexPrices.metadata.contentHash
-          : tpexSuspensionsHistory.metadata.contentHash,
-        sourceUrl: row
-          ? tpexPrices.metadata.sourceUrl
-          : tpexSuspensionsHistory.metadata.sourceUrl,
-        publisherDataset: row ? "tpex_mainboard_daily_close_quotes" : "tpex_spendi_history",
+        contentHash: (isSuspended ? suspensionArtifact : tpexPrices).metadata.contentHash,
+        sourceUrl: (isSuspended ? suspensionArtifact : tpexPrices).metadata.sourceUrl,
+        publisherDataset: isSuspended
+          ? tpexSuspendedToday.has(listing.listing.ticker) ? "tpex_spendi_today" : "tpex_spendi_history"
+          : "tpex_mainboard_daily_close_quotes",
         accessProvider: "TPEX_OPENAPI",
       },
-      row: row ?? { state: "suspended" },
+      row: canonicalRow,
     }));
   }
   await persistence.appendResearchPriceRecords(records);

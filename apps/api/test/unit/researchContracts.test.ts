@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { researchQuerySchema } from "../../src/services/research/contracts.js";
+import { researchPriceSeriesQuerySchema, researchQuerySchema } from "../../src/services/research/contracts.js";
 
 describe("Taiwan research contracts", () => {
   it("listing selector: parse a leading-zero ticker → preserve the ticker and fix effectiveAt to knowledgeAt", () => {
@@ -72,4 +72,17 @@ describe("Taiwan research contracts", () => {
       },
     })).toThrow();
   });
+
+  it.each(["2026-13-01", "2026-02-31"])(
+    "price-series date range: reject impossible calendar date %s at the request boundary",
+    (invalidDate) => {
+      const result = researchPriceSeriesQuerySchema.safeParse({
+        subject: { kind: "ticker_venue", ticker: "2330", listingVenue: "TWSE" },
+        context: { knowledgeAt: "2026-08-28T00:00:00.000Z" },
+        scope: { kind: "date_range", startDate: invalidDate, endDate: invalidDate },
+      });
+
+      expect(result.success).toBe(false);
+    },
+  );
 });
