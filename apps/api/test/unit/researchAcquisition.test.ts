@@ -646,16 +646,30 @@ describe("official Taiwan identity acquisition", () => {
       normalized: { state: "present", value: "absent" },
     });
 
-    currentTpexTickers = ["00610", "00611", "00612"];
     await runOfficialIdentityAcquisition(persistence, {
       fetchImpl,
       retrievedAt: "2026-08-30T04:00:00.000Z",
+      acquisitionRunId: "run-closed-day-etf-absence-suppressed",
+      recordEtfAbsenceEvidence: false,
+    });
+    const suppressedHistory = await persistence.listResearchIdentityRecords({
+      subject: { kind: "listing_id", listingId: transientListingId },
+      effectiveAt: "2026-08-30T23:59:59.999Z",
+      knowledgeAt: "2026-08-30T23:59:59.999Z",
+    });
+    expect(suppressedHistory).toHaveLength(2);
+    expect(suppressedHistory.at(-1)?.listing.status).toBe("active");
+
+    currentTpexTickers = ["00610", "00611", "00612"];
+    await runOfficialIdentityAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-31T04:00:00.000Z",
       acquisitionRunId: "run-etf-reappeared",
     });
     const reappearedHistory = await persistence.listResearchIdentityRecords({
       subject: { kind: "listing_id", listingId: transientListingId },
-      effectiveAt: "2026-08-30T23:59:59.999Z",
-      knowledgeAt: "2026-08-30T23:59:59.999Z",
+      effectiveAt: "2026-08-31T23:59:59.999Z",
+      knowledgeAt: "2026-08-31T23:59:59.999Z",
     });
     expect(reappearedHistory.at(-1)?.listing.status).toBe("active");
     expect(reappearedHistory.some((record) => record.listing.status === "inactive")).toBe(false);

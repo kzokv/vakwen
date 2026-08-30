@@ -87,6 +87,10 @@ interface AcquisitionOptions {
   acquisitionRunId?: string;
 }
 
+interface IdentityAcquisitionOptions extends AcquisitionOptions {
+  recordEtfAbsenceEvidence?: boolean;
+}
+
 async function fetchArtifact(fetchImpl: typeof fetch, sourceUrl: string, init?: RequestInit) {
   const response = await fetchImpl(sourceUrl, {
     ...init,
@@ -388,7 +392,7 @@ function retirementAlreadyRecorded(
 
 export async function runOfficialIdentityAcquisition(
   persistence: Persistence,
-  options: AcquisitionOptions = {},
+  options: IdentityAcquisitionOptions = {},
 ) {
   if (!researchAcquisitionEnabled()) throw new ResearchAcquisitionDisabledError();
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -590,6 +594,7 @@ export async function runOfficialIdentityAcquisition(
     .map((record) => record.listing.id));
   const explicitlyInactiveListingIds = new Set(statusRevisions.map((record) => record.listing.id));
   for (const venue of ["TWSE", "TPEX"] as const) {
+    if (options.recordEtfAbsenceEvidence === false) continue;
     const historical = historicalLatest.filter((record) => record.listing.venue === venue);
     const historicalActiveEtfs = historical.filter((record) =>
       record.security.type === "etf" && record.listing.status === "active"

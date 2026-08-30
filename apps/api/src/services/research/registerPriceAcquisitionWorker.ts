@@ -41,6 +41,7 @@ export function createResearchPriceAcquisitionHandler(
     const identityResult = await runOfficialIdentityAcquisition(deps.persistence, {
       acquisitionRunId: acquisitionRunId ? `${acquisitionRunId}:identity` : undefined,
       retrievedAt,
+      ...(calendarDay.status === "closed" ? { recordEtfAbsenceEvidence: false } : {}),
     });
     deps.log.info(identityResult, "research_identity_acquisition_before_price_completed");
     const priceResult = await runOfficialPriceAcquisition(deps.persistence, {
