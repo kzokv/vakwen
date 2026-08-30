@@ -9,6 +9,39 @@ import { canonicalizeOfficialPriceRow } from "../../src/services/research/price.
 import { getPriceSeries, getResearchIdentity, getResearchManifest } from "../../src/services/research/service.js";
 import { setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
 
+function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): void {
+  vi.spyOn(persistence, "getActiveMarketCalendarVersion").mockImplementation(async (marketCode, calendarYear) =>
+    calendarYear === 2026
+      ? {
+          versionId: "calendar-tw-2026",
+          importOperationId: "calendar-import-tw-2026",
+          marketCode,
+          calendarYear,
+          sourceId: null,
+          sourceLabel: "TW official calendar",
+          sourceType: "official_source" as const,
+          sourceUrl: "https://example.test/tw-calendar-2026",
+          retrievedAt: "2025-12-01T00:00:00.000Z",
+          coverage: { scope: "full_year" as const, evidence: "test fixture" },
+          confirmedAt: "2025-12-01T00:00:00.000Z",
+          invalidatedAt: null,
+          invalidationReason: null,
+          status: "confirmed" as const,
+          isActive: true,
+          annualCounts: {
+            tradingDayCount: 261,
+            nonTradingDayCount: 104,
+            weekdayClosedCount: 0,
+            weekendOpenCount: 0,
+          },
+          exceptions: [],
+          createdAt: "2025-12-01T00:00:00.000Z",
+          updatedAt: "2025-12-01T00:00:00.000Z",
+        }
+      : null
+  );
+}
+
 describe("Taiwan research store-only service", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
 
@@ -499,6 +532,7 @@ describe("Taiwan research store-only service", () => {
 
   it("price-series manifest and service: read stored TWSE bars only → expose price availability, lineage, and no write-side effects", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const record = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",
@@ -681,6 +715,7 @@ describe("Taiwan research store-only service", () => {
 
   it("price-series historical effective context: freeze sessions by effectiveAt but suppress freshness assessment against later knowledgeAt", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const record = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",
@@ -781,6 +816,7 @@ describe("Taiwan research store-only service", () => {
 
   it("price-series stale latest: miss the due session while older bars exist → keep the latest available date visible", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const record = canonicalizeOfficialIdentityRow({
       venue: "TPEX",
       snapshotDate: "2026-08-27",
@@ -847,6 +883,7 @@ describe("Taiwan research store-only service", () => {
 
   it("price-series latest sessions: derive expected Taiwan session boundaries without unrelated venue rows → include the missing latest completed session", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const record = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",

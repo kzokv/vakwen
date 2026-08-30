@@ -833,5 +833,28 @@ describe("official Taiwan identity acquisition", () => {
         expect.objectContaining({ field: "session_state", normalized: { state: "present", value: "suspended" } }),
       ]),
     });
+
+    payloads.set(OFFICIAL_PRICE_SOURCES.tpexSuspensionsToday, [
+      { SecuritiesCompanyCode: "5274", 暫停交易: "是", 恢復交易: "否" },
+    ]);
+    await runOfficialPriceAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-28T02:00:00.000Z",
+      acquisitionRunId: "run-price-stale-quote",
+    });
+    const staleSnapshotListing = await persistence.listLatestResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: tpexListing.listing.id },
+      startDate: "2026-08-27",
+      endDate: "2026-08-27",
+      knowledgeAt: "2026-08-28T02:00:00.000Z",
+    });
+    expect(staleSnapshotListing[0]).toMatchObject({
+      state: "full_bar",
+      provenance: {
+        sourceUrl: OFFICIAL_PRICE_SOURCES.tpexPrices,
+        publisherDataset: "tpex_mainboard_daily_close_quotes",
+        acquisitionRunId: "run-price-stale-quote",
+      },
+    });
   });
 });

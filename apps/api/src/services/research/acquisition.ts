@@ -614,14 +614,17 @@ export async function runOfficialPriceAcquisition(
   const twseSuspended = twseSnapshotDate ? parseTwseSuspensionSnapshot(twseSuspensions.payload, twseSnapshotDate) : new Set<string>();
   const tpexSuspensionHistoryRows = z.array(z.object({}).passthrough()).parse(tpexSuspensionsHistory.payload);
   const tpexSuspensionTodayRows = z.array(z.object({}).passthrough()).parse(tpexSuspensionsToday.payload);
+  const alignedTpexSuspensionTodayRows = tpexSnapshotDate === taiwanBusinessDate(retrievedAt)
+    ? tpexSuspensionTodayRows
+    : [];
   const tpexSuspended = tpexSnapshotDate
     ? parseTpexSuspensionSnapshot([
         ...tpexSuspensionHistoryRows,
-        ...tpexSuspensionTodayRows,
+        ...alignedTpexSuspensionTodayRows,
       ], tpexSnapshotDate)
     : new Set<string>();
   const tpexSuspendedToday = tpexSnapshotDate
-    ? parseTpexSuspensionSnapshot(tpexSuspensionTodayRows, tpexSnapshotDate)
+    ? parseTpexSuspensionSnapshot(alignedTpexSuspensionTodayRows, tpexSnapshotDate)
     : new Set<string>();
   const twseByTicker = new Map(twseRows.map((row) => [row.ticker, row] as const));
   const tpexByTicker = new Map(tpexRows.map((row) => [row.ticker, row] as const));

@@ -133,6 +133,39 @@ function weekdayDates(startDate: string, endDate: string): string[] {
   return dates;
 }
 
+function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): void {
+  vi.spyOn(persistence, "getActiveMarketCalendarVersion").mockImplementation(async (marketCode, calendarYear) =>
+    calendarYear === 2026
+      ? {
+          versionId: "calendar-tw-2026",
+          importOperationId: "calendar-import-tw-2026",
+          marketCode,
+          calendarYear,
+          sourceId: null,
+          sourceLabel: "TW official calendar",
+          sourceType: "official_source" as const,
+          sourceUrl: "https://example.test/tw-calendar-2026",
+          retrievedAt: "2025-12-01T00:00:00.000Z",
+          coverage: { scope: "full_year" as const, evidence: "test fixture" },
+          confirmedAt: "2025-12-01T00:00:00.000Z",
+          invalidatedAt: null,
+          invalidationReason: null,
+          status: "confirmed" as const,
+          isActive: true,
+          annualCounts: {
+            tradingDayCount: 261,
+            nonTradingDayCount: 104,
+            weekdayClosedCount: 0,
+            weekendOpenCount: 0,
+          },
+          exceptions: [],
+          createdAt: "2025-12-01T00:00:00.000Z",
+          updatedAt: "2025-12-01T00:00:00.000Z",
+        }
+      : null
+  );
+}
+
 describe("research price store QA", () => {
   it("store-only read: preserve scope/order/metrics lineage and avoid write-side effects", async () => {
     const persistence = new MemoryPersistence();
@@ -302,6 +335,7 @@ describe("research price store QA", () => {
 
   it("explicit states and historical cutoff: surface close-only, no-trade, suspended, missing, stale, and inactive history", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const listing = companyListing({ ticker: "5274", venue: "TPEX", listedAt: "2013-04-30", unifiedBusinessNumber: "27490748" });
     const inactive = appendOfficialListingStatusRevision(listing, {
       status: "inactive",
@@ -486,6 +520,7 @@ describe("research price store QA", () => {
 
   it("future date-range requests: clamp to the authoritative cutoff instead of emitting future missing sessions", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const listing = companyListing();
     await persistence.appendResearchIdentityRecords([listing]);
     await persistence.appendResearchPriceRecords([priceRecord({
@@ -521,8 +556,47 @@ describe("research price store QA", () => {
     expect(result.sessions).toMatchObject([{ sessionDate: "2026-08-27", state: "settled_full_bar" }]);
   });
 
+  it("missing calendar coverage: return only proven exchange sessions and never fabricate weekday gaps", async () => {
+    const persistence = new MemoryPersistence();
+    const listing = companyListing();
+    await persistence.appendResearchIdentityRecords([listing]);
+    await persistence.appendResearchPriceRecords([priceRecord({
+      listingId: listing.listing.id,
+      ticker: "2330",
+      venue: "TWSE",
+      sessionDate: "2026-08-27",
+      state: "full_bar",
+      open: "100",
+      high: "101",
+      low: "99",
+      close: "100",
+      volume: "1000",
+      tradedValue: "100123",
+      tradeCount: "10",
+    })]);
+
+    const result = await getPriceSeries(persistence, {
+      subject: { kind: "listing_id", listingId: listing.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T15:00:00.000Z",
+        effectiveAt: "2026-08-28T15:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      scope: { kind: "date_range", startDate: "2026-08-27", endDate: "2026-08-28" },
+      basis: "raw",
+      order: "asc",
+      page: { limit: 60 },
+      metrics: [],
+    });
+
+    expect(result.freshness).toEqual({ state: "not_applicable", authoritativeAsOf: null });
+    expect(result.sessions).toMatchObject([{ sessionDate: "2026-08-27", state: "settled_full_bar" }]);
+    expect(result.sessions.some((session) => session.sessionDate === "2026-08-28")).toBe(false);
+  });
+
   it("historical effectiveAt: freeze sessions to the effective timeline even when knowledgeAt is later", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const listing = companyListing();
     await persistence.appendResearchIdentityRecords([listing]);
     await persistence.appendResearchPriceRecords([
@@ -928,6 +1002,7 @@ describe("research price store QA", () => {
 
   it("missing expected session: stale without unrelated seed and flips from not-yet-due at 18:00 to stale at 22:00 Asia/Taipei", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const listing = companyListing();
     await persistence.appendResearchIdentityRecords([listing]);
     await persistence.appendResearchPriceRecords([priceRecord({
@@ -984,6 +1059,7 @@ describe("research price store QA", () => {
 
   it("prior-day overdue session: report stale even before the next local close boundary", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const listing = companyListing();
     await persistence.appendResearchIdentityRecords([listing]);
     await persistence.appendResearchPriceRecords([priceRecord({

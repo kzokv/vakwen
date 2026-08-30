@@ -26,6 +26,7 @@ import { resetMcpRateLimitBucketsForTest } from "../../src/mcp/policy.js";
 import { createDividendEvent } from "../../src/services/dividends.js";
 import { replayPositionHistory } from "../../src/services/replayPositionHistory.js";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import { canonicalizeOfficialPriceRow } from "../../src/services/research/price.js";
 import {
   researchIdentityOutputSchema,
   researchIdentityToolOutputSchema,
@@ -758,19 +759,30 @@ describe("mcp routes", () => {
     });
     expect(identity.result.content[0]?.text).toContain("Research identity for TWSE:2330");
 
-    (app.persistence as MemoryPersistence)._seedDailyBars?.([
-      {
+    await app.persistence.appendResearchPriceRecords([
+      canonicalizeOfficialPriceRow({
+        listingId: record.listing.id,
         ticker: "2330",
-        marketCode: "TW",
-        barDate: "2026-08-27",
-        open: 100,
-        high: 102,
-        low: 99,
-        close: 101,
-        volume: 1000,
-        source: "twse-official",
-        ingestedAt: "2026-08-27T10:00:00.000Z",
-      },
+        venue: "TWSE",
+        sessionDate: "2026-08-27",
+        retrievedAt: "2026-08-27T10:00:00.000Z",
+        artifact: {
+          contentHash: "sha256:mcp-price",
+          sourceUrl: "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+          publisherDataset: "exchangeReport/STOCK_DAY_ALL",
+          accessProvider: "TWSE_OPENAPI",
+        },
+        row: {
+          state: "full_bar",
+          open: "100",
+          high: "102",
+          low: "99",
+          close: "101",
+          volume: "1000",
+          tradedValue: "101000",
+          tradeCount: "100",
+        },
+      }),
     ]);
 
     const priceResponse = await callMcpTool(headers, sessionId, "get_price_series", {

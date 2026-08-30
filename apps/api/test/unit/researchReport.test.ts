@@ -177,4 +177,81 @@ describe("identity-only Taiwan ResearchReport", () => {
     expect(markdown).toContain("## Provenance");
     expect(markdown).toContain(`- ${priceRecord.provenance.id}`);
   });
+
+  it("focused market report: reject when the manifest does not expose an available price series", async () => {
+    const persistence = new MemoryPersistence();
+    const companyWithoutPrices = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:no-price-report", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2317",
+        legalName: "鴻海精密工業股份有限公司",
+        displayName: "鴻海",
+        unifiedBusinessNumber: "04541302",
+        industryCode: "31",
+        listedAt: "1991-06-18",
+      },
+    });
+    const identityOnlyEtn = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:identity-only-report", sourceUrl: "https://www.twse.com.tw/rwd/zh/ETN/list?response=json" },
+      row: {
+        kind: "etn",
+        ticker: "020032",
+        legalName: "元大證券股份有限公司",
+        displayName: "元大綠能N",
+        identityKey: "twse-etn:020032:2024-02-01",
+        issuerIdentityKey: "97160609",
+        noteType: "ETN",
+        listedAt: "2024-02-01",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([companyWithoutPrices, identityOnlyEtn]);
+    await persistence.appendResearchPriceRecords([canonicalizeOfficialPriceRow({
+      listingId: identityOnlyEtn.listing.id,
+      ticker: "020032",
+      venue: "TWSE",
+      sessionDate: "2026-08-27",
+      retrievedAt: "2026-08-27T10:15:00.000Z",
+      artifact: {
+        contentHash: "sha256:identity-only-price",
+        sourceUrl: "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+        publisherDataset: "exchangeReport/STOCK_DAY_ALL",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      row: { state: "close_only", close: "7.12" },
+    })]);
+    const commonQuery = {
+      context: {
+        knowledgeAt: "2026-08-27T11:00:00.000Z",
+        effectiveAt: "2026-08-27T11:00:00.000Z",
+        assessmentMode: "effective" as const,
+      },
+      scope: { kind: "latest" as const },
+      basis: "raw" as const,
+      order: "desc" as const,
+      page: { limit: 10 },
+      metrics: [],
+    };
+
+    await expect(buildFocusedMarketResearchReport(persistence, {
+      ...commonQuery,
+      subject: { kind: "listing_id", listingId: companyWithoutPrices.listing.id },
+    })).rejects.toMatchObject({
+      code: "research_dataset_unavailable",
+      metadata: { datasetId: "price_series", reasonCode: "no_authoritative_price_history" },
+    });
+    await expect(buildFocusedMarketResearchReport(persistence, {
+      ...commonQuery,
+      subject: { kind: "listing_id", listingId: identityOnlyEtn.listing.id },
+    })).rejects.toMatchObject({
+      code: "research_dataset_unavailable",
+      metadata: { datasetId: "price_series", reasonCode: "identity_only_profile" },
+    });
+  });
 });

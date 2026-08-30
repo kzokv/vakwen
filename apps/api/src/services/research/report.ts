@@ -10,7 +10,7 @@ import {
   type ResearchPriceSeriesQuery,
   type ResearchQuery,
 } from "./contracts.js";
-import { getPriceSeries, getResearchIdentity, getResearchManifest } from "./service.js";
+import { getPriceSeries, getResearchIdentity, getResearchManifest, ResearchServiceError } from "./service.js";
 
 function presentFactValue(
   facts: Awaited<ReturnType<typeof getResearchIdentity>>["identity"]["facts"],
@@ -101,6 +101,14 @@ export async function buildFocusedMarketResearchReport(
     subject: query.subject,
     context: query.context,
   });
+  const priceSeriesDataset = manifest.datasets.find((dataset) => dataset.id === "price_series")!;
+  if (priceSeriesDataset.status !== "available") {
+    throw new ResearchServiceError(
+      "research_dataset_unavailable",
+      "Focused market research requires an available authoritative price series",
+      { datasetId: "price_series", reasonCode: priceSeriesDataset.reasonCode },
+    );
+  }
   const frozenQuery = {
     ...query,
     subject: manifest.selector,

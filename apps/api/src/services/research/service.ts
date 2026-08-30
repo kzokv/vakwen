@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import type { Persistence } from "../../persistence/types.js";
-import { latestSettledTradingDayPure } from "../market-data/tradingCalendar.js";
 import type {
   ResearchIdentityQuery,
   ResearchPriceMetricResult,
@@ -34,6 +33,7 @@ export class ResearchServiceError extends Error {
       | "research_subject_ambiguous"
       | "research_cursor_invalid"
       | "research_assessment_mode_unsupported"
+      | "research_dataset_unavailable"
       | "research_record_too_large",
     message: string,
     readonly metadata?: Record<string, unknown>,
@@ -473,10 +473,6 @@ function maxDate(left: string, right: string): string {
   return left >= right ? left : right;
 }
 
-function marketCodeForVenue(): "TW" {
-  return "TW";
-}
-
 async function loadTradingCalendarVersions(
   persistence: Persistence,
   startDate: string,
@@ -498,7 +494,8 @@ function isTradingDayFromCalendar(
   const day = new Date(`${date}T00:00:00.000Z`).getUTCDay();
   const weekdayOpenByDefault = day !== 0 && day !== 6;
   const version = versions.get(Number(date.slice(0, 4)));
-  const exception = version?.exceptions.find((item) => item.date === date);
+  if (!version) return false;
+  const exception = version.exceptions.find((item) => item.date === date);
   if (exception) return exception.status === "open";
   return weekdayOpenByDefault;
 }
@@ -525,32 +522,43 @@ async function authoritativeCutoffDate(
     : previousDate(localDate);
   const windowStart = addDays(candidate, -45);
   const versions = await loadTradingCalendarVersions(persistence, windowStart, candidate);
-  const tradingDates = new Set(enumerateTradingDates(windowStart, candidate, versions));
-  return latestSettledTradingDayPure(tradingDates, marketCodeForVenue(), new Date(`${candidate}T23:59:59.000Z`));
+  return enumerateTradingDates(windowStart, candidate, versions).at(-1) ?? null;
+}
+
+function conservativePriceBoundary(instant: string): string {
+  const { localDate, localHour, localMinute } = taipeiLocalParts(instant);
+  return localHour > 18 || (localHour === 18 && localMinute >= 0)
+    ? localDate
+    : previousDate(localDate);
 }
 
 async function expectedTradingDatesForQuery(
   persistence: Persistence,
+  venue: "TWSE" | "TPEX",
   listingListedAt: string,
   scope: ResearchPriceSeriesQuery["scope"],
-  authoritativeAsOf: string | null,
+  endDate: string,
+  knowledgeAt: string,
 ): Promise<string[]> {
-  if (!authoritativeAsOf) return [];
+  let startDate: string;
   if (scope.kind === "date_range") {
-    const boundedEndDate = scope.endDate <= authoritativeAsOf ? scope.endDate : authoritativeAsOf;
-    const startDate = maxDate(listingListedAt, scope.startDate);
-    if (startDate > boundedEndDate) return [];
-    const versions = await loadTradingCalendarVersions(persistence, startDate, boundedEndDate);
-    return enumerateTradingDates(startDate, boundedEndDate, versions);
+    endDate = scope.endDate <= endDate ? scope.endDate : endDate;
+    startDate = maxDate(listingListedAt, scope.startDate);
+  } else {
+    const sessionCount = scope.kind === "latest_sessions" ? scope.count : 1;
+    const lookbackDays = Math.max(31, sessionCount * 3);
+    startDate = maxDate(listingListedAt, addDays(endDate, -lookbackDays));
   }
-  const sessionCount = scope.kind === "latest_sessions" ? scope.count : 1;
-  const lookbackDays = Math.max(31, sessionCount * 3);
-  const startDate = maxDate(listingListedAt, addDays(authoritativeAsOf, -lookbackDays));
-  const versions = await loadTradingCalendarVersions(persistence, startDate, authoritativeAsOf);
-  const tradingDates = enumerateTradingDates(startDate, authoritativeAsOf, versions);
-  return scope.kind === "latest"
-    ? tradingDates.slice(-1)
-    : tradingDates.slice(-scope.count);
+  if (startDate > endDate) return [];
+  const versions = await loadTradingCalendarVersions(persistence, startDate, endDate);
+  const calendarDates = enumerateTradingDates(startDate, endDate, versions);
+  const observedDates = (await persistence.getDistinctResearchPriceSessionDates(venue, startDate, knowledgeAt))
+    .filter((date) => date <= endDate);
+  const tradingDates = [...new Set([...calendarDates, ...observedDates])]
+    .sort((left, right) => left.localeCompare(right));
+  if (scope.kind === "latest") return tradingDates.slice(-1);
+  if (scope.kind === "latest_sessions") return tradingDates.slice(-scope.count);
+  return tradingDates;
 }
 
 function authoritativeFreshness(knowledgeAt: string, authoritativeAsOf: string | null, latestBarDate: string | null, endDate: string) {
@@ -844,17 +852,20 @@ export async function getPriceSeries(
   const listing = identity.identity.listing;
   const effectiveAuthoritativeAsOf = await authoritativeCutoffDate(persistence, query.context.effectiveAt);
   const knowledgeAuthoritativeAsOf = await authoritativeCutoffDate(persistence, query.context.knowledgeAt);
+  const effectiveBoundaryDate = effectiveAuthoritativeAsOf ?? conservativePriceBoundary(query.context.effectiveAt);
   const cappedEndDate = listing.status === "active"
-    ? effectiveAuthoritativeAsOf
-    : (listing.inactiveAt ?? effectiveAuthoritativeAsOf);
-  const expectedDates = cappedEndDate
-    ? (await expectedTradingDatesForQuery(
-        persistence,
-        listing.listedAt,
-        query.scope,
-        cappedEndDate,
-      )).filter((date) => listing.status === "active" || date <= (listing.inactiveAt ?? cappedEndDate))
-    : [];
+    ? effectiveBoundaryDate
+    : listing.inactiveAt && listing.inactiveAt < effectiveBoundaryDate
+      ? listing.inactiveAt
+      : effectiveBoundaryDate;
+  const expectedDates = (await expectedTradingDatesForQuery(
+    persistence,
+    listing.venue,
+    listing.listedAt,
+    query.scope,
+    cappedEndDate,
+    query.context.knowledgeAt,
+  )).filter((date) => listing.status === "active" || date <= (listing.inactiveAt ?? cappedEndDate));
   const scopedDates = expectedDates.length === 0
     ? { startDate: "", endDate: "", requestedDates: [] as string[] }
     : {
