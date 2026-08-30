@@ -235,14 +235,14 @@ function unwrapPriceSeriesCursor(
   try {
     decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
   } catch {
-    return cursor;
+    throw routeError(422, "research_cursor_invalid", "The price-series cursor is not an authenticated MCP cursor");
   }
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
-    return cursor;
+    throw routeError(422, "research_cursor_invalid", "The price-series cursor is not an authenticated MCP cursor");
   }
   const payload = decoded as Record<string, unknown>;
   if (typeof payload.innerCursor !== "string") {
-    return cursor;
+    throw routeError(422, "research_cursor_invalid", "The price-series cursor is not an authenticated MCP cursor");
   }
   const expectedBinding = createHash("sha256")
     .update(JSON.stringify({

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Persistence } from "../../persistence/types.js";
+import type { MarketCalendarVersionRecord, Persistence } from "../../persistence/types.js";
 import type {
   ResearchIdentityQuery,
   ResearchPriceMetricResult,
@@ -477,19 +477,29 @@ async function loadTradingCalendarVersions(
   persistence: Persistence,
   startDate: string,
   endDate: string,
+  knowledgeAt: string,
 ) {
   const startYear = Number(startDate.slice(0, 4));
   const endYear = Number(endDate.slice(0, 4));
-  const versions = new Map<number, Awaited<ReturnType<Persistence["getActiveMarketCalendarVersion"]>>>();
+  const versions = new Map<number, MarketCalendarVersionRecord | null>();
   for (let year = startYear; year <= endYear; year += 1) {
-    versions.set(year, await persistence.getActiveMarketCalendarVersion("TW", year));
+    const history = await persistence.listMarketCalendarHistory("TW", year);
+    const version = history
+      .filter((candidate) => {
+        if (!candidate.confirmedAt || candidate.confirmedAt > knowledgeAt) return false;
+        const unavailableAt = candidate.invalidatedAt
+          ?? (candidate.isActive ? null : candidate.updatedAt);
+        return unavailableAt === null || knowledgeAt < unavailableAt;
+      })
+      .sort((left, right) => right.confirmedAt!.localeCompare(left.confirmedAt!))[0] ?? null;
+    versions.set(year, version);
   }
   return versions;
 }
 
 function isTradingDayFromCalendar(
   date: string,
-  versions: ReadonlyMap<number, Awaited<ReturnType<Persistence["getActiveMarketCalendarVersion"]>>>,
+  versions: ReadonlyMap<number, MarketCalendarVersionRecord | null>,
 ): boolean {
   const day = new Date(`${date}T00:00:00.000Z`).getUTCDay();
   const weekdayOpenByDefault = day !== 0 && day !== 6;
@@ -503,7 +513,7 @@ function isTradingDayFromCalendar(
 function enumerateTradingDates(
   startDate: string,
   endDate: string,
-  versions: ReadonlyMap<number, Awaited<ReturnType<Persistence["getActiveMarketCalendarVersion"]>>>,
+  versions: ReadonlyMap<number, MarketCalendarVersionRecord | null>,
 ): string[] {
   const dates: string[] = [];
   for (let current = startDate; current <= endDate; current = addDays(current, 1)) {
@@ -514,14 +524,15 @@ function enumerateTradingDates(
 
 async function authoritativeCutoffDate(
   persistence: Persistence,
+  cutoffAt: string,
   knowledgeAt: string,
 ): Promise<string | null> {
-  const { localDate, localHour, localMinute } = taipeiLocalParts(knowledgeAt);
+  const { localDate, localHour, localMinute } = taipeiLocalParts(cutoffAt);
   const candidate = localHour > 18 || (localHour === 18 && localMinute >= 0)
     ? localDate
     : previousDate(localDate);
   const windowStart = addDays(candidate, -45);
-  const versions = await loadTradingCalendarVersions(persistence, windowStart, candidate);
+  const versions = await loadTradingCalendarVersions(persistence, windowStart, candidate, knowledgeAt);
   return enumerateTradingDates(windowStart, candidate, versions).at(-1) ?? null;
 }
 
@@ -550,7 +561,7 @@ async function expectedTradingDatesForQuery(
     startDate = maxDate(listingListedAt, addDays(endDate, -lookbackDays));
   }
   if (startDate > endDate) return [];
-  const versions = await loadTradingCalendarVersions(persistence, startDate, endDate);
+  const versions = await loadTradingCalendarVersions(persistence, startDate, endDate, knowledgeAt);
   const calendarDates = enumerateTradingDates(startDate, endDate, versions);
   const observedDates = (await persistence.getDistinctResearchPriceSessionDates(venue, startDate, knowledgeAt))
     .filter((date) => date <= endDate);
@@ -616,7 +627,7 @@ function priceSessionProvenance(record: ResearchPriceRecord) {
 }
 
 function metricWindowDates(dates: string[], requested: { windowSessions?: number }): string[] {
-  const windowSessions = Math.min(requested.windowSessions ?? dates.length, 1260);
+  const windowSessions = Math.max(1, Math.min(requested.windowSessions ?? dates.length, 1260));
   return dates.slice(-windowSessions);
 }
 
@@ -687,7 +698,7 @@ function buildMetricResult(
   profile: ResearchIdentityResult["identity"]["eligibility"]["profile"],
   calculatedAt: string,
 ): ResearchPriceMetricResult {
-  const windowSessions = Math.min(metric.windowSessions ?? sessions.length, 1260);
+  const windowSessions = Math.max(1, Math.min(metric.windowSessions ?? sessions.length, 1260));
   const windowedDates = metricWindowDates(
     sessions.map((session) => session.sessionDate),
     metric,
@@ -850,8 +861,16 @@ export async function getPriceSeries(
 ): Promise<ResearchPriceSeriesOutput> {
   const identity = await getResearchIdentity(persistence, { ...query, history: { limit: 1 } });
   const listing = identity.identity.listing;
-  const effectiveAuthoritativeAsOf = await authoritativeCutoffDate(persistence, query.context.effectiveAt);
-  const knowledgeAuthoritativeAsOf = await authoritativeCutoffDate(persistence, query.context.knowledgeAt);
+  const effectiveAuthoritativeAsOf = await authoritativeCutoffDate(
+    persistence,
+    query.context.effectiveAt,
+    query.context.knowledgeAt,
+  );
+  const knowledgeAuthoritativeAsOf = await authoritativeCutoffDate(
+    persistence,
+    query.context.knowledgeAt,
+    query.context.knowledgeAt,
+  );
   const effectiveBoundaryDate = effectiveAuthoritativeAsOf ?? conservativePriceBoundary(query.context.effectiveAt);
   const cappedEndDate = listing.status === "active"
     ? effectiveBoundaryDate

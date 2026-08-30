@@ -10,9 +10,9 @@ import { getPriceSeries, getResearchIdentity, getResearchManifest } from "../../
 import { setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
 
 function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): void {
-  vi.spyOn(persistence, "getActiveMarketCalendarVersion").mockImplementation(async (marketCode, calendarYear) =>
+  vi.spyOn(persistence, "listMarketCalendarHistory").mockImplementation(async (marketCode, calendarYear) =>
     calendarYear === 2026
-      ? {
+      ? [{
           versionId: "calendar-tw-2026",
           importOperationId: "calendar-import-tw-2026",
           marketCode,
@@ -37,8 +37,8 @@ function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): v
           exceptions: [],
           createdAt: "2025-12-01T00:00:00.000Z",
           updatedAt: "2025-12-01T00:00:00.000Z",
-        }
-      : null
+        }]
+      : []
   );
 }
 

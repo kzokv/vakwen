@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { createDividendEvent } from "../../src/services/dividends.js";
 import { appendOfficialListingStatusRevision, canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
 import { canonicalizeOfficialPriceRow } from "../../src/services/research/price.js";
+import { researchPriceSeriesOutputSchema } from "../../src/services/research/contracts.js";
 import { getPriceSeries, getResearchManifest } from "../../src/services/research/service.js";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
+import type { MarketCalendarVersionRecord } from "../../src/persistence/types.js";
 
 function companyListing(overrides: Partial<{
   venue: "TWSE" | "TPEX";
@@ -134,9 +136,9 @@ function weekdayDates(startDate: string, endDate: string): string[] {
 }
 
 function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): void {
-  vi.spyOn(persistence, "getActiveMarketCalendarVersion").mockImplementation(async (marketCode, calendarYear) =>
+  vi.spyOn(persistence, "listMarketCalendarHistory").mockImplementation(async (marketCode, calendarYear) =>
     calendarYear === 2026
-      ? {
+      ? [{
           versionId: "calendar-tw-2026",
           importOperationId: "calendar-import-tw-2026",
           marketCode,
@@ -161,8 +163,8 @@ function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): v
           exceptions: [],
           createdAt: "2025-12-01T00:00:00.000Z",
           updatedAt: "2025-12-01T00:00:00.000Z",
-        }
-      : null
+        }]
+      : []
   );
 }
 
@@ -592,6 +594,122 @@ describe("research price store QA", () => {
     expect(result.freshness).toEqual({ state: "not_applicable", authoritativeAsOf: null });
     expect(result.sessions).toMatchObject([{ sessionDate: "2026-08-27", state: "settled_full_bar" }]);
     expect(result.sessions.some((session) => session.sessionDate === "2026-08-28")).toBe(false);
+  });
+
+  it("empty resolved scope: default metric window stays schema-valid and returns a withheld result", async () => {
+    const persistence = new MemoryPersistence();
+    const listing = companyListing();
+    await persistence.appendResearchIdentityRecords([listing]);
+
+    const result = await getPriceSeries(persistence, {
+      subject: { kind: "listing_id", listingId: listing.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T15:00:00.000Z",
+        effectiveAt: "2026-08-28T15:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      scope: { kind: "date_range", startDate: "1990-01-01", endDate: "1990-01-31" },
+      basis: "raw",
+      order: "asc",
+      page: { limit: 31 },
+      metrics: [{ id: "simple_price_return" }],
+    });
+
+    expect(researchPriceSeriesOutputSchema.parse(result).metrics).toEqual([{
+      status: "withheld",
+      id: "simple_price_return",
+      windowSessions: 1,
+      reasonCode: "insufficient_basis_history",
+    }]);
+  });
+
+  it("calendar revisions: resolve the version known at knowledgeAt instead of today's active version", async () => {
+    const persistence = new MemoryPersistence();
+    const listing = companyListing();
+    await persistence.appendResearchIdentityRecords([listing]);
+    await persistence.appendResearchPriceRecords([priceRecord({
+      listingId: listing.listing.id,
+      ticker: "2330",
+      venue: "TWSE",
+      sessionDate: "2026-08-27",
+      state: "full_bar",
+      open: "100",
+      high: "101",
+      low: "99",
+      close: "100",
+      volume: "1000",
+      tradedValue: "100123",
+      tradeCount: "10",
+    })]);
+    const baseCalendar: MarketCalendarVersionRecord = {
+      versionId: "calendar-before-revision",
+      importOperationId: "calendar-import-before-revision",
+      marketCode: "TW",
+      calendarYear: 2026,
+      sourceId: null,
+      sourceLabel: "TW official calendar",
+      sourceType: "official_source",
+      sourceUrl: "https://example.test/tw-calendar-2026",
+      retrievedAt: "2025-12-01T00:00:00.000Z",
+      coverage: { scope: "full_year", evidence: "test fixture" },
+      confirmedAt: "2025-12-01T00:00:00.000Z",
+      invalidatedAt: null,
+      invalidationReason: null,
+      status: "confirmed",
+      isActive: false,
+      annualCounts: { tradingDayCount: 260, nonTradingDayCount: 105, weekdayClosedCount: 1, weekendOpenCount: 0 },
+      exceptions: [{
+        date: "2026-08-28",
+        status: "closed",
+        name: "Originally published closure",
+        evidence: "official calendar",
+        overrideReason: "official calendar",
+      }],
+      createdAt: "2025-12-01T00:00:00.000Z",
+      updatedAt: "2026-08-29T00:00:00.000Z",
+    };
+    const revisedCalendar: MarketCalendarVersionRecord = {
+      ...baseCalendar,
+      versionId: "calendar-after-revision",
+      importOperationId: "calendar-import-after-revision",
+      confirmedAt: "2026-08-29T00:00:00.000Z",
+      isActive: true,
+      annualCounts: { tradingDayCount: 261, nonTradingDayCount: 104, weekdayClosedCount: 0, weekendOpenCount: 0 },
+      exceptions: [],
+      createdAt: "2026-08-29T00:00:00.000Z",
+    };
+    vi.spyOn(persistence, "listMarketCalendarHistory").mockResolvedValue([revisedCalendar, baseCalendar]);
+    const query = {
+      subject: { kind: "listing_id" as const, listingId: listing.listing.id },
+      scope: { kind: "date_range" as const, startDate: "2026-08-27", endDate: "2026-08-28" },
+      basis: "raw" as const,
+      order: "asc" as const,
+      page: { limit: 2 },
+      metrics: [],
+    };
+
+    const beforeRevision = await getPriceSeries(persistence, {
+      ...query,
+      context: {
+        knowledgeAt: "2026-08-28T15:00:00.000Z",
+        effectiveAt: "2026-08-28T15:00:00.000Z",
+        assessmentMode: "effective",
+      },
+    });
+    const afterRevision = await getPriceSeries(persistence, {
+      ...query,
+      context: {
+        knowledgeAt: "2026-08-30T15:00:00.000Z",
+        effectiveAt: "2026-08-28T15:00:00.000Z",
+        assessmentMode: "effective",
+      },
+    });
+
+    expect(beforeRevision.sessions).toMatchObject([{ sessionDate: "2026-08-27", state: "settled_full_bar" }]);
+    expect(afterRevision.sessions).toMatchObject([
+      { sessionDate: "2026-08-27", state: "settled_full_bar" },
+      { sessionDate: "2026-08-28", state: "stale" },
+    ]);
   });
 
   it("historical effectiveAt: freeze sessions to the effective timeline even when knowledgeAt is later", async () => {

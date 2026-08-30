@@ -402,7 +402,27 @@ describe("MCP get_price_series QA", () => {
       binding: string;
       issuedAt: string;
       sessionDate: string;
+      innerCursor: string;
     };
+
+    const rawInnerCursor = await callMcpTool(userOneHeaders, sessionId, "get_price_series", {
+      subject: { kind: "listing_id", listingId: record.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T15:00:00.000Z",
+        effectiveAt: "2026-08-28T15:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      scope: { kind: "latest_sessions", count: 2 },
+      basis: "raw",
+      order: "desc",
+      page: { limit: 1, cursor: decoded.innerCursor },
+      metrics: [],
+    });
+    const rawInnerBody = parseMcpJson<{ result: { structuredContent: Record<string, unknown>; isError?: boolean } }>(rawInnerCursor.body);
+    expect(rawInnerBody.result.isError).toBe(true);
+    expect(researchPriceSeriesToolOutputSchema.parse(rawInnerBody.result.structuredContent)).toMatchObject({
+      result: { code: "research_cursor_invalid", statusCode: 422 },
+    });
 
     const userTwoHeaders = {
       authorization: `Bearer ${devToken({ userId: "user-2", scopes: ["research:read"] })}`,
