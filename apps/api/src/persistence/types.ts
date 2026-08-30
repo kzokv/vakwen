@@ -41,9 +41,14 @@ import type {
   ResearchIdentityRecordQuery,
 } from "../services/research/identity.js";
 import type {
+  ResearchPriceRecord,
+  ResearchPriceRecordQuery,
+} from "../services/research/price.js";
+import type {
   AccountingStore,
   BookedTradeEvent,
   CashLedgerEntry,
+  DividendEvent,
   DividendLedgerEntry,
   DividendPostingStatus,
   LotAllocationProjection,
@@ -2842,6 +2847,19 @@ export interface Persistence {
   listResearchIdentityLatestRevisions(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]>;
   listLatestResearchIdentityRecords(query: ResearchIdentityRecordQuery): Promise<ResearchIdentityRecord[]>;
   listResearchIdentityHistoryPage(query: ResearchIdentityHistoryPageQuery): Promise<ResearchIdentityRecord[]>;
+  appendResearchPriceRecords(records: ResearchPriceRecord[]): Promise<void>;
+  listResearchPriceRecords(query: ResearchPriceRecordQuery): Promise<ResearchPriceRecord[]>;
+  listLatestResearchPriceRecords(query: Extract<ResearchPriceRecordQuery, { subject: { kind: "listing_id" } }> | {
+    subject: { kind: "listing_id"; listingId: string };
+    startDate: string;
+    endDate: string;
+    knowledgeAt: string;
+  }): Promise<ResearchPriceRecord[]>;
+  getDistinctResearchPriceSessionDates(
+    venue: import("../services/research/identity.js").ResearchListingVenue,
+    fromDate: string,
+    knowledgeAt: string,
+  ): Promise<string[]>;
   /**
    * Resolve an existing user by email or create a new one.
    * Returns the internal UUID for the user.
@@ -3914,6 +3932,12 @@ export interface Persistence {
     startDate: string,
     endDate: string,
   ): Promise<DailyBar[]>;
+  listDividendEventsForTickerMarket(
+    ticker: string,
+    marketCode: MarketCode,
+    startDate: string,
+    endDate: string,
+  ): Promise<DividendEvent[]>;
   /**
    * Batched variant of getDailyBarsForTickerMarket: fetches bars for N
    * `(ticker, marketCode)` pairs in a single query. Returned map is keyed by

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import type { Persistence } from "../../persistence/types.js";
 import {
   appendOfficialListingAbsenceObservation,
@@ -11,6 +12,10 @@ import {
   type OfficialIdentityInput,
   type ResearchIdentityRecord,
 } from "./identity.js";
+import {
+  canonicalizeOfficialPriceRow,
+  type ResearchPriceRecord,
+} from "./price.js";
 import { researchAcquisitionEnabled } from "./rollout.js";
 import {
   parseOfficialSecuritiesFirmDirectory,
@@ -30,6 +35,14 @@ import {
   parseTpexEtnRetirementSnapshot,
   parseTpexFundIdentitySnapshot,
 } from "./providers/tpexIdentity.js";
+import {
+  parseTpexPriceSnapshot,
+  parseTpexSuspensionSnapshot,
+} from "./providers/tpexPrice.js";
+import {
+  parseTwsePriceSnapshot,
+  parseTwseSuspensionSnapshot,
+} from "./providers/twsePrice.js";
 
 export const OFFICIAL_IDENTITY_SOURCES = {
   twseCompanies: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
@@ -43,6 +56,14 @@ export const OFFICIAL_IDENTITY_SOURCES = {
   tpexEtnRetirements: "https://www.tpex.org.tw/www/zh-tw/ETN/list?type=delisted",
   twseDelistings: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
   tpexDelistings: "https://www.tpex.org.tw/www/zh-tw/company/deListed?code=&reason=-1",
+} as const;
+
+export const OFFICIAL_PRICE_SOURCES = {
+  twsePrices: "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+  twseSuspensions: "https://openapi.twse.com.tw/v1/exchangeReport/TWTAWU",
+  tpexPrices: "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes",
+  tpexSuspensionsToday: "https://www.tpex.org.tw/openapi/v1/tpex_spendi_today",
+  tpexSuspensionsHistory: "https://www.tpex.org.tw/openapi/v1/tpex_spendi_history",
 } as const;
 
 const TPEX_DELISTING_FIRST_YEAR = 2021;
@@ -81,6 +102,15 @@ async function fetchArtifact(fetchImpl: typeof fetch, sourceUrl: string, init?: 
       contentHash: `sha256:${createHash("sha256").update(body).digest("hex")}`,
     },
   };
+}
+
+function officialSnapshotSessionDate(rows: Array<{ sessionDate: string }>): string | null {
+  const uniqueDates = [...new Set(rows.map((row) => row.sessionDate))];
+  if (uniqueDates.length === 0) return null;
+  if (uniqueDates.length > 1) {
+    throw new Error(`Official price snapshot returned multiple session dates: ${uniqueDates.join(",")}`);
+  }
+  return uniqueDates[0]!;
 }
 
 function recordOrder(left: ResearchIdentityRecord, right: ResearchIdentityRecord): number {
@@ -546,6 +576,103 @@ export async function runOfficialIdentityAcquisition(
     acquisitionRunId,
     sourceCount: Object.keys(OFFICIAL_IDENTITY_SOURCES).length,
     recordCount: records.length + statusRevisions.length + absenceObservations.length,
+    retrievedAt,
+  };
+}
+
+export async function runOfficialPriceAcquisition(
+  persistence: Persistence,
+  options: AcquisitionOptions = {},
+) {
+  if (!researchAcquisitionEnabled()) throw new ResearchAcquisitionDisabledError();
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const retrievedAt = options.retrievedAt ?? new Date().toISOString();
+  const acquisitionRunId = options.acquisitionRunId ?? `research-price-${retrievedAt}`;
+  const [twsePrices, twseSuspensions, tpexPrices, tpexSuspensionsToday, tpexSuspensionsHistory, twseListings, tpexListings] = await Promise.all([
+    fetchArtifact(fetchImpl, OFFICIAL_PRICE_SOURCES.twsePrices),
+    fetchArtifact(fetchImpl, OFFICIAL_PRICE_SOURCES.twseSuspensions),
+    fetchArtifact(fetchImpl, OFFICIAL_PRICE_SOURCES.tpexPrices),
+    fetchArtifact(fetchImpl, OFFICIAL_PRICE_SOURCES.tpexSuspensionsToday),
+    fetchArtifact(fetchImpl, OFFICIAL_PRICE_SOURCES.tpexSuspensionsHistory),
+    persistence.listLatestResearchIdentityRecords({
+      subject: { kind: "venue", venue: "TWSE" },
+      effectiveAt: retrievedAt,
+      knowledgeAt: retrievedAt,
+    }),
+    persistence.listLatestResearchIdentityRecords({
+      subject: { kind: "venue", venue: "TPEX" },
+      effectiveAt: retrievedAt,
+      knowledgeAt: retrievedAt,
+    }),
+  ]);
+  const activeTwseListings = twseListings.filter((record) => record.listing.status === "active");
+  const activeTpexListings = tpexListings.filter((record) => record.listing.status === "active");
+  const twseRows = parseTwsePriceSnapshot(twsePrices.payload);
+  const tpexRows = parseTpexPriceSnapshot(tpexPrices.payload);
+  const twseSnapshotDate = officialSnapshotSessionDate(twseRows);
+  const tpexSnapshotDate = officialSnapshotSessionDate(tpexRows);
+  const twseSuspended = twseSnapshotDate ? parseTwseSuspensionSnapshot(twseSuspensions.payload, twseSnapshotDate) : new Set<string>();
+  const tpexSuspended = tpexSnapshotDate
+    ? parseTpexSuspensionSnapshot([
+        ...z.array(z.object({}).passthrough()).parse(tpexSuspensionsHistory.payload),
+        ...z.array(z.object({}).passthrough()).parse(tpexSuspensionsToday.payload),
+      ], tpexSnapshotDate)
+    : new Set<string>();
+  const twseByTicker = new Map(twseRows.map((row) => [row.ticker, row] as const));
+  const tpexByTicker = new Map(tpexRows.map((row) => [row.ticker, row] as const));
+
+  const records: ResearchPriceRecord[] = [];
+  for (const listing of activeTwseListings) {
+    const row = twseByTicker.get(listing.listing.ticker);
+    if (!row && !twseSuspended.has(listing.listing.ticker)) continue;
+    const sessionDate = row?.sessionDate ?? twseSnapshotDate;
+    if (!sessionDate) continue;
+    records.push(canonicalizeOfficialPriceRow({
+      listingId: listing.listing.id,
+      ticker: listing.listing.ticker,
+      venue: "TWSE",
+      sessionDate,
+      retrievedAt,
+      acquisitionRunId,
+      artifact: {
+        contentHash: (row ? twsePrices : twseSuspensions).metadata.contentHash,
+        sourceUrl: (row ? twsePrices : twseSuspensions).metadata.sourceUrl,
+        publisherDataset: row ? "exchangeReport/STOCK_DAY_ALL" : "exchangeReport/TWTAWU",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      row: row ?? { state: "suspended" },
+    }));
+  }
+  for (const listing of activeTpexListings) {
+    const row = tpexByTicker.get(listing.listing.ticker);
+    if (!row && !tpexSuspended.has(listing.listing.ticker)) continue;
+    const sessionDate = row?.sessionDate ?? tpexSnapshotDate;
+    if (!sessionDate) continue;
+    records.push(canonicalizeOfficialPriceRow({
+      listingId: listing.listing.id,
+      ticker: listing.listing.ticker,
+      venue: "TPEX",
+      sessionDate,
+      retrievedAt,
+      acquisitionRunId,
+      artifact: {
+        contentHash: row
+          ? tpexPrices.metadata.contentHash
+          : tpexSuspensionsHistory.metadata.contentHash,
+        sourceUrl: row
+          ? tpexPrices.metadata.sourceUrl
+          : tpexSuspensionsHistory.metadata.sourceUrl,
+        publisherDataset: row ? "tpex_mainboard_daily_close_quotes" : "tpex_spendi_history",
+        accessProvider: "TPEX_OPENAPI",
+      },
+      row: row ?? { state: "suspended" },
+    }));
+  }
+  await persistence.appendResearchPriceRecords(records);
+  return {
+    acquisitionRunId,
+    sourceCount: Object.keys(OFFICIAL_PRICE_SOURCES).length,
+    recordCount: records.length,
     retrievedAt,
   };
 }

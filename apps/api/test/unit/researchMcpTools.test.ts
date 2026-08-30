@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { listMcpToolDefinitions, setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
-import { researchToolErrorOutputSchema } from "../../src/services/research/contracts.js";
+import {
+  researchPriceSeriesToolOutputSchema,
+  researchToolErrorOutputSchema,
+} from "../../src/services/research/contracts.js";
 
 describe("Taiwan research MCP tool contracts", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
@@ -9,11 +12,12 @@ describe("Taiwan research MCP tool contracts", () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true, mcpExposureEnabled: true });
 
     const tools = listMcpToolDefinitions();
-    expect(tools.slice(0, 2).map((tool) => tool.name)).toEqual([
+    expect(tools.slice(0, 3).map((tool) => tool.name)).toEqual([
       "get_research_manifest",
       "get_research_identity",
+      "get_price_series",
     ]);
-    for (const toolName of ["get_research_manifest", "get_research_identity"] as const) {
+    for (const toolName of ["get_research_manifest", "get_research_identity", "get_price_series"] as const) {
       const tool = tools.find((item) => item.name === toolName)!;
       expect(tool.scope).toBe("research:read");
       expect(tool.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
@@ -48,5 +52,7 @@ describe("Taiwan research MCP tool contracts", () => {
         }).success).toBe(true);
       }
     }
+    const priceSeriesTool = tools.find((tool) => tool.name === "get_price_series")!;
+    expect(priceSeriesTool.outputSchema).toBe(researchPriceSeriesToolOutputSchema);
   });
 });

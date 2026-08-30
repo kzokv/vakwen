@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AiConnectorScope } from "@vakwen/shared-types";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -144,8 +144,12 @@ import {
   manageAdminMarketCalendarImportTool,
   updateAdminMarketCalendarSourceTool,
 } from "./adminCalendarTools.js";
-import { getResearchIdentity, getResearchManifest } from "../services/research/service.js";
-import type { ResearchIdentityQuery, ResearchQuery } from "../services/research/contracts.js";
+import { getPriceSeries, getResearchIdentity, getResearchManifest } from "../services/research/service.js";
+import type {
+  ResearchIdentityQuery,
+  ResearchPriceSeriesQuery,
+  ResearchQuery,
+} from "../services/research/contracts.js";
 
 interface RegisterMcpRoutesOptions {
   authService?: McpAuthService;
@@ -183,6 +187,82 @@ function buildToolResult(value: unknown, compactText?: string) {
   };
 }
 
+function wrapPriceSeriesCursor(
+  auth: McpAuthContext,
+  toolName: "get_price_series",
+  cursor: string | null,
+): string | null {
+  if (!cursor) return null;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    return cursor;
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    return cursor;
+  }
+  const payload = decoded as Record<string, unknown>;
+  const wrapper = {
+    version: payload.version,
+    binding: createHash("sha256")
+      .update(JSON.stringify({
+        sessionUserId: auth.sessionUserId,
+        clientId: auth.clientId,
+        scopes: [...auth.scopes].sort(),
+        toolName,
+        cursor,
+        issuedAt: payload.issuedAt,
+        sessionDate: payload.sessionDate,
+        version: payload.version,
+      }))
+      .digest("base64url")
+      .slice(0, 48),
+    issuedAt: payload.issuedAt,
+    sessionDate: payload.sessionDate,
+    innerCursor: cursor,
+  };
+  return Buffer.from(JSON.stringify(wrapper), "utf8").toString("base64url");
+}
+
+function unwrapPriceSeriesCursor(
+  auth: McpAuthContext,
+  toolName: "get_price_series",
+  cursor: string | undefined,
+): string | undefined {
+  if (!cursor) return cursor;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    return cursor;
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    return cursor;
+  }
+  const payload = decoded as Record<string, unknown>;
+  if (typeof payload.innerCursor !== "string") {
+    return cursor;
+  }
+  const expectedBinding = createHash("sha256")
+    .update(JSON.stringify({
+      sessionUserId: auth.sessionUserId,
+      clientId: auth.clientId,
+      scopes: [...auth.scopes].sort(),
+      toolName,
+      cursor: payload.innerCursor,
+      issuedAt: payload.issuedAt,
+      sessionDate: payload.sessionDate,
+      version: payload.version,
+    }))
+    .digest("base64url")
+    .slice(0, 48);
+  if (payload.binding !== expectedBinding) {
+    throw routeError(422, "research_cursor_invalid", "The price-series cursor does not match the authenticated MCP context");
+  }
+  return payload.innerCursor;
+}
+
 function researchToolSummary(toolName: McpToolName, value: Record<string, unknown>): string | undefined {
   if (toolName === "get_research_manifest") {
     const selector = value.selector as { listingId?: string } | undefined;
@@ -194,6 +274,12 @@ function researchToolSummary(toolName: McpToolName, value: Record<string, unknow
     const selector = value.selector as { listingId?: string } | undefined;
     const identity = value.identity as { listing?: { venue?: string; ticker?: string }; eligibility?: { profile?: string } } | undefined;
     return `Research identity for ${identity?.listing?.venue ?? "unknown"}:${identity?.listing?.ticker ?? "unknown"} (${selector?.listingId ?? "unknown listing"}); profile ${identity?.eligibility?.profile ?? "unknown"}.`;
+  }
+  if (toolName === "get_price_series") {
+    const selector = value.selector as { listingId?: string } | undefined;
+    const listing = value.listing as { venue?: string; ticker?: string } | undefined;
+    const sessions = Array.isArray(value.sessions) ? value.sessions.length : 0;
+    return `Research price series for ${listing?.venue ?? "unknown"}:${listing?.ticker ?? "unknown"} (${selector?.listingId ?? "unknown listing"}); ${sessions} session records returned.`;
   }
   return undefined;
 }
@@ -484,6 +570,33 @@ export async function registerMcpRoutes(
           break;
         case "get_research_identity":
           result = await getResearchIdentity(app.persistence, args as ResearchIdentityQuery);
+          break;
+        case "get_price_series":
+          result = await getPriceSeries(app.persistence, {
+            ...(args as ResearchPriceSeriesQuery),
+            page: {
+              ...(args as ResearchPriceSeriesQuery).page,
+              cursor: unwrapPriceSeriesCursor(auth, "get_price_series", (args as ResearchPriceSeriesQuery).page.cursor),
+            },
+          });
+          if (
+            result
+            && typeof result === "object"
+            && !Array.isArray(result)
+            && "page" in result
+            && result.page
+            && typeof result.page === "object"
+            && !Array.isArray(result.page)
+          ) {
+            const page = result.page as { nextCursor?: string | null };
+            result = {
+              ...result,
+              page: {
+                ...page,
+                nextCursor: wrapPriceSeriesCursor(auth, "get_price_series", page.nextCursor ?? null),
+              },
+            };
+          }
           break;
         case "get_portfolio_overview":
           result = await getPortfolioOverview(
@@ -1011,7 +1124,9 @@ export async function registerMcpRoutes(
       }
       await logAccess("ok");
       const adapted = adaptMcpToolResultForHost({ toolName, auth, result }) as Record<string, unknown>;
-      const isResearchTool = toolName === "get_research_manifest" || toolName === "get_research_identity";
+      const isResearchTool = toolName === "get_research_manifest"
+        || toolName === "get_research_identity"
+        || toolName === "get_price_series";
       return buildToolResult(
         isResearchTool ? { result: adapted } : adapted,
         researchToolSummary(toolName, adapted),
@@ -1040,7 +1155,9 @@ export async function registerMcpRoutes(
       if (error instanceof Error && "statusCode" in error && Number((error as { statusCode?: unknown }).statusCode) < 500) {
         return buildToolErrorResult(
           error as Error & { statusCode?: unknown; code?: unknown; metadata?: unknown },
-          toolName === "get_research_manifest" || toolName === "get_research_identity",
+          toolName === "get_research_manifest"
+            || toolName === "get_research_identity"
+            || toolName === "get_price_series",
         );
       }
       throw error;

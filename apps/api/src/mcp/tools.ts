@@ -14,6 +14,8 @@ import {
   researchIdentityToolOutputSchema,
   researchIdentityQuerySchema,
   researchManifestToolOutputSchema,
+  researchPriceSeriesQuerySchema,
+  researchPriceSeriesToolOutputSchema,
   researchQuerySchema,
 } from "../services/research/contracts.js";
 import {
@@ -265,6 +267,13 @@ const toolDefinitions = {
     description: "Return canonical Taiwan issuer, security, effective-dated listing, eligibility, identity observations, provenance, and paginated identity history. Reads the canonical store only.",
     inputSchema: researchIdentityQuerySchema,
     outputSchema: researchIdentityToolOutputSchema,
+    scope: "research:read" as const,
+    accessKind: "read" as const,
+  },
+  get_price_series: {
+    description: "Return canonical Taiwan authoritative price-series sessions, freshness, basis policy, and derived metrics for one immutable listing and fixed temporal context. Reads the canonical store only.",
+    inputSchema: researchPriceSeriesQuerySchema,
+    outputSchema: researchPriceSeriesToolOutputSchema,
     scope: "research:read" as const,
     accessKind: "read" as const,
   },
@@ -1286,7 +1295,7 @@ export function listMcpToolDefinitions(options: {
     _meta: "_meta" in value ? value._meta : undefined,
   }))
     .filter((tool) => {
-      if (tool.name === "get_research_manifest" || tool.name === "get_research_identity") {
+      if (tool.name === "get_research_manifest" || tool.name === "get_research_identity" || tool.name === "get_price_series") {
         return includeRolloutDisabled || researchScopeAcquisitionAllowed();
       }
       return tool.name !== "search_instruments" || legacyReadGroupEnabled || researchMcpExposureEnabled();

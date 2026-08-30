@@ -1,11 +1,16 @@
 import type { Persistence } from "../../persistence/types.js";
 import {
+  MARKET_CONTEXT_SCOPE_STATEMENT,
+  researchFocusedMarketReportSchema,
   IDENTITY_ONLY_SCOPE_STATEMENT,
   researchIdentityOnlyReportSchema,
+  type ResearchFocusedMarketReport,
   type ResearchIdentityOnlyReport,
+  type ResearchPriceSession,
+  type ResearchPriceSeriesQuery,
   type ResearchQuery,
 } from "./contracts.js";
-import { getResearchIdentity } from "./service.js";
+import { getPriceSeries, getResearchIdentity, getResearchManifest } from "./service.js";
 
 function presentFactValue(
   facts: Awaited<ReturnType<typeof getResearchIdentity>>["identity"]["facts"],
@@ -57,6 +62,7 @@ export async function buildIdentityOnlyResearchReport(
 }
 
 export type IdentityOnlyResearchReport = ResearchIdentityOnlyReport;
+export type FocusedMarketResearchReport = ResearchFocusedMarketReport;
 
 function markdownValue(value: string | null): string {
   return value === null ? "Not reported" : value.replaceAll("|", "\\|").replaceAll("\n", " ");
@@ -80,6 +86,100 @@ export function renderIdentityOnlyResearchReportMarkdown(input: IdentityOnlyRese
     "## Scope",
     "",
     unsupported.statement,
+    "",
+    "## Provenance",
+    "",
+    ...report.evidence.provenanceIds.map((id) => `- ${id}`),
+  ].join("\n");
+}
+
+export async function buildFocusedMarketResearchReport(
+  persistence: Persistence,
+  query: ResearchPriceSeriesQuery,
+) {
+  const manifest = await getResearchManifest(persistence, {
+    subject: query.subject,
+    context: query.context,
+  });
+  const frozenQuery = {
+    ...query,
+    subject: manifest.selector,
+    context: manifest.context,
+  };
+  const priceSeries = await getPriceSeries(persistence, frozenQuery);
+  const identity = await getResearchIdentity(persistence, {
+    subject: manifest.selector,
+    context: manifest.context,
+    history: { limit: 1 },
+  });
+  const provenanceIds = [...new Set(priceSeries.sessions
+    .flatMap((session: ResearchPriceSession) => ("provenance" in session ? [session.provenance.provenanceId] : [])))];
+  return researchFocusedMarketReportSchema.parse({
+    contractVersion: "research-report/1.0.0" as const,
+    profile: "focused_market" as const,
+    selector: priceSeries.selector,
+    context: priceSeries.context,
+    generatedAt: priceSeries.context.knowledgeAt,
+    sections: [
+      {
+        id: "identity" as const,
+        issuer: identity.identity.issuer,
+        security: identity.identity.security,
+        listing: identity.identity.listing,
+        displayName: presentFactValue(identity.identity.facts, "display_name"),
+      },
+      {
+        id: "market_context" as const,
+        statement: MARKET_CONTEXT_SCOPE_STATEMENT,
+        priceSeries,
+        indicativePricesExcluded: true as const,
+        intradayPricesExcluded: true as const,
+        technicalSignalsExcluded: true as const,
+      },
+    ] as const,
+    evidence: {
+      provenanceIds,
+      sessionDates: priceSeries.sessions.map((session) => session.sessionDate),
+    },
+  });
+}
+
+export function renderFocusedMarketResearchReportMarkdown(input: FocusedMarketResearchReport): string {
+  const report = researchFocusedMarketReportSchema.parse(input);
+  const [identity, marketContext] = report.sections;
+  return [
+    `# Taiwan Market Research: ${markdownValue(identity.displayName)}`,
+    "",
+    `- Listing: ${identity.listing.venue}:${identity.listing.ticker}`,
+    `- Listing ID: ${identity.listing.id}`,
+    `- Effective at: ${report.context.effectiveAt}`,
+    `- Knowledge at: ${report.context.knowledgeAt}`,
+    "",
+    "## Market Context",
+    "",
+    marketContext.statement,
+    "",
+    ...marketContext.priceSeries.sessions.map((session: ResearchPriceSession) => {
+      if (session.state === "settled_full_bar") {
+        return `- Session ${session.sessionDate}: settled_full_bar close ${session.prices.close}`;
+      }
+      if (session.state === "settled_close_only") {
+        return `- Session ${session.sessionDate}: settled_close_only close ${session.prices.close}`;
+      }
+      if (session.state === "no_trade") {
+        return `- Session ${session.sessionDate}: no_trade close ${session.prices.close ?? "not reported"}`;
+      }
+      if (session.state === "suspended") {
+        return `- Session ${session.sessionDate}: suspended`;
+      }
+      if (session.state === "corporate_action_incomplete") {
+        return `- Session ${session.sessionDate}: corporate_action_incomplete`;
+      }
+      if (session.state === "stale") {
+        return `- Session ${session.sessionDate}: stale`;
+      }
+      return `- Session ${session.sessionDate}: missing`;
+    }),
     "",
     "## Provenance",
     "",
