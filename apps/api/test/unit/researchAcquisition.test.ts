@@ -1001,7 +1001,7 @@ describe("official Taiwan identity acquisition", () => {
     })).toHaveLength(1);
   });
 
-  it("empty or materially truncated price snapshot: validate completeness before append → reject acquisition", async () => {
+  it("empty or incomplete price snapshot: validate every active listing before append → reject acquisition", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
     stubActiveTaiwanCalendar(persistence);
@@ -1075,16 +1075,16 @@ describe("official Taiwan identity acquisition", () => {
       "Official TWSE price snapshot returned multiple session dates: 2026-08-27,2026-08-26",
     );
 
-    payloads.set(OFFICIAL_PRICE_SOURCES.twsePrices, [{
-      Code: "1101", Date: "1150827", OpeningPrice: "10", HighestPrice: "11",
+    payloads.set(OFFICIAL_PRICE_SOURCES.twsePrices, ["1101", "1102"].map((ticker) => ({
+      Code: ticker, Date: "1150827", OpeningPrice: "10", HighestPrice: "11",
       LowestPrice: "9", ClosingPrice: "10", TradeVolume: "100", TradeValue: "1000", Transaction: "10",
-    }]);
+    })));
     await expect(runOfficialPriceAcquisition(persistence, {
       fetchImpl,
       retrievedAt: "2026-08-27T10:15:00.000Z",
       acquisitionRunId: "run-truncated-price",
     })).rejects.toThrow(
-      "Official TWSE price snapshot failed completeness guard: 2 of 3 active listings are absent",
+      "Official TWSE price snapshot failed completeness guard: 1 of 3 active listings are absent",
     );
     expect(await persistence.listLatestResearchPriceRecords({
       subject: { kind: "listing_id", listingId: twseListings[0]!.listing.id },

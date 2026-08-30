@@ -70,7 +70,6 @@ export const OFFICIAL_PRICE_SOURCES = {
 
 const TPEX_DELISTING_FIRST_YEAR = 2021;
 const ETF_ABSENCE_COMPLETENESS_GUARD_PERCENT = 1;
-const PRICE_SNAPSHOT_COMPLETENESS_GUARD_PERCENT = 1;
 
 export class ResearchAcquisitionDisabledError extends Error {
   readonly code = "research_acquisition_disabled";
@@ -187,11 +186,7 @@ function assertPriceSnapshotCompleteness(
   const missingListings = activeListings.filter(
     (record) => !observedTickers.has(record.listing.ticker),
   );
-  const absenceGuardCeiling = Math.max(
-    1,
-    Math.floor(activeListings.length * PRICE_SNAPSHOT_COMPLETENESS_GUARD_PERCENT / 100),
-  );
-  if (missingListings.length > absenceGuardCeiling) {
+  if (missingListings.length > 0) {
     throw new Error(
       `Official ${venue} price snapshot failed completeness guard: `
       + `${missingListings.length} of ${activeListings.length} active listings are absent`,
