@@ -2,7 +2,7 @@ import type { FastifyBaseLogger } from "fastify";
 import type { JobWithMetadata, PgBoss } from "pg-boss";
 import type { Persistence } from "../../persistence/types.js";
 import { DEFAULT_MARKET_DATA_QUEUE_OPTIONS } from "../market-data/registerBackfillWorker.js";
-import { runOfficialPriceAcquisition } from "./acquisition.js";
+import { runOfficialIdentityAcquisition, runOfficialPriceAcquisition } from "./acquisition.js";
 
 export const RESEARCH_PRICE_ACQUISITION_QUEUE = "research-price-acquisition";
 // 10:30 UTC = 18:30 Asia/Taipei, after the 18:00 due boundary and before the
@@ -19,10 +19,15 @@ export function createResearchPriceAcquisitionHandler(
 ) {
   return async (jobs: JobWithMetadata<Record<string, never>>[]): Promise<void> => {
     const job = jobs[0];
-    const result = await runOfficialPriceAcquisition(deps.persistence, {
-      acquisitionRunId: job ? `pg-boss:${job.id}` : undefined,
+    const acquisitionRunId = job ? `pg-boss:${job.id}` : undefined;
+    const identityResult = await runOfficialIdentityAcquisition(deps.persistence, {
+      acquisitionRunId: acquisitionRunId ? `${acquisitionRunId}:identity` : undefined,
     });
-    deps.log.info(result, "research_price_acquisition_completed");
+    deps.log.info(identityResult, "research_identity_acquisition_before_price_completed");
+    const priceResult = await runOfficialPriceAcquisition(deps.persistence, {
+      acquisitionRunId: acquisitionRunId ? `${acquisitionRunId}:price` : undefined,
+    });
+    deps.log.info(priceResult, "research_price_acquisition_completed");
   };
 }
 

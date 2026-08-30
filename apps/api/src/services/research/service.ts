@@ -317,17 +317,27 @@ export async function getResearchManifest(
     ...query,
     history: { limit: 1 },
   });
-  const sessionDates = await persistence.getDistinctResearchPriceSessionDates(
-    identity.identity.listing.venue,
-    identity.identity.listing.listedAt,
+  const effectiveAuthoritativeAsOf = await authoritativeCutoffDate(
+    persistence,
+    identity.context.effectiveAt,
     identity.context.knowledgeAt,
   );
-  const listingSessions = await persistence.listLatestResearchPriceRecords({
-    subject: { kind: "listing_id", listingId: identity.selector.listingId },
-    startDate: identity.identity.listing.listedAt,
-    endDate: sessionDates.at(-1) ?? identity.identity.listing.listedAt,
-    knowledgeAt: identity.context.knowledgeAt,
-  });
+  const effectiveBoundaryDate = effectiveAuthoritativeAsOf
+    ?? conservativePriceBoundary(identity.context.effectiveAt);
+  const listing = identity.identity.listing;
+  const cappedEndDate = listing.status === "active"
+    ? effectiveBoundaryDate
+    : listing.inactiveAt && listing.inactiveAt < effectiveBoundaryDate
+      ? listing.inactiveAt
+      : effectiveBoundaryDate;
+  const listingSessions = listing.listedAt > cappedEndDate
+    ? []
+    : await persistence.listLatestResearchPriceRecords({
+        subject: { kind: "listing_id", listingId: identity.selector.listingId },
+        startDate: listing.listedAt,
+        endDate: cappedEndDate,
+        knowledgeAt: identity.context.knowledgeAt,
+      });
   const hasPriceSeries = identity.identity.eligibility.state === "eligible"
     && identity.identity.eligibility.profile !== "identity_only"
     && listingSessions.length > 0;

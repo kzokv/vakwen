@@ -636,7 +636,7 @@ describe("Taiwan research store-only service", () => {
       formulaVersion: "1.0.0",
     }]);
     expect(series.freshness).toEqual({ state: "current", authoritativeAsOf: "2026-08-27" });
-    expect(sessionDatesSpy).toHaveBeenCalledWith("TWSE", "1994-09-05", "2026-08-27T12:00:00.000Z");
+    expect(sessionDatesSpy).toHaveBeenCalledWith("TWSE", "2026-07-27", "2026-08-27T12:00:00.000Z");
     expect(priceRecordsSpy).toHaveBeenCalledWith({
       subject: { kind: "listing_id", listingId: record.listing.id },
       startDate: "2026-08-26",

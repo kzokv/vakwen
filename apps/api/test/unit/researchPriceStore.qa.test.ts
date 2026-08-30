@@ -335,6 +335,48 @@ describe("research price store QA", () => {
     expect(loadStoreSpy).not.toHaveBeenCalled();
   });
 
+  it("manifest temporal boundary: later-known bars do not authorize a report before their effective session", async () => {
+    const persistence = new MemoryPersistence();
+    const listing = companyListing();
+    await persistence.appendResearchIdentityRecords([listing]);
+    await persistence.appendResearchPriceRecords([priceRecord({
+      listingId: listing.listing.id,
+      ticker: "2330",
+      venue: "TWSE",
+      sessionDate: "2026-08-28",
+      retrievedAt: "2026-08-29T02:00:00.000Z",
+      state: "full_bar",
+      open: "100",
+      high: "101",
+      low: "99",
+      close: "100",
+      volume: "1000",
+      tradedValue: "100123",
+      tradeCount: "10",
+    })]);
+    const query = {
+      subject: { kind: "listing_id" as const, listingId: listing.listing.id },
+      context: {
+        knowledgeAt: "2026-08-30T15:00:00.000Z",
+        effectiveAt: "2026-08-27T15:00:00.000Z",
+        assessmentMode: "effective" as const,
+      },
+    };
+
+    const beforePriceSession = await getResearchManifest(persistence, query);
+    const atPriceSession = await getResearchManifest(persistence, {
+      ...query,
+      context: { ...query.context, effectiveAt: "2026-08-28T15:00:00.000Z" },
+    });
+
+    expect(beforePriceSession.datasets[1]).toEqual({
+      id: "price_series",
+      status: "unavailable",
+      reasonCode: "no_authoritative_price_history",
+    });
+    expect(atPriceSession.datasets[1]).toMatchObject({ id: "price_series", status: "available" });
+  });
+
   it("explicit states and historical cutoff: surface close-only, no-trade, suspended, missing, stale, and inactive history", async () => {
     const persistence = new MemoryPersistence();
     installAuthoritativeCalendarCoverage(persistence);
