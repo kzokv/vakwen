@@ -17,20 +17,25 @@ interface ResearchPriceAcquisitionWorkerDeps {
   now?: () => Date;
 }
 
+interface ResearchPriceAcquisitionJobData {
+  trigger: "scheduled" | "startup";
+}
+
 export function createResearchPriceAcquisitionHandler(
   deps: ResearchPriceAcquisitionWorkerDeps,
 ) {
-  return async (jobs: JobWithMetadata<Record<string, never>>[]): Promise<void> => {
+  return async (jobs: JobWithMetadata<ResearchPriceAcquisitionJobData>[]): Promise<void> => {
     const now = deps.now?.() ?? new Date();
+    const job = jobs[0];
+    const trigger = job?.data?.trigger ?? "startup";
     const calendarDay = await getOfficialCalendarDayStatus(deps.persistence, "TW", now);
     if (calendarDay.status === "calendar_unknown") {
       throw new Error(`Official TW market calendar is unavailable for ${calendarDay.calendarYear}`);
     }
-    if (calendarDay.status === "closed") {
+    if (calendarDay.status === "closed" && trigger === "scheduled") {
       deps.log.info(calendarDay, "research_price_acquisition_skipped_closed_session");
       return;
     }
-    const job = jobs[0];
     const acquisitionRunId = job ? `pg-boss:${job.id}` : undefined;
     const retrievedAt = now.toISOString();
     const identityResult = await runOfficialIdentityAcquisition(deps.persistence, {
@@ -59,8 +64,10 @@ export async function registerResearchPriceAcquisitionWorker(
     { batchSize: 1, includeMetadata: true },
     createResearchPriceAcquisitionHandler(deps),
   );
-  await boss.schedule(RESEARCH_PRICE_ACQUISITION_QUEUE, RESEARCH_PRICE_ACQUISITION_CRON, {});
-  await boss.send(RESEARCH_PRICE_ACQUISITION_QUEUE, {}, {
+  await boss.schedule(RESEARCH_PRICE_ACQUISITION_QUEUE, RESEARCH_PRICE_ACQUISITION_CRON, {
+    trigger: "scheduled",
+  });
+  await boss.send(RESEARCH_PRICE_ACQUISITION_QUEUE, { trigger: "startup" }, {
     singletonKey: RESEARCH_PRICE_ACQUISITION_QUEUE,
   });
 }

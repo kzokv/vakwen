@@ -120,8 +120,11 @@ export async function buildFocusedMarketResearchReport(
     context: manifest.context,
     history: { limit: 1 },
   });
-  const provenanceIds = [...new Set(priceSeries.sessions
-    .flatMap((session: ResearchPriceSession) => ("provenance" in session ? [session.provenance.provenanceId] : [])))];
+  const provenanceIds = [...new Set([
+    ...priceSeries.sessions
+      .flatMap((session: ResearchPriceSession) => ("provenance" in session ? [session.provenance.provenanceId] : [])),
+    ...priceSeries.metrics.flatMap((metric) => metric.status === "returned" ? metric.provenanceIds : []),
+  ])];
   return researchFocusedMarketReportSchema.parse({
     contractVersion: "research-report/1.0.0" as const,
     profile: "focused_market" as const,

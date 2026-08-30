@@ -957,6 +957,7 @@ export async function getPriceSeries(
         sessionDate,
         close,
         missingInputs: ["canonical_verified_corporate_actions_unavailable"],
+        provenance: priceSessionProvenance(record),
       };
     }
     const basisClose = close;

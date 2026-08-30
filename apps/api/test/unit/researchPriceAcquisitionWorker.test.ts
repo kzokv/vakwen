@@ -88,7 +88,7 @@ describe("registerResearchPriceAcquisitionWorker", () => {
       now: () => new Date("2026-08-29T10:30:00.000Z"),
     });
 
-    await openHandler([{ id: "weekend-open" }] as never);
+    await openHandler([{ id: "weekend-open", data: { trigger: "scheduled" } }] as never);
     expect(runOfficialPriceAcquisition).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       retrievedAt: "2026-08-29T10:30:00.000Z",
     }));
@@ -101,7 +101,7 @@ describe("registerResearchPriceAcquisitionWorker", () => {
       log: log as never,
       now: () => new Date("2026-08-30T10:30:00.000Z"),
     });
-    await closedHandler([{ id: "weekend-closed" }] as never);
+    await closedHandler([{ id: "weekend-closed", data: { trigger: "scheduled" } }] as never);
 
     expect(runOfficialIdentityAcquisition).not.toHaveBeenCalled();
     expect(runOfficialPriceAcquisition).not.toHaveBeenCalled();
@@ -109,6 +109,18 @@ describe("registerResearchPriceAcquisitionWorker", () => {
       expect.objectContaining({ localDate: "2026-08-30", status: "closed" }),
       "research_price_acquisition_skipped_closed_session",
     );
+
+    vi.clearAllMocks();
+    await closedHandler([{ id: "weekend-startup", data: { trigger: "startup" } }] as never);
+
+    expect(runOfficialIdentityAcquisition).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      acquisitionRunId: "pg-boss:weekend-startup:identity",
+      retrievedAt: "2026-08-30T10:30:00.000Z",
+    }));
+    expect(runOfficialPriceAcquisition).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      acquisitionRunId: "pg-boss:weekend-startup:price",
+      retrievedAt: "2026-08-30T10:30:00.000Z",
+    }));
   });
 
   it("registers the canonical research price worker on the Taiwan 18:30 close-acquisition schedule", async () => {
@@ -138,11 +150,11 @@ describe("registerResearchPriceAcquisitionWorker", () => {
     expect(boss.schedule).toHaveBeenCalledWith(
       RESEARCH_PRICE_ACQUISITION_QUEUE,
       RESEARCH_PRICE_ACQUISITION_CRON,
-      {},
+      { trigger: "scheduled" },
     );
     expect(boss.send).toHaveBeenCalledWith(
       RESEARCH_PRICE_ACQUISITION_QUEUE,
-      {},
+      { trigger: "startup" },
       { singletonKey: RESEARCH_PRICE_ACQUISITION_QUEUE },
     );
   });

@@ -335,6 +335,7 @@ const researchPriceSessionSchema = z.discriminatedUnion("state", [
     sessionDate: isoDateSchema,
     close: z.number().nullable(),
     missingInputs: z.array(z.string().min(1)).min(1),
+    provenance: researchPriceProvenanceSchema,
   }).strict(),
 ]);
 const researchMetricResultSchema = z.discriminatedUnion("status", [

@@ -1124,12 +1124,14 @@ describe("research price store QA", () => {
         sessionDate: "2026-08-26",
         close: 100,
         missingInputs: ["canonical_verified_corporate_actions_unavailable"],
+        provenance: expect.objectContaining({ provenanceId: expect.any(String) }),
       },
       {
         state: "corporate_action_incomplete",
         sessionDate: "2026-08-27",
         close: 99,
         missingInputs: ["canonical_verified_corporate_actions_unavailable"],
+        provenance: expect.objectContaining({ provenanceId: expect.any(String) }),
       },
     ]);
     expect(result.metrics).toEqual([

@@ -85,8 +85,15 @@ describe("canonical research price records", () => {
       ...valid,
       observations: valid.observations.filter((observation) => observation.field !== "open"),
     };
-    await expect(new MemoryPersistence().appendResearchPriceRecords([malformedRecord])).rejects.toThrow(
+    const persistence = new MemoryPersistence();
+    await expect(persistence.appendResearchPriceRecords([valid, malformedRecord])).rejects.toThrow(
       "research_price_record_invalid",
     );
+    await expect(persistence.listResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: valid.listingId },
+      startDate: valid.sessionDate,
+      endDate: valid.sessionDate,
+      knowledgeAt: "2026-08-27T11:00:00.000Z",
+    })).resolves.toEqual([]);
   });
 });

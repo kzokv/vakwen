@@ -99,6 +99,29 @@ describe("identity-only Taiwan ResearchReport", () => {
       },
     });
     await persistence.appendResearchIdentityRecords([record]);
+    const olderPriceRecord = canonicalizeOfficialPriceRow({
+        listingId: record.listing.id,
+        ticker: "2330",
+        venue: "TWSE",
+        sessionDate: "2026-08-26",
+        retrievedAt: "2026-08-26T10:15:00.000Z",
+        artifact: {
+          contentHash: "sha256:focused-market-price-older",
+          sourceUrl: "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+          publisherDataset: "exchangeReport/STOCK_DAY_ALL",
+          accessProvider: "TWSE_OPENAPI",
+        },
+        row: {
+          state: "full_bar",
+          open: "960",
+          high: "965",
+          low: "955",
+          close: "962",
+          volume: "120000",
+          tradedValue: "115000000",
+          tradeCount: "12000",
+        },
+      });
     const priceRecord = canonicalizeOfficialPriceRow({
         listingId: record.listing.id,
         ticker: "2330",
@@ -122,7 +145,7 @@ describe("identity-only Taiwan ResearchReport", () => {
           tradeCount: "12345",
         },
       });
-    await persistence.appendResearchPriceRecords([priceRecord]);
+    await persistence.appendResearchPriceRecords([olderPriceRecord, priceRecord]);
 
     const report = await buildFocusedMarketResearchReport(persistence, {
       subject: { kind: "listing_id", listingId: record.listing.id },
@@ -131,11 +154,11 @@ describe("identity-only Taiwan ResearchReport", () => {
         effectiveAt: "2026-08-27T11:00:00.000Z",
         assessmentMode: "effective",
       },
-      scope: { kind: "latest" },
+      scope: { kind: "latest_sessions", count: 2 },
       basis: "raw",
       order: "desc",
-      page: { limit: 10 },
-      metrics: [],
+      page: { limit: 1 },
+      metrics: [{ id: "simple_price_return", windowSessions: 2 }],
     });
     const markdown = renderFocusedMarketResearchReportMarkdown(report);
 
@@ -169,13 +192,17 @@ describe("identity-only Taiwan ResearchReport", () => {
       effectiveAt: "2026-08-27T11:00:00.000Z",
       assessmentMode: "effective",
     });
-    expect(report.evidence.provenanceIds).toEqual([priceRecord.provenance.id]);
+    expect(report.evidence.provenanceIds).toEqual([
+      priceRecord.provenance.id,
+      olderPriceRecord.provenance.id,
+    ]);
     expect(report.evidence.sessionDates).toEqual(["2026-08-27"]);
     expect(markdown).toContain("# Taiwan Market Research: 台積電");
     expect(markdown).toContain("- Listing: TWSE:2330");
     expect(markdown).toContain("- Session 2026-08-27: settled_full_bar close 972");
     expect(markdown).toContain("## Provenance");
     expect(markdown).toContain(`- ${priceRecord.provenance.id}`);
+    expect(markdown).toContain(`- ${olderPriceRecord.provenance.id}`);
   });
 
   it("focused market report: reject when the manifest does not expose an available price series", async () => {

@@ -970,6 +970,8 @@ export class MemoryPersistence implements Persistence {
   async appendResearchPriceRecords(records: ResearchPriceRecord[]): Promise<void> {
     for (const record of records) {
       validateResearchPriceRecord(record);
+    }
+    for (const record of records) {
       const key = researchPriceRecordKey(record);
       if (!this.researchPriceRecords.has(key)) {
         this.researchPriceRecords.set(key, structuredClone(record));
