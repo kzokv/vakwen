@@ -115,19 +115,19 @@ export function parseTpexSuspensionSnapshot(rows: unknown, sessionDate: string):
     const resumedAt = maybeRocDateToIso(firstValue(row, ["DateOfResumedTrading", "恢復交易"]));
     const explicitlyHalted = yesLike(firstValue(row, ["暫停交易"]));
     const explicitlyResumed = yesLike(firstValue(row, ["恢復交易"]));
-    const candidate = resumedAt
-      ? { type: "resume" as const, date: resumedAt, order: index }
-      : haltedAt
-        ? { type: "halt" as const, date: haltedAt, order: index }
-        : explicitlyResumed
-          ? { type: "resume" as const, date: sessionDate, order: index }
-          : explicitlyHalted
-            ? { type: "halt" as const, date: sessionDate, order: index }
-            : null;
-    if (!candidate || candidate.date > sessionDate) return;
-    const existing = latestEventByCode.get(code);
-    if (!existing || candidate.date > existing.date || (candidate.date === existing.date && candidate.order > existing.order)) {
-      latestEventByCode.set(code, candidate);
+    const candidates: Array<{ type: "halt" | "resume"; date: string; order: number }> = [];
+    if (haltedAt) candidates.push({ type: "halt", date: haltedAt, order: index * 2 });
+    if (resumedAt) candidates.push({ type: "resume", date: resumedAt, order: (index * 2) + 1 });
+    if (!haltedAt && !resumedAt) {
+      if (explicitlyHalted) candidates.push({ type: "halt", date: sessionDate, order: index * 2 });
+      if (explicitlyResumed) candidates.push({ type: "resume", date: sessionDate, order: (index * 2) + 1 });
+    }
+    for (const candidate of candidates) {
+      if (candidate.date > sessionDate) continue;
+      const existing = latestEventByCode.get(code);
+      if (!existing || candidate.date > existing.date || (candidate.date === existing.date && candidate.order > existing.order)) {
+        latestEventByCode.set(code, candidate);
+      }
     }
   });
   return new Set(

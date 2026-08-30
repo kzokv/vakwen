@@ -121,6 +121,18 @@ async function seedDividendEvent(persistence: MemoryPersistence) {
   await persistence.saveStore(store);
 }
 
+function weekdayDates(startDate: string, endDate: string): string[] {
+  const dates: string[] = [];
+  const cursor = new Date(`${startDate}T00:00:00.000Z`);
+  const end = new Date(`${endDate}T00:00:00.000Z`);
+  while (cursor <= end) {
+    const day = cursor.getUTCDay();
+    if (day !== 0 && day !== 6) dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return dates;
+}
+
 describe("research price store QA", () => {
   it("store-only read: preserve scope/order/metrics lineage and avoid write-side effects", async () => {
     const persistence = new MemoryPersistence();
@@ -638,6 +650,107 @@ describe("research price store QA", () => {
         reasonCode: "insufficient_basis_history",
       },
     ]);
+  });
+
+  it("metric windows: withhold a requested window larger than the selected scope", async () => {
+    const persistence = new MemoryPersistence();
+    const listing = companyListing();
+    await persistence.appendResearchIdentityRecords([listing]);
+    await persistence.appendResearchPriceRecords([
+      "2026-08-25",
+      "2026-08-26",
+      "2026-08-27",
+    ].map((sessionDate, index) => priceRecord({
+      listingId: listing.listing.id,
+      ticker: "2330",
+      venue: "TWSE",
+      sessionDate,
+      state: "full_bar",
+      open: `${100 + index}`,
+      high: `${102 + index}`,
+      low: `${99 + index}`,
+      close: `${101 + index}`,
+      volume: `${1000 + index}`,
+      tradedValue: `${100000 + index}`,
+      tradeCount: `${10 + index}`,
+    })));
+
+    const result = await getPriceSeries(persistence, {
+      subject: { kind: "listing_id", listingId: listing.listing.id },
+      context: {
+        knowledgeAt: "2026-08-27T15:00:00.000Z",
+        effectiveAt: "2026-08-27T15:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      scope: { kind: "latest_sessions", count: 3 },
+      basis: "raw",
+      order: "asc",
+      page: { limit: 3 },
+      metrics: [{ id: "simple_price_return", windowSessions: 252 }],
+    });
+
+    expect(result.metrics).toEqual([{
+      status: "withheld",
+      id: "simple_price_return",
+      windowSessions: 252,
+      reasonCode: "insufficient_basis_history",
+    }]);
+  });
+
+  it("metric lineage: bounds five-year evidence independently from session pagination", async () => {
+    const persistence = new MemoryPersistence();
+    const listing = companyListing();
+    const dates = weekdayDates("2021-09-01", "2026-08-27");
+    await persistence.appendResearchIdentityRecords([listing]);
+    await persistence.appendResearchPriceRecords(dates.map((sessionDate, index) => priceRecord({
+      listingId: listing.listing.id,
+      ticker: "2330",
+      venue: "TWSE",
+      sessionDate,
+      state: "full_bar",
+      open: `${100 + index}`,
+      high: `${102 + index}`,
+      low: `${99 + index}`,
+      close: `${101 + index}`,
+      volume: `${1000 + index}`,
+      tradedValue: `${100000 + index}`,
+      tradeCount: `${10 + index}`,
+    })));
+
+    const result = await getPriceSeries(persistence, {
+      subject: { kind: "listing_id", listingId: listing.listing.id },
+      context: {
+        knowledgeAt: "2026-08-27T15:00:00.000Z",
+        effectiveAt: "2026-08-27T15:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      scope: { kind: "date_range", startDate: "2021-09-01", endDate: "2026-08-27" },
+      basis: "raw",
+      order: "desc",
+      page: { limit: 1 },
+      metrics: [
+        { id: "simple_price_return", windowSessions: 1260 },
+        { id: "annualized_realized_volatility", windowSessions: 1260 },
+        { id: "maximum_drawdown", windowSessions: 1260 },
+        { id: "average_daily_volume", windowSessions: 1260 },
+        { id: "average_daily_traded_value", windowSessions: 1260 },
+      ],
+    });
+
+    expect(result.metrics).toHaveLength(5);
+    for (const metric of result.metrics) {
+      expect(metric.status).toBe("returned");
+      if (metric.status !== "returned") continue;
+      expect(metric.lineage).toMatchObject({
+        state: "bounded",
+        totalObservationCount: 1260,
+        maxReturnedObservations: 64,
+        digestAlgorithm: "sha256",
+      });
+      expect(metric.observationInputs).toHaveLength(64);
+      expect(metric.observationIds).toHaveLength(64);
+    }
+    expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThan(256 * 1024);
   });
 
   it("response budget: truncate oversized pages and reject a single oversized suspended record", async () => {

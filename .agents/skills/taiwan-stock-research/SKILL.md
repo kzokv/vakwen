@@ -28,6 +28,7 @@ Read `references/research-report.md` before producing a report.
 5. Freeze the manifest-returned `listing_id` selector and returned temporal context. Use those exact values for every following call.
 6. Call `get_research_identity` with the frozen selector and context. Request history only when it is relevant; follow `nextCursor` without changing the selector or temporal context.
 7. If the manifest marks `price_series` as `available` and the user needs market context, call `get_price_series` with that same frozen selector and context. Keep the manifest-listed context fixed, and do not widen scope, basis, metrics, or page settings outside the manifest capabilities.
+   - A returned metric's `lineage.state` may be `bounded`; preserve its counts and digest and do not describe the returned boundary sample as the complete observation list.
 8. Construct the canonical `research-report/1.0.0` artifact defined in `references/research-report.md`:
    - use `identity_only` when only identity is supported or requested;
    - use `focused_market` when authoritative settled `price_series` is available and relevant.

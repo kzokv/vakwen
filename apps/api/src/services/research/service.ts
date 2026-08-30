@@ -20,6 +20,7 @@ import {
   type ResearchIdentityRecord,
 } from "./identity.js";
 import {
+  type CanonicalPriceObservation,
   type ResearchPriceRecord,
 } from "./price.js";
 import { researchSkillExposureEnabled } from "./rollout.js";
@@ -55,6 +56,7 @@ const RESEARCH_PRICE_DATASET_VERSION = "price_series/1.0.0";
 const RESEARCH_PRICE_FRESHNESS_POLICY_VERSION = "taiwan-authoritative-freshness/1.0.0";
 const RESEARCH_PRICE_METRIC_POLICY_VERSION = "research-price-metrics/1.0.0";
 const RESEARCH_PRICE_RUNTIME_POLICY_VERSION = "canonical-store-only/1.0.0";
+const METRIC_LINEAGE_MAX_RETURNED_OBSERVATIONS = 64;
 
 function persistenceSubject(query: ResearchIdentityQuery) {
   return query.subject.kind === "listing_id"
@@ -627,6 +629,49 @@ function metricLineageObservations(
   );
 }
 
+function boundedMetricLineage(
+  observationInputs: string[],
+  observations: CanonicalPriceObservation[],
+) {
+  const allObservationIds = observations.map((observation) => observation.id);
+  const allProvenanceIds = observations.map((observation) => observation.provenanceId);
+  const completeProvenanceIds = [...new Set(allProvenanceIds)];
+  const bounded = observationInputs.length > METRIC_LINEAGE_MAX_RETURNED_OBSERVATIONS;
+  const indices = bounded
+    ? [
+        ...Array.from({ length: METRIC_LINEAGE_MAX_RETURNED_OBSERVATIONS / 2 }, (_, index) => index),
+        ...Array.from(
+          { length: METRIC_LINEAGE_MAX_RETURNED_OBSERVATIONS / 2 },
+          (_, index) => observationInputs.length - (METRIC_LINEAGE_MAX_RETURNED_OBSERVATIONS / 2) + index,
+        ),
+      ]
+    : observationInputs.map((_, index) => index);
+  const returnedObservationInputs = indices.map((index) => observationInputs[index]!);
+  const returnedObservationIds = indices.map((index) => allObservationIds[index]!);
+  const returnedProvenanceIds = [...new Set(indices.map((index) => allProvenanceIds[index]!))];
+  const digest = createHash("sha256")
+    .update(JSON.stringify(observationInputs.map((date, index) => [
+      date,
+      allObservationIds[index],
+      allProvenanceIds[index],
+    ])))
+    .digest("hex");
+  return {
+    observationInputs: returnedObservationInputs,
+    observationIds: returnedObservationIds,
+    provenanceIds: returnedProvenanceIds,
+    lineage: {
+      state: bounded ? "bounded" as const : "complete" as const,
+      totalObservationCount: observationInputs.length,
+      returnedObservationCount: returnedObservationInputs.length,
+      totalProvenanceCount: completeProvenanceIds.length,
+      maxReturnedObservations: METRIC_LINEAGE_MAX_RETURNED_OBSERVATIONS as 64,
+      digestAlgorithm: "sha256" as const,
+      digest,
+    },
+  };
+}
+
 function buildMetricResult(
   metric: ResearchPriceSeriesQuery["metrics"][number],
   sessions: ResearchPriceSession[],
@@ -643,6 +688,9 @@ function buildMetricResult(
     return { status: "not_applicable" as const, id: metric.id, windowSessions, reasonCode: "identity_only_profile" as const };
   }
   const windowed = sessions.filter((session) => windowedDates.includes(session.sessionDate));
+  if (windowed.length < windowSessions) {
+    return { status: "withheld" as const, id: metric.id, windowSessions, reasonCode: "insufficient_basis_history" as const };
+  }
   if ((metric.id === "average_daily_volume" || metric.id === "average_daily_traded_value")
     && windowed.some((session) => session.state === "settled_close_only")) {
     return { status: "withheld" as const, id: metric.id, windowSessions, reasonCode: "close_only_series" as const };
@@ -667,15 +715,17 @@ function buildMetricResult(
     && windowed.some((session) => session.state !== "settled_full_bar" && session.state !== "no_trade")) {
     return { status: "withheld" as const, id: metric.id, windowSessions, reasonCode: "close_only_series" as const };
   }
-  const observationInputs = windowed.map((session) => session.sessionDate);
-  const lineageObservations = metricLineageObservations(metric.id, observationInputs, recordByDate);
+  const calculationObservationInputs = windowed.map((session) => session.sessionDate);
+  const lineageObservations = metricLineageObservations(metric.id, calculationObservationInputs, recordByDate);
   if (lineageObservations.some((observation) => observation === undefined)) {
     return { status: "withheld" as const, id: metric.id, windowSessions, reasonCode: "insufficient_basis_history" as const };
   }
-  const observationIds = lineageObservations.map((observation) => observation!.id);
-  const provenanceIds = [...new Set(lineageObservations.map((observation) => observation!.provenanceId))];
+  const metricLineage = boundedMetricLineage(
+    calculationObservationInputs,
+    lineageObservations as CanonicalPriceObservation[],
+  );
   if (metric.id === "average_daily_volume") {
-    const volumeValues = observationInputs.map((sessionDate) => {
+    const volumeValues = calculationObservationInputs.map((sessionDate) => {
       const record = recordByDate.get(sessionDate);
       return record ? priceObservationNumber(record, "volume") : null;
     });
@@ -692,15 +742,13 @@ function buildMetricResult(
       formulaId: "average_daily_volume",
       formulaVersion: "1.0.0",
       parameters: {},
-      observationInputs,
-      observationIds,
-      provenanceIds,
+      ...metricLineage,
       calculatedAt,
       rounding: "full_precision",
     };
   }
   if (metric.id === "average_daily_traded_value") {
-    const tradedValueValues = observationInputs.map((sessionDate) => {
+    const tradedValueValues = calculationObservationInputs.map((sessionDate) => {
       const record = recordByDate.get(sessionDate);
       return record ? priceObservationNumber(record, "traded_value") : null;
     });
@@ -717,9 +765,7 @@ function buildMetricResult(
       formulaId: "average_daily_traded_value",
       formulaVersion: "1.0.0",
       parameters: {},
-      observationInputs,
-      observationIds,
-      provenanceIds,
+      ...metricLineage,
       calculatedAt,
       rounding: "full_precision",
     };
@@ -743,9 +789,7 @@ function buildMetricResult(
       formulaId: "simple_price_return",
       formulaVersion: "1.0.0",
       parameters: {},
-      observationInputs,
-      observationIds,
-      provenanceIds,
+      ...metricLineage,
       calculatedAt,
       rounding: "full_precision",
     };
@@ -763,9 +807,7 @@ function buildMetricResult(
       formulaId: "annualized_realized_volatility",
       formulaVersion: "1.0.0",
       parameters: { tradingDaysPerYear: 252 },
-      observationInputs,
-      observationIds,
-      provenanceIds,
+      ...metricLineage,
       calculatedAt,
       rounding: "full_precision",
     };
@@ -786,9 +828,7 @@ function buildMetricResult(
       formulaId: "maximum_drawdown",
       formulaVersion: "1.0.0",
       parameters: {},
-      observationInputs,
-      observationIds,
-      provenanceIds,
+      ...metricLineage,
       calculatedAt,
       rounding: "full_precision",
     };

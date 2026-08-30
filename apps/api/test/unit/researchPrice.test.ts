@@ -3,6 +3,37 @@ import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { canonicalizeOfficialPriceRow } from "../../src/services/research/price.js";
 
 describe("canonical research price records", () => {
+  it("preserves publisher missing sentinels as raw evidence without treating them as numeric values", () => {
+    const record = canonicalizeOfficialPriceRow({
+      listingId: "lst_2330",
+      ticker: "2330",
+      venue: "TWSE",
+      sessionDate: "2026-08-27",
+      retrievedAt: "2026-08-27T10:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:missing-sentinels",
+        sourceUrl: "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+        publisherDataset: "exchangeReport/STOCK_DAY_ALL",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      row: {
+        state: "no_trade",
+        open: "--",
+        high: "---",
+        low: "----",
+        close: "--",
+        volume: "---",
+        tradedValue: "----",
+        tradeCount: "--",
+      },
+    });
+
+    expect(record.observations.find((observation) => observation.field === "close")).toMatchObject({
+      raw: { state: "present", value: "--" },
+      normalized: { state: "missing", reason: "not_reported" },
+    });
+  });
+
   it("rejects malformed settled rows instead of fabricating missing numeric values", async () => {
     expect(() => canonicalizeOfficialPriceRow({
       listingId: "lst_2330",

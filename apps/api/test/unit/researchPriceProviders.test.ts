@@ -157,6 +157,14 @@ describe("official Taiwan price providers", () => {
     ], "2026-08-28")).toEqual(new Set(["6488"]));
   });
 
+  it("TPEx suspension resolution: keeps a halt active until its future resumption date", () => {
+    expect(parseTpexSuspensionSnapshot([{
+      SecuritiesCompanyCode: "1788",
+      DateOfSuspendedTrading: "1150618",
+      DateOfResumedTrading: "1150901",
+    }], "2026-08-27")).toEqual(new Set(["1788"]));
+  });
+
   it("TPEx snapshot: accept the live official singular TransactionNumber field", () => {
     expect(parseTpexPriceSnapshot([{
       SecuritiesCompanyCode: "6488",

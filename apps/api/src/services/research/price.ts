@@ -117,14 +117,17 @@ function isNormalizedDecimalString(value: string): boolean {
 
 function normalizePublisherNumericValue(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
-  const normalized = value.trim().replaceAll(",", "");
+  const trimmed = value.trim();
+  if (trimmed === "--" || trimmed === "---" || trimmed === "----") return undefined;
+  const normalized = trimmed.replaceAll(",", "");
   return normalized.length === 0 ? undefined : normalized;
 }
 
 function validateObservationValue(field: string, value: string | undefined): void {
   if (value === undefined) return;
   const normalized = normalizePublisherNumericValue(value);
-  if (!normalized || !isNormalizedDecimalString(normalized)) {
+  if (normalized === undefined) return;
+  if (!isNormalizedDecimalString(normalized)) {
     throw invalidResearchPriceRecord(`invalid ${field} value ${value}`);
   }
   if ((field === "open" || field === "high" || field === "low" || field === "close") && Number(normalized) <= 0) {
