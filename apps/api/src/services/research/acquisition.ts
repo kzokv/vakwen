@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Persistence } from "../../persistence/types.js";
+import { resolveMarketCalendarDayStatus } from "../market-data/marketCalendarService.js";
+import { getMarketLocalParts } from "../market-data/marketRegularSession.js";
 import {
   appendOfficialListingAbsenceObservation,
   appendOfficialListingStatusRevision,
@@ -123,6 +125,55 @@ function officialSnapshotSessionDate(
 
 function priceSessionEffectiveAt(sessionDate: string): string {
   return new Date(`${sessionDate}T16:00:00.000+08:00`).toISOString();
+}
+
+function addIsoDays(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00.000Z`) + (days * 86_400_000))
+    .toISOString()
+    .slice(0, 10);
+}
+
+async function expectedOfficialPriceSessionDate(
+  persistence: Persistence,
+  retrievedAt: string,
+): Promise<string> {
+  const instant = new Date(retrievedAt);
+  if (Number.isNaN(instant.valueOf())) {
+    throw new Error(`Invalid retrieval timestamp: ${retrievedAt}`);
+  }
+  const { localDate, localHour, localMinute } = getMarketLocalParts("TW", instant);
+  let candidate = localHour > 18 || (localHour === 18 && localMinute >= 0)
+    ? localDate
+    : addIsoDays(localDate, -1);
+  const versions = new Map<number, Awaited<ReturnType<Persistence["getActiveMarketCalendarVersion"]>>>();
+  for (let dayOffset = 0; dayOffset < 45; dayOffset += 1) {
+    const calendarYear = Number(candidate.slice(0, 4));
+    if (!versions.has(calendarYear)) {
+      versions.set(
+        calendarYear,
+        await persistence.getActiveMarketCalendarVersion("TW", calendarYear),
+      );
+    }
+    const status = resolveMarketCalendarDayStatus(versions.get(calendarYear) ?? null, candidate);
+    if (status === "calendar_unknown") {
+      throw new Error(`Official TW market calendar is unavailable for ${calendarYear}`);
+    }
+    if (status === "open") return candidate;
+    candidate = addIsoDays(candidate, -1);
+  }
+  throw new Error(`Official TW market calendar has no expected session before ${localDate}`);
+}
+
+function assertExpectedPriceSnapshotSession(
+  venue: "TWSE" | "TPEX",
+  actualSessionDate: string,
+  expectedSessionDate: string,
+): void {
+  if (actualSessionDate !== expectedSessionDate) {
+    throw new Error(
+      `Official ${venue} price snapshot is stale: expected ${expectedSessionDate}, received ${actualSessionDate}`,
+    );
+  }
 }
 
 function assertPriceSnapshotCompleteness(
@@ -634,6 +685,9 @@ export async function runOfficialPriceAcquisition(
   const tpexRows = parseTpexPriceSnapshot(tpexPrices.payload);
   const twseSnapshotDate = officialSnapshotSessionDate("TWSE", twseRows);
   const tpexSnapshotDate = officialSnapshotSessionDate("TPEX", tpexRows);
+  const expectedSessionDate = await expectedOfficialPriceSessionDate(persistence, retrievedAt);
+  assertExpectedPriceSnapshotSession("TWSE", twseSnapshotDate, expectedSessionDate);
+  assertExpectedPriceSnapshotSession("TPEX", tpexSnapshotDate, expectedSessionDate);
   const twseSuspended = parseTwseSuspensionSnapshot(twseSuspensions.payload, twseSnapshotDate);
   const tpexSuspensionHistoryRows = z.array(z.object({}).passthrough()).parse(tpexSuspensionsHistory.payload);
   const tpexSuspensionTodayRows = z.array(z.object({}).passthrough()).parse(tpexSuspensionsToday.payload);

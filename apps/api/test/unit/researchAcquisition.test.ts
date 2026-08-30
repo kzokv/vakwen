@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
+import type { MarketCalendarExceptionInput } from "../../src/persistence/types.js";
 import {
   OFFICIAL_IDENTITY_SOURCES,
   OFFICIAL_PRICE_SOURCES,
@@ -13,6 +14,23 @@ import {
   officialFundProductIdentityKey,
 } from "../../src/services/research/identity.js";
 import { getResearchIdentity } from "../../src/services/research/service.js";
+
+function stubActiveTaiwanCalendar(
+  persistence: MemoryPersistence,
+  exceptions: MarketCalendarExceptionInput[] = [],
+): void {
+  vi.spyOn(persistence, "getActiveMarketCalendarVersion").mockImplementation(async (marketCode, calendarYear) =>
+    marketCode === "TW"
+      ? {
+          marketCode,
+          calendarYear,
+          status: "confirmed",
+          isActive: true,
+          exceptions: exceptions.filter((item) => item.date.startsWith(`${calendarYear}-`)),
+        } as never
+      : null
+  );
+}
 
 describe("official Taiwan identity acquisition", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
@@ -646,6 +664,7 @@ describe("official Taiwan identity acquisition", () => {
   it("enabled price acquisition: fetch official TWSE and TPEx settled snapshots → append canonical price records with full-bar, no-trade, and suspended states", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
+    stubActiveTaiwanCalendar(persistence);
     const twseListing = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",
@@ -862,6 +881,7 @@ describe("official Taiwan identity acquisition", () => {
   it("delayed price snapshot after ticker reuse: resolve identity at quote session → attach bar to predecessor listing", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
+    stubActiveTaiwanCalendar(persistence);
     const predecessor = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",
@@ -965,11 +985,26 @@ describe("official Taiwan identity acquisition", () => {
     expect(predecessorPrices).toHaveLength(1);
     expect(predecessorPrices[0]).toMatchObject({ ticker: "1234", sessionDate: "2026-08-27" });
     expect(successorPrices).toEqual([]);
+
+    await expect(runOfficialPriceAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-28T10:30:00.000Z",
+      acquisitionRunId: "run-stale-reused-ticker",
+    })).rejects.toThrow(
+      "Official TWSE price snapshot is stale: expected 2026-08-28, received 2026-08-27",
+    );
+    expect(await persistence.listLatestResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: predecessor.listing.id },
+      startDate: "2026-08-27",
+      endDate: "2026-08-27",
+      knowledgeAt: "2026-08-28T10:30:00.000Z",
+    })).toHaveLength(1);
   });
 
   it("empty or materially truncated price snapshot: validate completeness before append → reject acquisition", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
+    stubActiveTaiwanCalendar(persistence);
     const twseListings = ["1101", "1102", "1103"].map((ticker, index) =>
       canonicalizeOfficialIdentityRow({
         venue: "TWSE",
