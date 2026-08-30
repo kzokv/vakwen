@@ -68,6 +68,7 @@ export const OFFICIAL_PRICE_SOURCES = {
 
 const TPEX_DELISTING_FIRST_YEAR = 2021;
 const ETF_ABSENCE_COMPLETENESS_GUARD_PERCENT = 1;
+const PRICE_SNAPSHOT_COMPLETENESS_GUARD_PERCENT = 1;
 
 export class ResearchAcquisitionDisabledError extends Error {
   readonly code = "research_acquisition_disabled";
@@ -104,13 +105,47 @@ async function fetchArtifact(fetchImpl: typeof fetch, sourceUrl: string, init?: 
   };
 }
 
-function officialSnapshotSessionDate(rows: Array<{ sessionDate: string }>): string | null {
+function officialSnapshotSessionDate(
+  venue: "TWSE" | "TPEX",
+  rows: Array<{ sessionDate: string }>,
+): string {
   const uniqueDates = [...new Set(rows.map((row) => row.sessionDate))];
-  if (uniqueDates.length === 0) return null;
+  if (uniqueDates.length === 0) {
+    throw new Error(`Official ${venue} price snapshot returned no rows`);
+  }
   if (uniqueDates.length > 1) {
-    throw new Error(`Official price snapshot returned multiple session dates: ${uniqueDates.join(",")}`);
+    throw new Error(
+      `Official ${venue} price snapshot returned multiple session dates: ${uniqueDates.join(",")}`,
+    );
   }
   return uniqueDates[0]!;
+}
+
+function priceSessionEffectiveAt(sessionDate: string): string {
+  return new Date(`${sessionDate}T16:00:00.000+08:00`).toISOString();
+}
+
+function assertPriceSnapshotCompleteness(
+  venue: "TWSE" | "TPEX",
+  activeListings: ResearchIdentityRecord[],
+  observedTickers: Set<string>,
+): void {
+  if (activeListings.length === 0) {
+    throw new Error(`Official ${venue} price snapshot has no active canonical listing universe`);
+  }
+  const missingListings = activeListings.filter(
+    (record) => !observedTickers.has(record.listing.ticker),
+  );
+  const absenceGuardCeiling = Math.max(
+    1,
+    Math.floor(activeListings.length * PRICE_SNAPSHOT_COMPLETENESS_GUARD_PERCENT / 100),
+  );
+  if (missingListings.length > absenceGuardCeiling) {
+    throw new Error(
+      `Official ${venue} price snapshot failed completeness guard: `
+      + `${missingListings.length} of ${activeListings.length} active listings are absent`,
+    );
+  }
 }
 
 function recordOrder(left: ResearchIdentityRecord, right: ResearchIdentityRecord): number {
@@ -588,46 +623,57 @@ export async function runOfficialPriceAcquisition(
   const fetchImpl = options.fetchImpl ?? fetch;
   const retrievedAt = options.retrievedAt ?? new Date().toISOString();
   const acquisitionRunId = options.acquisitionRunId ?? `research-price-${retrievedAt}`;
-  const [twsePrices, twseSuspensions, tpexPrices, tpexSuspensionsToday, tpexSuspensionsHistory, twseListings, tpexListings] = await Promise.all([
+  const [twsePrices, twseSuspensions, tpexPrices, tpexSuspensionsToday, tpexSuspensionsHistory] = await Promise.all([
     fetchArtifact(fetchImpl, OFFICIAL_PRICE_SOURCES.twsePrices),
     fetchArtifact(fetchImpl, OFFICIAL_PRICE_SOURCES.twseSuspensions),
     fetchArtifact(fetchImpl, OFFICIAL_PRICE_SOURCES.tpexPrices),
     fetchArtifact(fetchImpl, OFFICIAL_PRICE_SOURCES.tpexSuspensionsToday),
     fetchArtifact(fetchImpl, OFFICIAL_PRICE_SOURCES.tpexSuspensionsHistory),
-    persistence.listLatestResearchIdentityRecords({
-      subject: { kind: "venue", venue: "TWSE" },
-      effectiveAt: retrievedAt,
-      knowledgeAt: retrievedAt,
-    }),
-    persistence.listLatestResearchIdentityRecords({
-      subject: { kind: "venue", venue: "TPEX" },
-      effectiveAt: retrievedAt,
-      knowledgeAt: retrievedAt,
-    }),
   ]);
-  const activeTwseListings = twseListings.filter((record) => record.listing.status === "active");
-  const activeTpexListings = tpexListings.filter((record) => record.listing.status === "active");
   const twseRows = parseTwsePriceSnapshot(twsePrices.payload);
   const tpexRows = parseTpexPriceSnapshot(tpexPrices.payload);
-  const twseSnapshotDate = officialSnapshotSessionDate(twseRows);
-  const tpexSnapshotDate = officialSnapshotSessionDate(tpexRows);
-  const twseSuspended = twseSnapshotDate ? parseTwseSuspensionSnapshot(twseSuspensions.payload, twseSnapshotDate) : new Set<string>();
+  const twseSnapshotDate = officialSnapshotSessionDate("TWSE", twseRows);
+  const tpexSnapshotDate = officialSnapshotSessionDate("TPEX", tpexRows);
+  const twseSuspended = parseTwseSuspensionSnapshot(twseSuspensions.payload, twseSnapshotDate);
   const tpexSuspensionHistoryRows = z.array(z.object({}).passthrough()).parse(tpexSuspensionsHistory.payload);
   const tpexSuspensionTodayRows = z.array(z.object({}).passthrough()).parse(tpexSuspensionsToday.payload);
   const alignedTpexSuspensionTodayRows = tpexSnapshotDate === taiwanBusinessDate(retrievedAt)
     ? tpexSuspensionTodayRows
     : [];
-  const tpexSuspended = tpexSnapshotDate
-    ? parseTpexSuspensionSnapshot([
-        ...tpexSuspensionHistoryRows,
-        ...alignedTpexSuspensionTodayRows,
-      ], tpexSnapshotDate)
-    : new Set<string>();
-  const tpexSuspendedToday = tpexSnapshotDate
-    ? parseTpexSuspensionSnapshot(alignedTpexSuspensionTodayRows, tpexSnapshotDate)
-    : new Set<string>();
+  const tpexSuspended = parseTpexSuspensionSnapshot([
+    ...tpexSuspensionHistoryRows,
+    ...alignedTpexSuspensionTodayRows,
+  ], tpexSnapshotDate);
+  const tpexSuspendedToday = parseTpexSuspensionSnapshot(
+    alignedTpexSuspensionTodayRows,
+    tpexSnapshotDate,
+  );
+  const [twseListings, tpexListings] = await Promise.all([
+    persistence.listLatestResearchIdentityRecords({
+      subject: { kind: "venue", venue: "TWSE" },
+      effectiveAt: priceSessionEffectiveAt(twseSnapshotDate),
+      knowledgeAt: retrievedAt,
+    }),
+    persistence.listLatestResearchIdentityRecords({
+      subject: { kind: "venue", venue: "TPEX" },
+      effectiveAt: priceSessionEffectiveAt(tpexSnapshotDate),
+      knowledgeAt: retrievedAt,
+    }),
+  ]);
+  const activeTwseListings = twseListings.filter((record) => record.listing.status === "active");
+  const activeTpexListings = tpexListings.filter((record) => record.listing.status === "active");
   const twseByTicker = new Map(twseRows.map((row) => [row.ticker, row] as const));
   const tpexByTicker = new Map(tpexRows.map((row) => [row.ticker, row] as const));
+  assertPriceSnapshotCompleteness(
+    "TWSE",
+    activeTwseListings,
+    new Set([...twseByTicker.keys(), ...twseSuspended]),
+  );
+  assertPriceSnapshotCompleteness(
+    "TPEX",
+    activeTpexListings,
+    new Set([...tpexByTicker.keys(), ...tpexSuspended]),
+  );
 
   const records: ResearchPriceRecord[] = [];
   for (const listing of activeTwseListings) {
@@ -636,7 +682,6 @@ export async function runOfficialPriceAcquisition(
     const canonicalRow = isSuspended ? { state: "suspended" as const } : row;
     if (!canonicalRow) continue;
     const sessionDate = row?.sessionDate ?? twseSnapshotDate;
-    if (!sessionDate) continue;
     records.push(canonicalizeOfficialPriceRow({
       listingId: listing.listing.id,
       ticker: listing.listing.ticker,
@@ -659,7 +704,6 @@ export async function runOfficialPriceAcquisition(
     const canonicalRow = isSuspended ? { state: "suspended" as const } : row;
     if (!canonicalRow) continue;
     const sessionDate = row?.sessionDate ?? tpexSnapshotDate;
-    if (!sessionDate) continue;
     const suspensionArtifact = tpexSuspendedToday.has(listing.listing.ticker)
       ? tpexSuspensionsToday
       : tpexSuspensionsHistory;
