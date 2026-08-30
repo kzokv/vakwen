@@ -25,6 +25,7 @@
 - Keep `compilerOptions.strict` enabled across the TypeScript config chain.
 - Keep scripts, commands, and docs synchronized when workflows change.
 - Run the smallest relevant test scope first, then broader regression checks.
+- When analyzing external API data, save the first raw response under `.worklog/<slug>/` and reuse that snapshot for subsequent analysis instead of refetching it. This preserves reproducibility and provider rate limits.
 - Use `npm run test:integration:full:host` on Darwin or the lume VM shell, and `npm run test:integration:full:container` in Linux containers, for managed API Postgres integration coverage.
 
 ## Test Suites

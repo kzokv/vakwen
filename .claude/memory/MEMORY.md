@@ -123,7 +123,6 @@
 (Other KZO-192 notes — FX calendar helper layout, branch split rationale, v1 limitation — moved to the transition note at `docs/004-notes/kzo-192/` and recoverable from there if needed.)
 
 ## Feedback & preferences
-- [feedback_cache_api_responses.md](feedback_cache_api_responses.md) — Always save external API responses to local files before analysis
 - [feedback_team_response_time_slas.md](feedback_team_response_time_slas.md) — `/team` Architect [TRIAGE] 5-min SLA + Validator [HEARTBEAT] during long suites — process refinements from KZO-185
 
 ## Promoted to .claude/rules/ (viewer-scoped owner portfolio settings, 2026-06-22)

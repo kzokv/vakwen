@@ -241,7 +241,7 @@ Use the deployed API hostname or put an HTTPS tunnel in front of the API. Produc
 
 The MCP implementation supports Streamable HTTP at `/mcp`, OAuth protected-resource and authorization-server metadata, authorization-code + PKCE consent, refresh-token rotation, connector policy enforcement, connector access logs, and local dev-token bearer authentication for controlled smoke tests. ChatGPT / OpenAI Apps use the shipped OAuth connector path. Claude Code, Codex CLI/IDE, Gemini CLI, VS Code / Copilot MCP, and generic MCP clients use user-generated bearer fallback connector instances when admin policy allows it. Dev tokens are only for local diagnostics and must not be exposed as an end-user credential flow.
 
-Additive research authorization is a separate rollout from the legacy read surface. It uses a dedicated `research` tool group plus `research:read`, while `portfolio:mcp_read` remains the legacy read scope. The only shared tool is `search_instruments`: with `portfolio:mcp_read` it keeps the multi-market legacy behavior, and with `research:read` it narrows to Taiwan research search.
+Additive research authorization is a separate rollout from the legacy read surface. It uses a dedicated `research` tool group plus `research:read`, while `portfolio:mcp_read` remains the legacy read scope. `get_research_manifest` and `get_research_identity` are research-only and read the canonical store without upstream side effects. `search_instruments` remains the shared discovery tool: with `portfolio:mcp_read` it keeps the multi-market legacy behavior, and with `research:read` it narrows to Taiwan research search.
 
 `Claude.ai` is not a separate shipped client kind in this worktree yet. Do not reuse the Claude Code bearer setup as a substitute for Claude.ai OAuth. The repair scope tracks a future dedicated `claude_ai_connector` client with callback `https://claude.ai/api/mcp/auth_callback`.
 
@@ -371,7 +371,7 @@ ChatGPT rollout scopes:
 | Scope | Capability | Default state | User-deselectable |
 |---|---|---|---|
 | `portfolio:mcp_read` | Read portfolio, holdings, transaction context, and connector-safe summaries | Enabled when global MCP read tools are enabled | No for the first rollout; ChatGPT needs read context to be useful |
-| `research:read` | Additive Taiwan research search on `search_instruments`, including `includeInactive` support and per-item `researchIdentity.availability` metadata | Disabled until research acquisition and MCP exposure are intentionally enabled | Yes |
+| `research:read` | Canonical Taiwan identity manifest/history plus additive Taiwan search, including `get_research_manifest`, `get_research_identity`, `includeInactive`, and per-item `researchIdentity.availability` metadata | Disabled until research acquisition and MCP exposure are intentionally enabled | Yes |
 | `transaction_draft:create` | Create draft transaction candidates for user review | Disabled unless admins enable write/draft tools | Yes |
 | `transaction_draft:edit` | Update draft transaction candidates before user review | Disabled unless admins enable write/draft tools | Yes |
 | `transaction_draft:archive` | Archive AI transaction draft batches | Disabled unless admins enable write/draft tools | Yes |
@@ -383,12 +383,13 @@ Advanced write scopes are opt-in. Leave `account:manage` and `transaction:write`
 
 Research rollout behavior:
 
-- `MCP_RESEARCH_ACQUISITION_ENABLED=false` means OAuth consent and bearer creation do not offer or persist `research:read`. Existing OAuth and bearer rows keep their stored scopes unchanged; there is no implicit grant.
-- `MCP_RESEARCH_MCP_ENABLED=false` means MCP discovery and tool metadata do not expose the additive research path. Legacy clients continue to see the pre-rollout catalog and `search_instruments` does not advertise `research:read` as an alternative scope.
-- `MCP_RESEARCH_SKILL_ENABLED=false` keeps the reserved future Skills-facing path off. This flag is exposed independently in admin/API rollout state and does not gate today's MCP or connector-settings surfaces.
+- `MCP_RESEARCH_ACQUISITION_ENABLED=false` prevents the scheduled official identity worker from being registered and means OAuth consent and bearer creation do not offer or persist `research:read`. Existing OAuth and bearer rows keep their stored scopes unchanged; there is no implicit grant.
+- `MCP_RESEARCH_MCP_ENABLED=false` means MCP discovery and tool metadata do not expose `get_research_manifest`, `get_research_identity`, or the additive research search path. Legacy clients continue to see the pre-rollout catalog.
+- `MCP_RESEARCH_SKILL_ENABLED=false` makes `get_research_manifest` report Skill orchestration as disabled. The public `taiwan-stock-research` Skill must stop before identity orchestration; MCP tools remain controlled independently by the acquisition and MCP gates.
 - A connector that already has `portfolio:mcp_read` and later gains `research:read` must reconnect or be recreated. Existing rows are preserved for rollback, but they are not auto-upgraded.
 - When the additive research path is active, `search_instruments.includeInactive=true` widens results without changing legacy error shapes, and each result may add `researchIdentity.availability` as `available`, `unavailable`, or `not_applicable`.
 - Research-only search supports Taiwan (`marketCode=TW`) only. Portfolio read continues to support the legacy multi-market search path. A combined connector may still use the legacy read path and receive additive `researchIdentity` metadata when the rollout is on.
+- The official identity worker runs at `15 18 * * 1-5` UTC and once at worker startup. It ingests official company, ETF, ETN, company-delisting, and ETN-retirement sources for both TWSE and TPEx into append-only canonical history. The TPEx company-delisting import covers each supported year from 2021 through the acquisition year. ETNs use the venues' explicit retirement tables. On a fresh store, retirement rows without a current-feed predecessor seed conservative inactive identities at the official retirement boundary; they remain queryable without inventing an earlier listing date. ETF absence retirement requires a successful, non-empty current feed and rejects the acquisition before append when unexplained absences exceed 1% of the venue's prior active ETF catalog. After that guard passes, a first sub-threshold omission records non-terminal absence evidence; only a later dated consecutive omission without an intervening active snapshot writes the inactive revision. These lifecycle inputs prevent retired products and corrected or reused tickers from resolving as current identities without trusting empty or mass-truncated snapshots.
 
 Built-in production ChatGPT redirect callbacks are:
 

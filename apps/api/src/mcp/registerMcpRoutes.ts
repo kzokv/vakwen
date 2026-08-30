@@ -144,6 +144,8 @@ import {
   manageAdminMarketCalendarImportTool,
   updateAdminMarketCalendarSourceTool,
 } from "./adminCalendarTools.js";
+import { getResearchIdentity, getResearchManifest } from "../services/research/service.js";
+import type { ResearchIdentityQuery, ResearchQuery } from "../services/research/contracts.js";
 
 interface RegisterMcpRoutesOptions {
   authService?: McpAuthService;
@@ -172,16 +174,34 @@ function asStructuredContent(value: unknown): Record<string, unknown> {
   return { value };
 }
 
-function buildToolResult(value: unknown) {
+function buildToolResult(value: unknown, compactText?: string) {
   const { _meta, ...structuredContent } = asStructuredContent(value);
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
+    content: [{ type: "text" as const, text: compactText ?? JSON.stringify(structuredContent) }],
     structuredContent,
     ...(_meta && typeof _meta === "object" && !Array.isArray(_meta) ? { _meta: _meta as Record<string, unknown> } : {}),
   };
 }
 
-function buildToolErrorResult(error: Error & { statusCode?: unknown; code?: unknown; metadata?: unknown }) {
+function researchToolSummary(toolName: McpToolName, value: Record<string, unknown>): string | undefined {
+  if (toolName === "get_research_manifest") {
+    const selector = value.selector as { listingId?: string } | undefined;
+    const datasets = Array.isArray(value.datasets) ? value.datasets as Array<{ status?: string }> : [];
+    const available = datasets.filter((dataset) => dataset.status === "available").length;
+    return `Research manifest for ${selector?.listingId ?? "the selected listing"}: ${available} of ${datasets.length} datasets available.`;
+  }
+  if (toolName === "get_research_identity") {
+    const selector = value.selector as { listingId?: string } | undefined;
+    const identity = value.identity as { listing?: { venue?: string; ticker?: string }; eligibility?: { profile?: string } } | undefined;
+    return `Research identity for ${identity?.listing?.venue ?? "unknown"}:${identity?.listing?.ticker ?? "unknown"} (${selector?.listingId ?? "unknown listing"}); profile ${identity?.eligibility?.profile ?? "unknown"}.`;
+  }
+  return undefined;
+}
+
+function buildToolErrorResult(
+  error: Error & { statusCode?: unknown; code?: unknown; metadata?: unknown },
+  wrapResearchResult = false,
+) {
   const code = typeof error.code === "string" ? error.code : "mcp_tool_error";
   const statusCode = typeof error.statusCode === "number" ? error.statusCode : 500;
   const structuredContent = {
@@ -194,7 +214,7 @@ function buildToolErrorResult(error: Error & { statusCode?: unknown; code?: unkn
   };
   return {
     content: [{ type: "text" as const, text: `${code}: ${error.message}` }],
-    structuredContent,
+    structuredContent: wrapResearchResult ? { result: structuredContent } : structuredContent,
     isError: true,
   };
 }
@@ -315,7 +335,7 @@ export function toReportInput(args: unknown): BuildReportInput {
 
 export function buildMcpPolicyToolScopes(): Record<string, AiConnectorScope> {
   return Object.fromEntries(
-    listMcpToolDefinitions().map((tool) => [tool.name, tool.scope]),
+    listMcpToolDefinitions({ includeRolloutDisabled: true }).map((tool) => [tool.name, tool.scope]),
   );
 }
 
@@ -459,6 +479,12 @@ export async function registerMcpRoutes(
       };
       let result: unknown;
       switch (toolName) {
+        case "get_research_manifest":
+          result = await getResearchManifest(app.persistence, args as ResearchQuery);
+          break;
+        case "get_research_identity":
+          result = await getResearchIdentity(app.persistence, args as ResearchIdentityQuery);
+          break;
         case "get_portfolio_overview":
           result = await getPortfolioOverview(
             { app, requestContext, tradingCalendar: app.tradingCalendarCache },
@@ -984,7 +1010,12 @@ export async function registerMcpRoutes(
           break;
       }
       await logAccess("ok");
-      return buildToolResult(adaptMcpToolResultForHost({ toolName, auth, result }) as Record<string, unknown>);
+      const adapted = adaptMcpToolResultForHost({ toolName, auth, result }) as Record<string, unknown>;
+      const isResearchTool = toolName === "get_research_manifest" || toolName === "get_research_identity";
+      return buildToolResult(
+        isResearchTool ? { result: adapted } : adapted,
+        researchToolSummary(toolName, adapted),
+      );
     } catch (error) {
       const denialReason = error instanceof Error && "code" in error
         ? String((error as { code?: unknown }).code)
@@ -1007,7 +1038,10 @@ export async function registerMcpRoutes(
         });
       }
       if (error instanceof Error && "statusCode" in error && Number((error as { statusCode?: unknown }).statusCode) < 500) {
-        return buildToolErrorResult(error as Error & { statusCode?: unknown; code?: unknown; metadata?: unknown });
+        return buildToolErrorResult(
+          error as Error & { statusCode?: unknown; code?: unknown; metadata?: unknown },
+          toolName === "get_research_manifest" || toolName === "get_research_identity",
+        );
       }
       throw error;
     }
