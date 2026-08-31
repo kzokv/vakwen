@@ -14,6 +14,7 @@ import {
   canonicalizeOfficialIdentityRow,
   officialFundProductIdentityKey,
 } from "../../src/services/research/identity.js";
+import { RESEARCH_IDENTITY_ACQUISITION_CRON } from "../../src/services/research/registerIdentityAcquisitionWorker.js";
 import { getResearchIdentity } from "../../src/services/research/service.js";
 
 function stubActiveTaiwanCalendar(
@@ -35,6 +36,10 @@ function stubActiveTaiwanCalendar(
 
 describe("official Taiwan identity acquisition", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
+
+  it("scheduled acquisition: UTC cron → runs Monday through Friday in Taiwan", () => {
+    expect(RESEARCH_IDENTITY_ACQUISITION_CRON).toBe("15 18 * * 0-4");
+  });
 
   it("enabled acquisition: fetch both venues' official identity and status snapshots → append canonical records", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
@@ -426,7 +431,22 @@ describe("official Taiwan identity acquisition", () => {
         listedAt: "2013-04-30",
       },
     });
-    await persistence.appendResearchIdentityRecords([twseIdentity, tpexIdentity]);
+    const twseInsuranceIdentity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-01",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:twse-insurance-revenue-identity", sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseCompanies },
+      row: {
+        kind: "company",
+        ticker: "2816",
+        legalName: "旺旺友聯產物保險股份有限公司",
+        displayName: "旺旺保",
+        unifiedBusinessNumber: "03110001",
+        industryCode: "17",
+        listedAt: "1963-12-02",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([twseIdentity, twseInsuranceIdentity, tpexIdentity]);
 
     const requested: string[] = [];
     const payloads = new Map<string, unknown>([
@@ -460,6 +480,22 @@ describe("official Taiwan identity acquisition", () => {
           "營業收入-去年同月增減(%)": "11.11",
           "累計營業收入-當月累計營收": "700",
           "累計營業收入-去年累計營收": "630",
+          "累計營業收入-前期比較增減(%)": "11.11",
+          備註: "-",
+        },
+        {
+          出表日期: "1150812",
+          資料年月: "11506",
+          公司代號: "2816",
+          公司名稱: "旺旺友聯產物保險股份有限公司",
+          產業別: "17",
+          "營業收入-當月營收": "500",
+          "營業收入-上月營收": "490",
+          "營業收入-去年當月營收": "450",
+          "營業收入-上月比較增減(%)": "2.04",
+          "營業收入-去年同月增減(%)": "11.11",
+          "累計營業收入-當月累計營收": "3,000",
+          "累計營業收入-去年累計營收": "2,700",
           "累計營業收入-前期比較增減(%)": "11.11",
           備註: "-",
         },
@@ -505,8 +541,8 @@ describe("official Taiwan identity acquisition", () => {
     expect(result).toMatchObject({
       acquisitionRunId: "monthly-revenue-run",
       sourceCount: 2,
-      recordCount: 2,
-      months: ["2026-07"],
+      recordCount: 3,
+      months: ["2026-06", "2026-07"],
     });
     const twseRecords = await persistence.listLatestResearchMonthlyRevenueRecords({
       subject: { kind: "listing_id", listingId: twseIdentity.listing.id },
@@ -556,6 +592,15 @@ describe("official Taiwan identity acquisition", () => {
         }),
       }),
     ]);
+    expect(await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: twseInsuranceIdentity.listing.id },
+      effectiveAt: "2026-08-12T02:00:00.000Z",
+      knowledgeAt: "2026-08-12T02:00:00.000Z",
+      startMonth: "2026-06",
+      endMonth: "2026-06",
+    })).toEqual([
+      expect.objectContaining({ revenueMonth: "2026-06" }),
+    ]);
 
     const currentTpexPayload = payloads.get(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue);
     payloads.set(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue, []);
@@ -573,6 +618,7 @@ describe("official Taiwan identity acquisition", () => {
     })).toHaveLength(1);
 
     payloads.set(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue, currentTpexPayload);
+    const currentTwsePayload = payloads.get(OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue);
     payloads.set(
       OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue,
       (payloads.get(OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue) as Array<Record<string, unknown>>)
@@ -583,6 +629,13 @@ describe("official Taiwan identity acquisition", () => {
       retrievedAt: "2026-08-12T04:00:00.000Z",
       acquisitionRunId: "monthly-revenue-stale-twse",
     })).rejects.toThrow("Official TWSE monthly revenue snapshot is stale: expected 2026-07, received 2026-06");
+
+    payloads.set(OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue, currentTwsePayload);
+    await expect(runOfficialMonthlyRevenueAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-18T02:00:00.000Z",
+      acquisitionRunId: "monthly-revenue-stale-insurance",
+    })).rejects.toThrow("Official TWSE monthly revenue snapshot is stale: expected 2026-07, received 2026-06,2026-07");
   });
 
   it("fresh database: historical company and ETN retirements → seed queryable inactive identities", async () => {

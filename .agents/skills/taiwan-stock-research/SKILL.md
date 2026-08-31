@@ -26,9 +26,9 @@ Read `references/research-report.md` before producing a report.
    - Preserve unknown or ambiguous subject error codes and request only the selector detail needed to resolve them.
 5. Freeze the manifest-returned `listing_id` selector and temporal context for every following call.
 6. Choose the report path from the user request and manifest:
-   - Call `get_monthly_revenue` for requested revenue research only when `monthly_revenue` is available.
-   - Call `get_price_series` for requested market context only when `price_series` is available. Keep scope, basis, metrics, and page settings within manifest capabilities. Preserve bounded-lineage counts and digest.
-   - Otherwise call `get_research_identity`; request and page history only when relevant.
+   - Always call `get_research_identity` with the frozen selector and context so every report carries the canonical issuer, security, listing, and eligibility objects. Request and page identity history only when relevant.
+   - Then call `get_monthly_revenue` for requested revenue research only when `monthly_revenue` is available.
+   - Then call `get_price_series` for requested market context only when `price_series` is available. Keep scope, basis, metrics, and page settings within manifest capabilities. Preserve bounded-lineage counts and digest.
 7. Construct the canonical artifact from `references/research-report.md`:
    - `research-report/2.0.0` with profile `monthly_revenue` for supported revenue research;
    - `research-report/1.0.0` with profile `focused_market` for supported settled-market context;

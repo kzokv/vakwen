@@ -5,7 +5,8 @@ import { DEFAULT_MARKET_DATA_QUEUE_OPTIONS } from "../market-data/registerBackfi
 import { runOfficialIdentityAcquisition, runOfficialMonthlyRevenueAcquisition } from "./acquisition.js";
 
 export const RESEARCH_IDENTITY_ACQUISITION_QUEUE = "research-identity-acquisition";
-export const RESEARCH_IDENTITY_ACQUISITION_CRON = "15 18 * * 1-5";
+// 18:15 UTC Sunday-Thursday is 02:15 Monday-Friday in Taiwan.
+export const RESEARCH_IDENTITY_ACQUISITION_CRON = "15 18 * * 0-4";
 
 interface ResearchIdentityAcquisitionWorkerDeps {
   persistence: Persistence;

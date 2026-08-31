@@ -207,7 +207,8 @@ function assertMonthlyRevenueSnapshotCompleteness(
   venue: "TWSE" | "TPEX",
   listings: ResearchIdentityRecord[],
   records: ResearchMonthlyRevenueRecord[],
-  expectedMonth: string,
+  expectedStandardMonth: string,
+  expectedInsuranceMonth: string,
 ): ResearchMonthlyRevenueRecord[] {
   const activeCompanies = listings.filter(
     (record) => record.listing.status === "active" && record.eligibility.profile === "operating_company",
@@ -218,21 +219,42 @@ function assertMonthlyRevenueSnapshotCompleteness(
   if (records.length === 0) {
     throw new Error(`Official ${venue} monthly revenue snapshot returned no canonical rows`);
   }
-  const currentRecords = records.filter((record) => record.revenueMonth >= expectedMonth);
-  if (currentRecords.length === 0) {
-    const receivedMonths = [...new Set(records.map((record) => record.revenueMonth))].sort();
-    throw new Error(
-      `Official ${venue} monthly revenue snapshot is stale: `
-      + `expected ${expectedMonth}, received ${receivedMonths.join(",")}`,
-    );
-  }
+  const companiesByListingId = new Map(activeCompanies.map((record) => [record.listing.id, record]));
+  const currentRecords = records.filter((record) => {
+    const company = companiesByListingId.get(record.listingId);
+    if (!company) return false;
+    const expectedMonth = company.issuer.classification === "financial_institution"
+      ? expectedInsuranceMonth
+      : expectedStandardMonth;
+    return record.revenueMonth >= expectedMonth;
+  });
   const observedListingIds = new Set(currentRecords.map((record) => record.listingId));
-  const observedCount = activeCompanies.filter((record) => observedListingIds.has(record.listing.id)).length;
-  if (observedCount * 100 < activeCompanies.length * MONTHLY_REVENUE_MINIMUM_COVERAGE_PERCENT) {
-    throw new Error(
-      `Official ${venue} monthly revenue snapshot failed completeness guard: `
-      + `${activeCompanies.length - observedCount} of ${activeCompanies.length} active companies are absent`,
-    );
+  const receivedMonths = [...new Set(records.map((record) => record.revenueMonth))].sort();
+  const groups = [
+    {
+      companies: activeCompanies.filter((record) => record.issuer.classification !== "financial_institution"),
+      expectedMonth: expectedStandardMonth,
+    },
+    {
+      companies: activeCompanies.filter((record) => record.issuer.classification === "financial_institution"),
+      expectedMonth: expectedInsuranceMonth,
+    },
+  ];
+  for (const group of groups) {
+    if (group.companies.length === 0) continue;
+    const observedCount = group.companies.filter((record) => observedListingIds.has(record.listing.id)).length;
+    if (observedCount === 0) {
+      throw new Error(
+        `Official ${venue} monthly revenue snapshot is stale: `
+        + `expected ${group.expectedMonth}, received ${receivedMonths.join(",")}`,
+      );
+    }
+    if (observedCount * 100 < group.companies.length * MONTHLY_REVENUE_MINIMUM_COVERAGE_PERCENT) {
+      throw new Error(
+        `Official ${venue} monthly revenue snapshot failed completeness guard: `
+        + `${group.companies.length - observedCount} of ${group.companies.length} active companies are absent`,
+      );
+    }
   }
   return currentRecords;
 }
@@ -243,13 +265,15 @@ function shiftIsoMonth(month: string, offset: number): string {
   return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-async function expectedStandardMonthlyRevenueMonth(
+async function expectedMonthlyRevenueMonth(
   persistence: Persistence,
   retrievedAt: string,
+  dueDay: 10 | 15,
 ): Promise<string> {
   const localDate = taiwanBusinessDate(retrievedAt);
   const currentMonth = localDate.slice(0, 7);
-  let dueDate = `${currentMonth}-10`;
+  const rawDueDate = `${currentMonth}-${dueDay}`;
+  let dueDate = rawDueDate;
   let dueDateResolved = false;
   const versions = new Map<number, Awaited<ReturnType<Persistence["getActiveMarketCalendarVersion"]>>>();
   for (let dayOffset = 0; dayOffset < 14; dayOffset += 1) {
@@ -271,7 +295,7 @@ async function expectedStandardMonthlyRevenueMonth(
     dueDate = addIsoDays(dueDate, 1);
   }
   if (!dueDateResolved) {
-    throw new Error(`Official TW market calendar has no revenue due date after ${currentMonth}-10`);
+    throw new Error(`Official TW market calendar has no revenue due date after ${rawDueDate}`);
   }
   return shiftIsoMonth(currentMonth, localDate >= dueDate ? -1 : -2);
 }
@@ -912,9 +936,24 @@ export async function runOfficialMonthlyRevenueAcquisition(
     "TPEX",
     tpexIdentitiesByTicker,
   );
-  const expectedMonth = await expectedStandardMonthlyRevenueMonth(persistence, retrievedAt);
-  const currentTwseRecords = assertMonthlyRevenueSnapshotCompleteness("TWSE", twseListings, twseRecords, expectedMonth);
-  const currentTpexRecords = assertMonthlyRevenueSnapshotCompleteness("TPEX", tpexListings, tpexRecords, expectedMonth);
+  const [expectedStandardMonth, expectedInsuranceMonth] = await Promise.all([
+    expectedMonthlyRevenueMonth(persistence, retrievedAt, 10),
+    expectedMonthlyRevenueMonth(persistence, retrievedAt, 15),
+  ]);
+  const currentTwseRecords = assertMonthlyRevenueSnapshotCompleteness(
+    "TWSE",
+    twseListings,
+    twseRecords,
+    expectedStandardMonth,
+    expectedInsuranceMonth,
+  );
+  const currentTpexRecords = assertMonthlyRevenueSnapshotCompleteness(
+    "TPEX",
+    tpexListings,
+    tpexRecords,
+    expectedStandardMonth,
+    expectedInsuranceMonth,
+  );
   const records: ResearchMonthlyRevenueRecord[] = [...currentTwseRecords, ...currentTpexRecords].map((record) => ({
     ...record,
     provenance: {
