@@ -535,7 +535,7 @@ describe("Taiwan research store-only service", () => {
     expect(pageSpy).toHaveBeenCalledWith(expect.objectContaining({ limit: 2 }));
   });
 
-  it("early-month manifest: retain monthly-revenue availability from the latest expected filing month", async () => {
+  it("early filing: expose availability and default results newer than the latest expected filing month", async () => {
     const persistence = new MemoryPersistence();
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
@@ -560,11 +560,11 @@ describe("Taiwan research store-only service", () => {
       ticker: "2330",
       companyName: "台積電",
       industryName: "半導體業",
-      revenueMonth: "2026-06",
-      rawRevenueMonth: "11506",
-      publishedAt: "2026-07-10",
-      rawPublishedAt: "1150710",
-      retrievedAt: "2026-07-10T02:00:00.000Z",
+      revenueMonth: "2026-07",
+      rawRevenueMonth: "11507",
+      publishedAt: "2026-08-05",
+      rawPublishedAt: "1150805",
+      retrievedAt: "2026-08-05T02:00:00.000Z",
       artifact: {
         contentHash: "sha256:early-month-revenue",
         sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
@@ -597,6 +597,18 @@ describe("Taiwan research store-only service", () => {
       id: "monthly_revenue",
       status: "available",
     });
+    const revenue = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-05T12:00:00.000Z",
+        effectiveAt: "2026-08-05T12:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      page: { limit: 24, order: "desc" },
+    });
+    expect(revenue.freshness.latestExpectedMonth).toBe("2026-06");
+    expect(revenue.window.endMonth).toBe("2026-07");
+    expect(revenue.items[0]?.revenueMonth).toBe("2026-07");
   });
 
   it("price-series manifest and service: read stored TWSE bars only → expose price availability, lineage, and no write-side effects", async () => {
@@ -1705,7 +1717,7 @@ describe("Taiwan research store-only service", () => {
       "2026-01",
       "2026-03",
       "2026-04",
-      "2026-05",
+      "2026-06",
       "2026-07",
     ].entries()) {
       await appendRevenueMonth(missingComparablePersistence, missingComparableIdentity, revenueMonth, index);

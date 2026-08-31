@@ -93,10 +93,6 @@ function formatMonth(year: number, month: number): string {
   return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`;
 }
 
-function monthYear(month: string): number {
-  return Number(month.slice(0, 4));
-}
-
 function shiftMonth(month: string, delta: number): string {
   const [yearPart, monthPart] = month.split("-");
   const absolute = (Number(yearPart) * 12) + Number(monthPart) - 1 + delta;
@@ -301,16 +297,16 @@ function supportPresenceGate(
   records: readonly ResearchMonthlyRevenueRecord[],
 ): "ok" | "missing_comparable_month" | "short_window" {
   const availableMonths = new Set(records.map((record) => record.revenueMonth));
-  const missingIndexes = expectedMonths
-    .map((month, index) => availableMonths.has(month) ? null : index)
-    .filter((index): index is number => index !== null);
-  if (missingIndexes.length === 0) return "ok";
+  const missingMonths = expectedMonths.filter((month) => !availableMonths.has(month));
+  if (missingMonths.length === 0) return "ok";
 
-  const firstPresentIndex = expectedMonths.findIndex((month) => availableMonths.has(month));
-  if (firstPresentIndex === -1) return "short_window";
-
-  const missingOnlyAtStart = missingIndexes.every((index) => index < firstPresentIndex);
-  return missingOnlyAtStart ? "short_window" : "missing_comparable_month";
+  const coverageStartMonth = records.reduce<string | null>(
+    (earliest, record) => earliest === null || record.revenueMonth < earliest ? record.revenueMonth : earliest,
+    null,
+  );
+  return coverageStartMonth === null || missingMonths.every((month) => month < coverageStartMonth)
+    ? "short_window"
+    : "missing_comparable_month";
 }
 
 function sumCurrentRevenue(records: ResearchMonthlyRevenueRecord[]): number | null {
@@ -609,15 +605,24 @@ async function hasMonthlyRevenueAvailable(
   listingId: string,
   context: ResearchTemporalContext,
   latestExpectedMonth: string,
+  latestApplicableMonth: string,
 ): Promise<boolean> {
   const records = await persistence.listLatestResearchMonthlyRevenueRecords({
     subject: { kind: "listing_id", listingId },
     effectiveAt: context.effectiveAt,
     knowledgeAt: context.knowledgeAt,
     startMonth: firstMonthForTrailingWindow(latestExpectedMonth, 24),
-    endMonth: latestExpectedMonth,
+    endMonth: latestApplicableMonth,
   });
-  return records.length > 0;
+  return effectiveRevenueRecords(records, context.effectiveAt).length > 0;
+}
+
+function latestApplicableRevenueMonth(identity: ResearchIdentityResult): string {
+  const effectiveMonth = taiwanLocalIsoDate(identity.context.effectiveAt).slice(0, 7);
+  const inactiveMonth = identity.identity.listing.status === "inactive"
+    ? identity.identity.listing.inactiveAt?.slice(0, 7)
+    : null;
+  return inactiveMonth && inactiveMonth < effectiveMonth ? inactiveMonth : effectiveMonth;
 }
 
 export async function getResearchManifest(
@@ -696,6 +701,7 @@ export async function getResearchManifest(
           identity.selector.listingId,
           identity.context,
           freshnessTarget.latestExpectedMonth,
+          latestApplicableRevenueMonth(identity),
         )
           ? { id, status: "available" as const }
           : { id, status: "unavailable" as const, reasonCode: "not_acquired" as const };
@@ -1394,11 +1400,11 @@ export async function getPriceSeries(
 
 function resolveMonthlyRevenueWindow(
   query: ResearchMonthlyRevenueQuery,
-  latestExpectedMonth: string,
+  defaultEndMonth: string,
 ) {
   const explicitStart = query.range?.startMonth;
   const explicitEnd = query.range?.endMonth;
-  const endMonth = explicitEnd ?? latestExpectedMonth;
+  const endMonth = explicitEnd ?? defaultEndMonth;
   const startMonth = explicitStart ?? firstMonthForTrailingWindow(endMonth, DEFAULT_MONTHLY_REVENUE_MONTHS);
   if (startMonth > endMonth) {
     throw new ResearchServiceError("research_window_invalid", "The monthly revenue range is invalid");
@@ -1410,10 +1416,6 @@ function resolveMonthlyRevenueWindow(
     );
   }
   return { startMonth, endMonth };
-}
-
-function metricSupportStartMonth(startMonth: string): string {
-  return `${String(monthYear(startMonth) - 1).padStart(4, "0")}-01`;
 }
 
 function taiwanLocalIsoDate(isoDateTime: string): string {
@@ -1440,7 +1442,7 @@ function deriveMonthlyRevenueMetrics(
 
     const rolling3Months = [shiftMonth(record.revenueMonth, -2), shiftMonth(record.revenueMonth, -1), record.revenueMonth];
     const rolling3Records = rolling3Months.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
-    const rolling3Coverage = supportPresenceGate(rolling3Months, rolling3Records);
+    const rolling3Coverage = supportPresenceGate(rolling3Months, supportRecords);
     const rolling3Comparable = rolling3Coverage === "ok"
       ? comparable(record, rolling3Records)
       : rolling3Coverage;
@@ -1451,7 +1453,7 @@ function deriveMonthlyRevenueMetrics(
 
     const trailing12Months = Array.from({ length: 12 }, (_, index) => shiftMonth(record.revenueMonth, index - 11));
     const trailing12Records = trailing12Months.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
-    const trailing12Coverage = supportPresenceGate(trailing12Months, trailing12Records);
+    const trailing12Coverage = supportPresenceGate(trailing12Months, supportRecords);
     const trailing12Comparable = trailing12Coverage === "ok"
       ? comparable(record, trailing12Records)
       : trailing12Coverage;
@@ -1462,7 +1464,7 @@ function deriveMonthlyRevenueMetrics(
 
     const currentYearPrefixMonths = Array.from({ length: Number(record.revenueMonth.slice(5, 7)) }, (_, index) => `${record.revenueMonth.slice(0, 4)}-${String(index + 1).padStart(2, "0")}`);
     const currentYearRecords = currentYearPrefixMonths.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
-    const currentYtdCoverage = supportPresenceGate(currentYearPrefixMonths, currentYearRecords);
+    const currentYtdCoverage = supportPresenceGate(currentYearPrefixMonths, supportRecords);
     const currentYtdComparable = currentRecordGate(record) !== "ok"
       ? currentRecordGate(record)
       : currentYtdCoverage === "ok" ? comparable(record, currentYearRecords) : currentYtdCoverage;
@@ -1473,7 +1475,7 @@ function deriveMonthlyRevenueMetrics(
 
     const previousYearPrefixMonths = currentYearPrefixMonths.map((month) => shiftMonth(month, -12));
     const previousYearRecords = previousYearPrefixMonths.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
-    const previousYtdCoverage = supportPresenceGate(previousYearPrefixMonths, previousYearRecords);
+    const previousYtdCoverage = supportPresenceGate(previousYearPrefixMonths, supportRecords);
     const previousYtdComparable = currentRecordGate(record) !== "ok"
       ? currentRecordGate(record)
       : previousYtdCoverage === "ok" ? comparable(record, previousYearRecords) : previousYtdCoverage;
@@ -1539,8 +1541,25 @@ export async function getMonthlyRevenue(
   });
   const freshnessBasis = resolveFreshnessBasis(identity);
   const freshnessTarget = await resolveMonthlyRevenueFreshnessTarget(persistence, identity);
-  const { startMonth, endMonth } = resolveMonthlyRevenueWindow(query, freshnessTarget.latestExpectedMonth);
-  const supportStartMonth = metricSupportStartMonth(startMonth);
+  const latestApplicableMonth = latestApplicableRevenueMonth(identity);
+  const defaultWindowRecords = query.range?.endMonth === undefined
+    ? resolveLatestMonthlyRevenueRecords(effectiveRevenueRecords(
+        await persistence.listLatestResearchMonthlyRevenueRecords({
+          subject: { kind: "listing_id", listingId: identity.selector.listingId },
+          effectiveAt: query.context.effectiveAt,
+          knowledgeAt: query.context.knowledgeAt,
+          startMonth: firstMonthForTrailingWindow(freshnessTarget.latestExpectedMonth, DEFAULT_MONTHLY_REVENUE_MONTHS),
+          endMonth: latestApplicableMonth,
+        }),
+        query.context.effectiveAt,
+      ))
+    : [];
+  const newestEffectiveMonth = defaultWindowRecords.reduce(
+    (latest, record) => record.revenueMonth > latest ? record.revenueMonth : latest,
+    freshnessTarget.latestExpectedMonth,
+  );
+  const { startMonth, endMonth } = resolveMonthlyRevenueWindow(query, newestEffectiveMonth);
+  const supportStartMonth = identity.identity.listing.listedAt.slice(0, 7);
   const freshnessRecords = resolveLatestMonthlyRevenueRecords(effectiveRevenueRecords(
     await persistence.listLatestResearchMonthlyRevenueRecords({
       subject: { kind: "listing_id", listingId: identity.selector.listingId },
