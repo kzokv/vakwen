@@ -147,7 +147,8 @@ function detectBasis(note: string): MonthlyRevenueBasis {
 
 function detectQualifier(note: string): MonthlyRevenueQualifier {
   if (/自結|初步自行結算|未經會計師|自行結算/.test(note)) return "estimated";
-  return "final";
+  if (/經會計師(?:查核|核閱)|正式公告|確定數/.test(note)) return "final";
+  return "unknown";
 }
 
 function detectBasisChange(note: string) {

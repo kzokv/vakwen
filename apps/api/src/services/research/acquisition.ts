@@ -207,7 +207,8 @@ function assertMonthlyRevenueSnapshotCompleteness(
   venue: "TWSE" | "TPEX",
   listings: ResearchIdentityRecord[],
   records: ResearchMonthlyRevenueRecord[],
-): void {
+  expectedMonth: string,
+): ResearchMonthlyRevenueRecord[] {
   const activeCompanies = listings.filter(
     (record) => record.listing.status === "active" && record.eligibility.profile === "operating_company",
   );
@@ -217,7 +218,15 @@ function assertMonthlyRevenueSnapshotCompleteness(
   if (records.length === 0) {
     throw new Error(`Official ${venue} monthly revenue snapshot returned no canonical rows`);
   }
-  const observedListingIds = new Set(records.map((record) => record.listingId));
+  const currentRecords = records.filter((record) => record.revenueMonth >= expectedMonth);
+  if (currentRecords.length === 0) {
+    const receivedMonths = [...new Set(records.map((record) => record.revenueMonth))].sort();
+    throw new Error(
+      `Official ${venue} monthly revenue snapshot is stale: `
+      + `expected ${expectedMonth}, received ${receivedMonths.join(",")}`,
+    );
+  }
+  const observedListingIds = new Set(currentRecords.map((record) => record.listingId));
   const observedCount = activeCompanies.filter((record) => observedListingIds.has(record.listing.id)).length;
   if (observedCount * 100 < activeCompanies.length * MONTHLY_REVENUE_MINIMUM_COVERAGE_PERCENT) {
     throw new Error(
@@ -225,6 +234,46 @@ function assertMonthlyRevenueSnapshotCompleteness(
       + `${activeCompanies.length - observedCount} of ${activeCompanies.length} active companies are absent`,
     );
   }
+  return currentRecords;
+}
+
+function shiftIsoMonth(month: string, offset: number): string {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, monthNumber - 1 + offset, 1));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+async function expectedStandardMonthlyRevenueMonth(
+  persistence: Persistence,
+  retrievedAt: string,
+): Promise<string> {
+  const localDate = taiwanBusinessDate(retrievedAt);
+  const currentMonth = localDate.slice(0, 7);
+  let dueDate = `${currentMonth}-10`;
+  let dueDateResolved = false;
+  const versions = new Map<number, Awaited<ReturnType<Persistence["getActiveMarketCalendarVersion"]>>>();
+  for (let dayOffset = 0; dayOffset < 14; dayOffset += 1) {
+    const calendarYear = Number(dueDate.slice(0, 4));
+    if (!versions.has(calendarYear)) {
+      versions.set(
+        calendarYear,
+        await persistence.getActiveMarketCalendarVersion("TW", calendarYear),
+      );
+    }
+    const status = resolveMarketCalendarDayStatus(versions.get(calendarYear) ?? null, dueDate);
+    if (status === "calendar_unknown") {
+      throw new Error(`Official TW market calendar is unavailable for ${calendarYear}`);
+    }
+    if (status === "open") {
+      dueDateResolved = true;
+      break;
+    }
+    dueDate = addIsoDays(dueDate, 1);
+  }
+  if (!dueDateResolved) {
+    throw new Error(`Official TW market calendar has no revenue due date after ${currentMonth}-10`);
+  }
+  return shiftIsoMonth(currentMonth, localDate >= dueDate ? -1 : -2);
 }
 
 function recordOrder(left: ResearchIdentityRecord, right: ResearchIdentityRecord): number {
@@ -863,9 +912,10 @@ export async function runOfficialMonthlyRevenueAcquisition(
     "TPEX",
     tpexIdentitiesByTicker,
   );
-  assertMonthlyRevenueSnapshotCompleteness("TWSE", twseListings, twseRecords);
-  assertMonthlyRevenueSnapshotCompleteness("TPEX", tpexListings, tpexRecords);
-  const records: ResearchMonthlyRevenueRecord[] = [...twseRecords, ...tpexRecords].map((record) => ({
+  const expectedMonth = await expectedStandardMonthlyRevenueMonth(persistence, retrievedAt);
+  const currentTwseRecords = assertMonthlyRevenueSnapshotCompleteness("TWSE", twseListings, twseRecords, expectedMonth);
+  const currentTpexRecords = assertMonthlyRevenueSnapshotCompleteness("TPEX", tpexListings, tpexRecords, expectedMonth);
+  const records: ResearchMonthlyRevenueRecord[] = [...currentTwseRecords, ...currentTpexRecords].map((record) => ({
     ...record,
     provenance: {
       ...record.provenance,

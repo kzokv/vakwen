@@ -395,6 +395,7 @@ describe("official Taiwan identity acquisition", () => {
   it("monthly revenue acquisition: fetch official TWSE and TPEX snapshots → append authoritative raw-month revenue records only for known active listings", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
+    stubActiveTaiwanCalendar(persistence);
     const twseIdentity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-01",
@@ -556,6 +557,7 @@ describe("official Taiwan identity acquisition", () => {
       }),
     ]);
 
+    const currentTpexPayload = payloads.get(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue);
     payloads.set(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue, []);
     await expect(runOfficialMonthlyRevenueAcquisition(persistence, {
       fetchImpl,
@@ -569,6 +571,18 @@ describe("official Taiwan identity acquisition", () => {
       startMonth: "2026-07",
       endMonth: "2026-07",
     })).toHaveLength(1);
+
+    payloads.set(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue, currentTpexPayload);
+    payloads.set(
+      OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue,
+      (payloads.get(OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue) as Array<Record<string, unknown>>)
+        .map((row) => ({ ...row, 資料年月: "11506" })),
+    );
+    await expect(runOfficialMonthlyRevenueAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-12T04:00:00.000Z",
+      acquisitionRunId: "monthly-revenue-stale-twse",
+    })).rejects.toThrow("Official TWSE monthly revenue snapshot is stale: expected 2026-07, received 2026-06");
   });
 
   it("fresh database: historical company and ETN retirements → seed queryable inactive identities", async () => {

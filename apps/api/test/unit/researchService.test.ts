@@ -1285,6 +1285,24 @@ describe("Taiwan research store-only service", () => {
     });
     expect(secondPage.items[0]?.revenueMonth).toBe("2026-05");
 
+    for (const revenueMonth of ["1900-01", "not-a-month"]) {
+      const decodedCursor = JSON.parse(Buffer.from(result.page.nextCursor!, "base64url").toString("utf8")) as Record<string, unknown>;
+      const invalidCursor = Buffer.from(JSON.stringify({ ...decodedCursor, revenueMonth }), "utf8").toString("base64url");
+      await expect(getMonthlyRevenue(persistence, {
+        subject: result.selector,
+        context: result.context,
+        range: {
+          startMonth: result.window.startMonth,
+          endMonth: result.window.endMonth,
+        },
+        page: {
+          limit: 2,
+          order: "desc",
+          cursor: invalidCursor,
+        },
+      })).rejects.toMatchObject({ code: "research_cursor_invalid" });
+    }
+
     const historicalWindow = await getMonthlyRevenue(persistence, {
       subject: result.selector,
       context: result.context,
@@ -1532,7 +1550,7 @@ describe("Taiwan research store-only service", () => {
 
     expect(result.items).toHaveLength(1);
     expect(result.items[0]).toMatchObject({
-      publicationContext: { basis: "unknown" },
+      publicationContext: { basis: "unknown", qualifier: "unknown" },
       sourceFacts: {
         publisherComparisons: {
           yearOverYearPercent: { raw: "11.11", normalized: { state: "present", value: "11.11" } },

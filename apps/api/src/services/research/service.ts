@@ -221,6 +221,7 @@ function decodeRevenueCursor(
     || (decoded as { version?: unknown }).version !== 1
     || (decoded as { binding?: unknown }).binding !== revenueCursorBinding(listingId, context, startMonth, endMonth, order)
     || typeof (decoded as { revenueMonth?: unknown }).revenueMonth !== "string"
+    || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test((decoded as { revenueMonth: string }).revenueMonth)
   ) {
     throw new ResearchServiceError("research_cursor_invalid", "The monthly revenue cursor is invalid");
   }
@@ -1555,6 +1556,9 @@ export async function getMonthlyRevenue(
     endMonth,
     query.page.order,
   );
+  if (cursorMonth !== undefined && !ordered.some((record) => record.revenueMonth === cursorMonth)) {
+    throw new ResearchServiceError("research_cursor_invalid", "The monthly revenue cursor is invalid");
+  }
   const filtered = cursorMonth === undefined
     ? ordered
     : ordered.filter((record) => query.page.order === "asc"
