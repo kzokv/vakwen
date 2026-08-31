@@ -1522,6 +1522,32 @@ function deriveMonthlyRevenueMetrics(
   });
 }
 
+function deriveMonthlyRevenueConclusion(
+  latestItem: ReturnType<typeof deriveMonthlyRevenueMetrics>[number] | undefined,
+  latestExpectedMonth: string,
+  latestDueStatus: "reported" | "missing",
+) {
+  const latestYoy = latestItem?.derivedMetrics.yearOverYearPercent;
+  if (latestItem !== undefined && latestYoy?.status === "available" && latestDueStatus === "reported") {
+    return {
+      status: "supported" as const,
+      statement: `Monthly revenue trend remains descriptive only: latest available month ${latestItem.revenueMonth} shows YoY ${latestYoy.value}% with authoritative MOPS lineage.`,
+      reasonCodes: [],
+    };
+  }
+  return {
+    status: "withheld" as const,
+    statement: latestDueStatus === "missing"
+      ? `Monthly revenue conclusion withheld because the latest due month ${latestExpectedMonth} is not yet present in the canonical store.`
+      : "Monthly revenue conclusion withheld because the current window does not pass the required comparability gates.",
+    reasonCodes: latestDueStatus === "missing"
+      ? ["latest_due_gap"]
+      : [
+          ...(latestYoy?.status === "withheld" ? [latestYoy.reasonCode] : latestItem === undefined ? ["not_acquired"] : []),
+        ],
+  };
+}
+
 function effectiveRevenueRecords(
   records: readonly ResearchMonthlyRevenueRecord[],
   effectiveAt: string,
@@ -1624,6 +1650,7 @@ export async function getMonthlyRevenue(
       ...freshnessRecords.map((record) => record.provenance.id),
     ],
   )];
+  const latestDueStatus = freshnessRecords.length > 0 ? "reported" as const : "missing" as const;
   return {
     contractVersion: "monthly-revenue/1.0.0" as const,
     selector: identity.selector,
@@ -1641,10 +1668,13 @@ export async function getMonthlyRevenue(
       gracePolicy: "next_taiwan_business_day" as const,
       latestExpectedMonth: freshnessTarget.latestExpectedMonth,
       statutoryDueDate: freshnessTarget.statutoryDueDate,
-      latestDueStatus: freshnessRecords.length > 0
-        ? "reported" as const
-        : "missing" as const,
+      latestDueStatus,
     },
+    conclusion: deriveMonthlyRevenueConclusion(
+      derived.at(-1),
+      freshnessTarget.latestExpectedMonth,
+      latestDueStatus,
+    ),
     items: pageItems.map((record) => ({
       revenueMonth: record.revenueMonth,
       publicationContext: record.publicationContext,

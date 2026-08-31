@@ -134,8 +134,8 @@ In addition to the configurable session cookie, the API emits two other cookies 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MCP_RESEARCH_ACQUISITION_ENABLED` | `false` | Registers the official Taiwan research acquisition worker for identity and monthly revenue, and allows new OAuth consents and bearer connectors to acquire `research:read`. Existing connectors are not upgraded silently. |
-| `MCP_RESEARCH_MCP_ENABLED` | `false` | Exposes `get_research_manifest`, `get_research_identity`, `get_monthly_revenue`, and the additive research authorization/search path in MCP discovery. |
+| `MCP_RESEARCH_ACQUISITION_ENABLED` | `false` | Registers the official Taiwan research acquisition workers for identity, price series, and monthly revenue, and allows new OAuth consents and bearer connectors to acquire `research:read`. Existing connectors are not upgraded silently. |
+| `MCP_RESEARCH_MCP_ENABLED` | `false` | Exposes `get_research_manifest`, `get_research_identity`, `get_price_series`, `get_monthly_revenue`, and the additive research authorization/search path in MCP discovery. |
 | `MCP_RESEARCH_SKILL_ENABLED` | `false` | Allows the public `taiwan-stock-research` Skill to continue after its manifest check and render the identity-only, focused-market, or monthly-revenue report artifact when the requested dataset is available. When false, the manifest reports disabled and the Skill fails closed. |
 
 These gates are intentionally independent and default-off. Connector scope acquisition and research tool exposure require both the acquisition and MCP gates; Skill orchestration additionally requires the Skill gate. Safe rollback is to turn the gates back off without mutating canonical history or existing connector rows. OAuth and bearer connectors that need `research:read` must reconnect or be recreated after acquisition is enabled.
@@ -143,7 +143,7 @@ These gates are intentionally independent and default-off. Connector scope acqui
 Behavior notes:
 
 - `portfolio:mcp_read` remains the legacy multi-market read scope and still backs the pre-rollout `search_instruments` behavior.
-- `research:read` is additive, not a replacement. It owns the canonical manifest, identity, and monthly-revenue tools; `search_instruments` is shared with the legacy read surface.
+- `research:read` is additive, not a replacement. It owns the canonical manifest, identity, price-series, and monthly-revenue tools; `search_instruments` is shared with the legacy read surface.
 - Research-only `search_instruments` is limited to Taiwan (`marketCode=TW`).
 - When the additive research path is active, `search_instruments.includeInactive=true` widens results without changing legacy error shapes.
 - Each returned item may include `researchIdentity.availability` with `available`, `unavailable`, or `not_applicable`.

@@ -1280,6 +1280,8 @@ describe("Taiwan research store-only service", () => {
     });
     expect(result.items[0]?.derivedMetrics.yearOverYearPercent.status).toBe("available");
     expect(result.items[0]?.derivedMetrics.trailing12MonthRevenue.status).toBe("available");
+    expect(result.conclusion).toMatchObject({ status: "supported", reasonCodes: [] });
+    expect(result.conclusion.statement).toContain("latest available month 2026-07");
     expect(result.page.nextCursor).toEqual(expect.any(String));
 
     const secondPage = await getMonthlyRevenue(persistence, {
@@ -1296,6 +1298,7 @@ describe("Taiwan research store-only service", () => {
       },
     });
     expect(secondPage.items[0]?.revenueMonth).toBe("2026-05");
+    expect(secondPage.conclusion).toEqual(result.conclusion);
 
     for (const revenueMonth of ["1900-01", "not-a-month"]) {
       const decodedCursor = JSON.parse(Buffer.from(result.page.nextCursor!, "base64url").toString("utf8")) as Record<string, unknown>;

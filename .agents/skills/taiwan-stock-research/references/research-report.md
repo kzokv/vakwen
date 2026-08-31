@@ -119,7 +119,7 @@ Do not add interpretations, comparisons, recommendations, current prices, financ
 
 ## Monthly-revenue contract
 
-Use this shape when the user asked for revenue research and the manifest marks `monthly_revenue` as `available`.
+Use this shape when the user asked for revenue research and the manifest marks `monthly_revenue` as `available`. Copy the `conclusion` object exactly from the `get_monthly_revenue` result; do not derive or rewrite its statement in the Skill.
 
 ```json
 {
@@ -157,8 +157,8 @@ Use this shape when the user asked for revenue research and the manifest marks `
   ],
   "conclusion": {
     "status": "supported | withheld",
-    "statement": "exact returned conclusion statement",
-    "reasonCodes": ["exact returned reason codes"]
+    "statement": "exact get_monthly_revenue conclusion statement",
+    "reasonCodes": ["exact get_monthly_revenue reason codes"]
   },
   "evidence": {
     "provenanceIds": ["each distinct provenance record used by the report"]

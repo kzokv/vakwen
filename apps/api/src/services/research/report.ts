@@ -229,10 +229,6 @@ export async function buildRevenueFocusedResearchReport(
   });
   const latestItem = monthlyRevenue.items[0] ?? null;
   const latestYoy = latestItem?.derivedMetrics.yearOverYearPercent;
-  const latestDueGap = monthlyRevenue.freshness.latestDueStatus === "missing";
-  const supported = latestItem !== null
-    && latestYoy?.status === "available"
-    && !latestDueGap;
   return researchRevenueFocusedReportSchema.parse({
     contractVersion: "research-report/2.0.0" as const,
     profile: "monthly_revenue" as const,
@@ -261,23 +257,7 @@ export async function buildRevenueFocusedResearchReport(
         latestYearOverYearPercent: latestYoy ?? null,
       },
     ],
-    conclusion: supported
-      ? {
-          status: "supported" as const,
-          statement: `Monthly revenue trend remains descriptive only: latest available month ${latestItem!.revenueMonth} shows YoY ${latestYoy.value}% with authoritative MOPS lineage.`,
-          reasonCodes: [],
-        }
-      : {
-          status: "withheld" as const,
-          statement: latestDueGap
-            ? `Monthly revenue conclusion withheld because the latest due month ${monthlyRevenue.freshness.latestExpectedMonth} is not yet present in the canonical store.`
-            : `Monthly revenue conclusion withheld because the current window does not pass the required comparability gates.`,
-          reasonCodes: latestDueGap
-            ? ["latest_due_gap"]
-            : [
-                ...(latestYoy?.status === "withheld" ? [latestYoy.reasonCode] : latestItem === null ? ["not_acquired"] : []),
-              ],
-        },
+    conclusion: monthlyRevenue.conclusion,
     evidence: {
       provenanceIds: [...new Set([
         ...identity.identity.provenance.map((item) => item.id),

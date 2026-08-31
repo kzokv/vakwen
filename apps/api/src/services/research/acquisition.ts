@@ -223,6 +223,7 @@ function assertMonthlyRevenueSnapshotCompleteness(
     throw new Error(`Official ${venue} monthly revenue snapshot returned no canonical rows`);
   }
   const companiesByListingId = new Map(activeCompanies.map((record) => [record.listing.id, record]));
+  const activeListingIds = new Set(companiesByListingId.keys());
   const currentRecords = records.filter((record) => {
     const company = companiesByListingId.get(record.listingId);
     if (!company) return false;
@@ -264,11 +265,12 @@ function assertMonthlyRevenueSnapshotCompleteness(
       ? [[record.listing.id, record.listing.inactiveAt.slice(0, 7)] as const]
       : []
   ));
-  const inactiveFinalRecords = records.filter((record) => {
+  const lifecycleApplicableRecords = records.filter((record) => {
+    if (activeListingIds.has(record.listingId)) return true;
     const inactiveCutoff = inactiveCutoffByListingId.get(record.listingId);
     return inactiveCutoff !== undefined && record.revenueMonth <= inactiveCutoff;
   });
-  return [...currentRecords, ...inactiveFinalRecords];
+  return lifecycleApplicableRecords;
 }
 
 function shiftIsoMonth(month: string, offset: number): string {

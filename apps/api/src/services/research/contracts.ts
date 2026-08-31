@@ -525,6 +525,12 @@ const researchMonthlyRevenueItemSchema = z.object({
   }).strict(),
 }).strict();
 
+const researchMonthlyRevenueConclusionSchema = z.object({
+  status: z.enum(["supported", "withheld"]),
+  statement: z.string().min(1),
+  reasonCodes: z.array(z.string()).max(8),
+}).strict();
+
 const researchMonthlyRevenueOutputSchema = z.object({
   contractVersion: z.literal("monthly-revenue/1.0.0"),
   selector: immutableListingSelectorSchema,
@@ -538,6 +544,7 @@ const researchMonthlyRevenueOutputSchema = z.object({
     maxMonths: z.literal(120),
   }).strict(),
   freshness: researchMonthlyRevenueFreshnessSchema,
+  conclusion: researchMonthlyRevenueConclusionSchema,
   items: z.array(researchMonthlyRevenueItemSchema),
   page: z.object({
     nextCursor: z.string().nullable(),
@@ -667,11 +674,7 @@ export const researchRevenueFocusedReportSchema = z.object({
       latestYearOverYearPercent: researchMonthlyRevenueMetricSchema.nullable(),
     }).strict(),
   ]),
-  conclusion: z.object({
-    status: z.enum(["supported", "withheld"]),
-    statement: z.string().min(1),
-    reasonCodes: z.array(z.string()).max(8),
-  }).strict(),
+  conclusion: researchMonthlyRevenueConclusionSchema,
   evidence: z.object({
     provenanceIds: z.array(canonicalIdSchema),
   }).strict(),

@@ -543,6 +543,22 @@ describe("official Taiwan identity acquisition", () => {
         },
         {
           出表日期: "1150810",
+          資料年月: "11505",
+          公司代號: "2330",
+          公司名稱: "台灣積體電路製造股份有限公司",
+          產業別: "24",
+          "營業收入-當月營收": "950",
+          "營業收入-上月營收": "940",
+          "營業收入-去年當月營收": "850",
+          "營業收入-上月比較增減(%)": "1.06",
+          "營業收入-去年同月增減(%)": "11.76",
+          "累計營業收入-當月累計營收": "5,000",
+          "累計營業收入-去年累計營收": "4,500",
+          "累計營業收入-前期比較增減(%)": "11.11",
+          備註: "歷史更正",
+        },
+        {
+          出表日期: "1150810",
           資料年月: "11507",
           公司代號: "9999",
           公司名稱: "未建檔公司",
@@ -631,8 +647,8 @@ describe("official Taiwan identity acquisition", () => {
     expect(result).toMatchObject({
       acquisitionRunId: "monthly-revenue-run",
       sourceCount: 2,
-      recordCount: 4,
-      months: ["2026-06", "2026-07"],
+      recordCount: 5,
+      months: ["2026-05", "2026-06", "2026-07"],
     });
     const twseRecords = await persistence.listLatestResearchMonthlyRevenueRecords({
       subject: { kind: "listing_id", listingId: twseIdentity.listing.id },
@@ -663,6 +679,18 @@ describe("official Taiwan identity acquisition", () => {
           publisherDataset: "t187ap05_L",
           acquisitionRunId: "monthly-revenue-run",
         }),
+      }),
+    ]);
+    expect(await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: twseIdentity.listing.id },
+      effectiveAt: "2026-08-12T02:00:00.000Z",
+      knowledgeAt: "2026-08-12T02:00:00.000Z",
+      startMonth: "2026-05",
+      endMonth: "2026-05",
+    })).toEqual([
+      expect.objectContaining({
+        revenueMonth: "2026-05",
+        sourceFacts: expect.objectContaining({ note: "歷史更正" }),
       }),
     ]);
     expect(tpexRecords).toEqual([
@@ -734,7 +762,7 @@ describe("official Taiwan identity acquisition", () => {
       fetchImpl,
       retrievedAt: "2026-08-18T02:00:00.000Z",
       acquisitionRunId: "monthly-revenue-stale-insurance",
-    })).rejects.toThrow("Official TWSE monthly revenue snapshot is stale: expected 2026-07, received 2026-06,2026-07");
+    })).rejects.toThrow("Official TWSE monthly revenue snapshot is stale: expected 2026-07, received 2026-05,2026-06,2026-07");
   });
 
   it("fresh database: historical company and ETN retirements → seed queryable inactive identities", async () => {
