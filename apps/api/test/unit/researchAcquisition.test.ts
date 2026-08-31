@@ -4,6 +4,7 @@ import { MemoryPersistence } from "../../src/persistence/memory.js";
 import type { MarketCalendarExceptionInput } from "../../src/persistence/types.js";
 import {
   OFFICIAL_IDENTITY_SOURCES,
+  OFFICIAL_MONTHLY_REVENUE_SOURCES,
   OFFICIAL_PRICE_SOURCES,
   runOfficialIdentityAcquisition,
   runOfficialMonthlyRevenueAcquisition,
@@ -308,7 +309,7 @@ describe("official Taiwan identity acquisition", () => {
       ...tpexDelistingUrls,
     ].sort());
     expect(requests.find(({ url }) => url === OFFICIAL_IDENTITY_SOURCES.tpexFunds)?.method).toBe("POST");
-    expect(result).toMatchObject({ sourceCount: 13, recordCount: 16, acquisitionRunId: "run-test-1" });
+    expect(result).toMatchObject({ sourceCount: 11, recordCount: 16, acquisitionRunId: "run-test-1" });
     const etn = await persistence.listResearchIdentityRecords({
       subject: { kind: "ticker_venue", ticker: "020032", venue: "TWSE" },
       effectiveAt: "2026-08-28T23:59:59.999Z",
@@ -524,7 +525,7 @@ describe("official Taiwan identity acquisition", () => {
 
     const requested: string[] = [];
     const payloads = new Map<string, unknown>([
-      [OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue, [
+      [OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue, [
         {
           出表日期: "1150810",
           資料年月: "11507",
@@ -606,7 +607,7 @@ describe("official Taiwan identity acquisition", () => {
           備註: "下市前末期申報",
         },
       ]],
-      [OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue, [
+      [OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue, [
         {
           出表日期: "1150811",
           資料年月: "11507",
@@ -641,8 +642,8 @@ describe("official Taiwan identity acquisition", () => {
     });
 
     expect(requested.sort()).toEqual([
-      OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue,
-      OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue,
+      OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue,
+      OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue,
     ].sort());
     expect(result).toMatchObject({
       acquisitionRunId: "monthly-revenue-run",
@@ -729,8 +730,8 @@ describe("official Taiwan identity acquisition", () => {
       expect.objectContaining({ revenueMonth: "2026-07", listingId: inactiveTwseIdentity.listing.id }),
     ]);
 
-    const currentTpexPayload = payloads.get(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue);
-    payloads.set(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue, []);
+    const currentTpexPayload = payloads.get(OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue);
+    payloads.set(OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue, []);
     await expect(runOfficialMonthlyRevenueAcquisition(persistence, {
       fetchImpl,
       retrievedAt: "2026-08-12T03:00:00.000Z",
@@ -744,11 +745,11 @@ describe("official Taiwan identity acquisition", () => {
       endMonth: "2026-07",
     })).toHaveLength(1);
 
-    payloads.set(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue, currentTpexPayload);
-    const currentTwsePayload = payloads.get(OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue);
+    payloads.set(OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue, currentTpexPayload);
+    const currentTwsePayload = payloads.get(OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue);
     payloads.set(
-      OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue,
-      (payloads.get(OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue) as Array<Record<string, unknown>>)
+      OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue,
+      (payloads.get(OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue) as Array<Record<string, unknown>>)
         .map((row) => ({ ...row, 資料年月: "11506" })),
     );
     await expect(runOfficialMonthlyRevenueAcquisition(persistence, {
@@ -757,7 +758,7 @@ describe("official Taiwan identity acquisition", () => {
       acquisitionRunId: "monthly-revenue-stale-twse",
     })).rejects.toThrow("Official TWSE monthly revenue snapshot is stale: expected 2026-07, received 2026-06");
 
-    payloads.set(OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue, currentTwsePayload);
+    payloads.set(OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue, currentTwsePayload);
     await expect(runOfficialMonthlyRevenueAcquisition(persistence, {
       fetchImpl,
       retrievedAt: "2026-08-18T02:00:00.000Z",

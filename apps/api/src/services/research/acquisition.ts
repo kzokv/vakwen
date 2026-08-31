@@ -63,6 +63,9 @@ export const OFFICIAL_IDENTITY_SOURCES = {
   tpexEtnRetirements: "https://www.tpex.org.tw/www/zh-tw/ETN/list?type=delisted",
   twseDelistings: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
   tpexDelistings: "https://www.tpex.org.tw/www/zh-tw/company/deListed?code=&reason=-1",
+} as const;
+
+export const OFFICIAL_MONTHLY_REVENUE_SOURCES = {
   twseMonthlyRevenue: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
   tpexMonthlyRevenue: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O",
 } as const;
@@ -915,8 +918,8 @@ export async function runOfficialMonthlyRevenueAcquisition(
   const retrievedAt = options.retrievedAt ?? new Date().toISOString();
   const acquisitionRunId = options.acquisitionRunId ?? `monthly-revenue:${retrievedAt}`;
   const [twseRevenue, tpexRevenue, twseListings, tpexListings] = await Promise.all([
-    fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue),
-    fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue),
+    fetchArtifact(fetchImpl, OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue),
+    fetchArtifact(fetchImpl, OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue),
     persistence.listLatestResearchIdentityRecords({
       subject: { kind: "venue", venue: "TWSE" },
       effectiveAt: retrievedAt,
@@ -989,7 +992,7 @@ export async function runOfficialMonthlyRevenueAcquisition(
   await persistence.appendResearchMonthlyRevenueRecords(records);
   return {
     acquisitionRunId,
-    sourceCount: 2,
+    sourceCount: Object.keys(OFFICIAL_MONTHLY_REVENUE_SOURCES).length,
     recordCount: records.length,
     retrievedAt,
     months: [...new Set(records.map((record) => record.revenueMonth))].sort(),
