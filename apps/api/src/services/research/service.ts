@@ -114,22 +114,40 @@ function isWeekendIsoDate(date: string): boolean {
   return day === 0 || day === 6;
 }
 
-function nextTaiwanBusinessDay(date: string): string {
+async function nextTaiwanBusinessDay(
+  persistence: Persistence,
+  date: string,
+  knowledgeAt: string,
+): Promise<string> {
+  const calendarEnd = addDays(date, 14);
+  const versions = await loadTradingCalendarVersions(persistence, date, calendarEnd, knowledgeAt);
   let cursor = date;
-  while (isWeekendIsoDate(cursor)) {
-    const next = new Date(`${cursor}T00:00:00.000Z`);
-    next.setUTCDate(next.getUTCDate() + 1);
-    cursor = next.toISOString().slice(0, 10);
+  while (cursor <= calendarEnd) {
+    const version = versions.get(Number(cursor.slice(0, 4)));
+    const isBusinessDay = version
+      ? isTradingDayFromCalendar(cursor, versions)
+      : !isWeekendIsoDate(cursor);
+    if (isBusinessDay) return cursor;
+    cursor = addDays(cursor, 1);
   }
-  return cursor;
+  throw new Error(`Unable to resolve Taiwan business day after ${date}`);
 }
 
-function dueDateForRevenueMonth(month: string, basis: "standard_10th" | "insurance_15th"): string {
+async function dueDateForRevenueMonth(
+  persistence: Persistence,
+  month: string,
+  basis: "standard_10th" | "insurance_15th",
+  knowledgeAt: string,
+): Promise<string> {
   const [yearPart, monthPart] = month.split("-").map(Number);
   const dueMonth = monthPart === 12 ? 1 : monthPart + 1;
   const dueYear = monthPart === 12 ? yearPart + 1 : yearPart;
   const dueDay = basis === "insurance_15th" ? 15 : 10;
-  return nextTaiwanBusinessDay(`${String(dueYear).padStart(4, "0")}-${String(dueMonth).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`);
+  return nextTaiwanBusinessDay(
+    persistence,
+    `${String(dueYear).padStart(4, "0")}-${String(dueMonth).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`,
+    knowledgeAt,
+  );
 }
 
 function resolveFreshnessBasis(identity: Awaited<ReturnType<typeof getResearchIdentity>>): "standard_10th" | "insurance_15th" {
@@ -138,20 +156,25 @@ function resolveFreshnessBasis(identity: Awaited<ReturnType<typeof getResearchId
     : "standard_10th";
 }
 
-function latestExpectedRevenueMonth(
+async function latestExpectedRevenueMonth(
+  persistence: Persistence,
   effectiveAt: string,
+  knowledgeAt: string,
   basis: "standard_10th" | "insurance_15th",
-): { latestExpectedMonth: string; statutoryDueDate: string } {
+): Promise<{ latestExpectedMonth: string; statutoryDueDate: string }> {
   const { year, month, day } = taiwanLocalDateParts(effectiveAt);
   const currentMonth = formatMonth(year, month);
   const candidate = shiftMonth(currentMonth, -1);
-  const candidateDueDate = dueDateForRevenueMonth(candidate, basis);
+  const candidateDueDate = await dueDateForRevenueMonth(persistence, candidate, basis, knowledgeAt);
   const knowledgeDate = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   if (knowledgeDate >= candidateDueDate) {
     return { latestExpectedMonth: candidate, statutoryDueDate: candidateDueDate };
   }
   const previous = shiftMonth(candidate, -1);
-  return { latestExpectedMonth: previous, statutoryDueDate: dueDateForRevenueMonth(previous, basis) };
+  return {
+    latestExpectedMonth: previous,
+    statutoryDueDate: await dueDateForRevenueMonth(persistence, previous, basis, knowledgeAt),
+  };
 }
 
 function revenueCursorBinding(
@@ -1473,7 +1496,12 @@ export async function getMonthlyRevenue(
     history: { limit: 1 },
   });
   const freshnessBasis = resolveFreshnessBasis(identity);
-  const freshnessTarget = latestExpectedRevenueMonth(query.context.effectiveAt, freshnessBasis);
+  const freshnessTarget = await latestExpectedRevenueMonth(
+    persistence,
+    query.context.effectiveAt,
+    query.context.knowledgeAt,
+    freshnessBasis,
+  );
   const { startMonth, endMonth } = resolveMonthlyRevenueWindow(query, freshnessTarget.latestExpectedMonth);
   const supportStartMonth = metricSupportStartMonth(startMonth);
   const latestRecords = resolveLatestMonthlyRevenueRecords(effectiveRevenueRecords(
@@ -1515,7 +1543,15 @@ export async function getMonthlyRevenue(
         query.page.order,
       )
     : null;
-  const provenanceIds = [...new Set(windowRecords.map((record) => record.provenance.id))];
+  const evidenceMonths = new Set(pageItems.flatMap((record) => [
+    record.revenueMonth,
+    ...Object.values(record.derivedMetrics).flatMap((metric) => metric.lineageMonths),
+  ]));
+  const provenanceIds = [...new Set(
+    latestRecords
+      .filter((record) => evidenceMonths.has(record.revenueMonth))
+      .map((record) => record.provenance.id),
+  )];
   return {
     contractVersion: "monthly-revenue/1.0.0" as const,
     selector: identity.selector,

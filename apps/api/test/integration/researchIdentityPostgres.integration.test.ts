@@ -382,8 +382,34 @@ describePostgres("research identity memory/Postgres parity", () => {
         note: "-",
       },
     });
-    await memory.appendResearchMonthlyRevenueRecords([...records, julyCorrection]);
-    await postgres.appendResearchMonthlyRevenueRecords([...records, julyCorrection]);
+    const julyLateBackfill = canonicalizeOfficialMonthlyRevenueRow({
+      ...records.at(-1)!,
+      companyName: "台積電",
+      industryName: "半導體業",
+      publishedAt: "2026-08-09",
+      rawPublishedAt: "1150809",
+      retrievedAt: "2026-08-20T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:pg-monthly-2026-07-late-backfill",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+        publisherDataset: "t187ap05_L",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      source: {
+        ...records.at(-1)!.sourceFacts.publisherComparisons,
+        currentMonthRevenue: "777",
+        priorMonthRevenue: "700",
+        priorYearSameMonthRevenue: "600",
+        monthOverMonthPercent: "11",
+        yearOverYearPercent: "29.5",
+        currentYearToDateRevenue: "7777",
+        priorYearToDateRevenue: "6000",
+        yearToDateYearOverYearPercent: "29.62",
+        note: "late backfill of an older publication",
+      },
+    });
+    await memory.appendResearchMonthlyRevenueRecords([...records, julyCorrection, julyLateBackfill]);
+    await postgres.appendResearchMonthlyRevenueRecords([...records, julyCorrection, julyLateBackfill]);
 
     const query = {
       subject: { kind: "listing_id" as const, listingId: identity.listing.id },
@@ -458,6 +484,6 @@ describePostgres("research identity memory/Postgres parity", () => {
       "SELECT count(*)::text AS count FROM research.monthly_revenue_records WHERE listing_id = $1",
       [identity.listing.id],
     );
-    expect(count.rows[0]?.count).toBe(String(records.length + 1));
+    expect(count.rows[0]?.count).toBe(String(records.length + 2));
   });
 });

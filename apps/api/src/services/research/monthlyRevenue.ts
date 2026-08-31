@@ -110,6 +110,8 @@ export function researchMonthlyRevenueRecordSortOrder(
 ): number {
   const monthOrder = left.revenueMonth.localeCompare(right.revenueMonth);
   if (monthOrder !== 0) return monthOrder;
+  const publicationOrder = left.publicationContext.publishedAt.localeCompare(right.publicationContext.publishedAt);
+  if (publicationOrder !== 0) return publicationOrder;
   const retrievedOrder = left.provenance.retrievedAt.localeCompare(right.provenance.retrievedAt);
   return retrievedOrder !== 0
     ? retrievedOrder

@@ -1555,7 +1555,7 @@ export class PostgresPersistence implements Persistence {
          AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
          AND ($${startMonthIndex}::text IS NULL OR revenue_month >= $${startMonthIndex}::text)
          AND ($${endMonthIndex}::text IS NULL OR revenue_month <= $${endMonthIndex}::text)
-       ORDER BY revenue_month ASC, retrieved_at ASC, record_key ASC`,
+       ORDER BY revenue_month ASC, published_at ASC, retrieved_at ASC, record_key ASC`,
       [
         ...selectorValues,
         query.effectiveAt,

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
+import type { MarketCalendarExceptionInput } from "../../src/persistence/types.js";
 import { researchIdentityQuerySchema } from "../../src/services/research/contracts.js";
 import {
   appendOfficialListingStatusRevision,
@@ -10,7 +11,10 @@ import { canonicalizeOfficialPriceRow } from "../../src/services/research/price.
 import { getMonthlyRevenue, getPriceSeries, getResearchIdentity, getResearchManifest } from "../../src/services/research/service.js";
 import { setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
 
-function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): void {
+function installAuthoritativeCalendarCoverage(
+  persistence: MemoryPersistence,
+  exceptions: MarketCalendarExceptionInput[] = [],
+): void {
   vi.spyOn(persistence, "listMarketCalendarHistory").mockImplementation(async (marketCode, calendarYear) =>
     calendarYear === 2026
       ? [{
@@ -35,7 +39,7 @@ function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): v
             weekdayClosedCount: 0,
             weekendOpenCount: 0,
           },
-          exceptions: [],
+          exceptions: exceptions.filter((item) => item.date.startsWith(`${calendarYear}-`)),
           createdAt: "2025-12-01T00:00:00.000Z",
           updatedAt: "2025-12-01T00:00:00.000Z",
         }]
@@ -1462,6 +1466,71 @@ describe("Taiwan research store-only service", () => {
     });
   });
 
+  it("monthly revenue evidence: explicit output range → include provenance for canonical support months used by derived metrics", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-01",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:support-provenance-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    const records = ["2025-07", "2026-07"].map((revenueMonth, index) => canonicalizeOfficialMonthlyRevenueRow({
+      venue: "TWSE",
+      listingId: identity.listing.id,
+      issuerId: identity.issuer.id,
+      ticker: "2330",
+      companyName: "台積電",
+      industryName: "半導體業",
+      revenueMonth,
+      rawRevenueMonth: revenueMonth === "2025-07" ? "11407" : "11507",
+      publishedAt: revenueMonth === "2025-07" ? "2025-08-10" : "2026-08-10",
+      rawPublishedAt: revenueMonth === "2025-07" ? "1140810" : "1150810",
+      retrievedAt: revenueMonth === "2025-07" ? "2025-08-11T02:00:00.000Z" : "2026-08-11T02:00:00.000Z",
+      artifact: {
+        contentHash: `sha256:support-provenance-${index}`,
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+        publisherDataset: "t187ap05_L",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      source: {
+        currentMonthRevenue: index === 0 ? "900" : "1000",
+        priorMonthRevenue: "890",
+        priorYearSameMonthRevenue: "800",
+        monthOverMonthPercent: "1.12",
+        yearOverYearPercent: "11.11",
+        currentYearToDateRevenue: "7000",
+        priorYearToDateRevenue: "6300",
+        yearToDateYearOverYearPercent: "11.11",
+        note: "-",
+      },
+    }));
+    await persistence.appendResearchMonthlyRevenueRecords(records);
+
+    const result = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      range: { startMonth: "2026-07", endMonth: "2026-07" },
+      page: { limit: 1, order: "desc" },
+    });
+
+    expect(result.items[0]?.derivedMetrics.yearOverYearPercent).toMatchObject({ status: "available" });
+    expect(result.evidence.provenanceIds).toEqual(records.map((record) => record.provenance.id));
+  });
+
   it("monthly revenue derived windows: distinguish an interior missing canonical month from a genuine early-series short window", async () => {
     const makeIdentity = (ticker: string, suffix: string) => canonicalizeOfficialIdentityRow({
       venue: "TWSE",
@@ -1786,6 +1855,13 @@ describe("Taiwan research store-only service", () => {
 
   it("monthly revenue freshness: use the insurance 15th deadline with Taiwan business-day grace for financial-institution contexts", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence, [{
+      date: "2026-08-17",
+      status: "closed",
+      name: "Official weekday holiday",
+      evidence: "TW official calendar fixture",
+      overrideReason: "Authoritative exchange closure",
+    }]);
     const baseIdentity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-01",
@@ -1801,13 +1877,8 @@ describe("Taiwan research store-only service", () => {
         listedAt: "2001-01-01",
       },
     });
-    await persistence.appendResearchIdentityRecords([{
-      ...baseIdentity,
-      issuer: {
-        ...baseIdentity.issuer,
-        classification: "financial_institution",
-      },
-    }]);
+    expect(baseIdentity.issuer.classification).toBe("financial_institution");
+    await persistence.appendResearchIdentityRecords([baseIdentity]);
     await persistence.appendResearchMonthlyRevenueRecords([canonicalizeOfficialMonthlyRevenueRow({
       venue: "TWSE",
       listingId: baseIdentity.listing.id,
@@ -1842,8 +1913,8 @@ describe("Taiwan research store-only service", () => {
     const beforeGrace = await getMonthlyRevenue(persistence, {
       subject: { kind: "listing_id", listingId: baseIdentity.listing.id },
       context: {
-        knowledgeAt: "2026-08-16T00:00:00.000Z",
-        effectiveAt: "2026-08-16T00:00:00.000Z",
+        knowledgeAt: "2026-08-17T00:00:00.000Z",
+        effectiveAt: "2026-08-17T00:00:00.000Z",
         assessmentMode: "effective",
       },
       page: { limit: 1, order: "desc" },
@@ -1851,8 +1922,8 @@ describe("Taiwan research store-only service", () => {
     const afterGrace = await getMonthlyRevenue(persistence, {
       subject: { kind: "listing_id", listingId: baseIdentity.listing.id },
       context: {
-        knowledgeAt: "2026-08-17T00:00:00.000Z",
-        effectiveAt: "2026-08-17T00:00:00.000Z",
+        knowledgeAt: "2026-08-18T00:00:00.000Z",
+        effectiveAt: "2026-08-18T00:00:00.000Z",
         assessmentMode: "effective",
       },
       page: { limit: 1, order: "desc" },
@@ -1867,7 +1938,7 @@ describe("Taiwan research store-only service", () => {
     expect(afterGrace.freshness).toMatchObject({
       basis: "insurance_15th",
       latestExpectedMonth: "2026-07",
-      statutoryDueDate: "2026-08-17",
+      statutoryDueDate: "2026-08-18",
       latestDueStatus: "missing",
     });
   });
