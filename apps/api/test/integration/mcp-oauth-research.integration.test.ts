@@ -13,6 +13,7 @@ vi.mock("@vakwen/config", async (importOriginal) => {
 });
 
 import { setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
+import type { Persistence } from "../../src/persistence/types.js";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
 import { canonicalizeOfficialMonthlyRevenueRow } from "../../src/services/research/monthlyRevenue.js";
 
@@ -40,6 +41,39 @@ function parseMcpJson<T>(body: string): T {
   return JSON.parse(dataLine.slice("data: ".length)) as T;
 }
 
+function installAuthoritativeCalendarCoverage(persistence: Persistence): void {
+  vi.spyOn(persistence, "listMarketCalendarHistory").mockImplementation(async (marketCode, calendarYear) =>
+    calendarYear === 2026
+      ? [{
+          versionId: "calendar-tw-2026",
+          importOperationId: "calendar-import-tw-2026",
+          marketCode,
+          calendarYear,
+          sourceId: null,
+          sourceLabel: "TW official calendar",
+          sourceType: "official_source" as const,
+          sourceUrl: "https://example.test/tw-calendar-2026",
+          retrievedAt: "2025-12-01T00:00:00.000Z",
+          coverage: { scope: "full_year" as const, evidence: "integration fixture" },
+          confirmedAt: "2025-12-01T00:00:00.000Z",
+          invalidatedAt: null,
+          invalidationReason: null,
+          status: "confirmed" as const,
+          isActive: true,
+          annualCounts: {
+            tradingDayCount: 261,
+            nonTradingDayCount: 104,
+            weekdayClosedCount: 0,
+            weekendOpenCount: 0,
+          },
+          exceptions: [],
+          createdAt: "2025-12-01T00:00:00.000Z",
+          updatedAt: "2025-12-01T00:00:00.000Z",
+        }]
+      : []
+  );
+}
+
 describe("MCP OAuth research scope", () => {
   beforeEach(async () => {
     setResearchRolloutOverrideForTest({
@@ -53,6 +87,7 @@ describe("MCP OAuth research scope", () => {
       oauthConfig: testOAuthConfig,
       appBaseUrl: "http://localhost:3000",
     });
+    installAuthoritativeCalendarCoverage(app.persistence);
     await app.persistence.setAppConfigEncryptedSecret("mcpOauthTokenSecret", mcpOAuthTokenSecret);
     await app.persistence.saveAiConnectorPolicySettings({
       groupToggles: {

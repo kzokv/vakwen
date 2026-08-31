@@ -40,6 +40,7 @@ export class ResearchServiceError extends Error {
       | "research_cursor_invalid"
       | "research_assessment_mode_unsupported"
       | "research_dataset_unavailable"
+      | "research_calendar_unavailable"
       | "research_record_too_large"
       | "research_window_invalid",
     message: string,
@@ -105,11 +106,6 @@ function monthsInclusive(startMonth: string, endMonth: string): number {
   return ((endYear * 12) + endMon) - ((startYear * 12) + startMon) + 1;
 }
 
-function isWeekendIsoDate(date: string): boolean {
-  const day = new Date(`${date}T00:00:00.000Z`).getUTCDay();
-  return day === 0 || day === 6;
-}
-
 async function nextTaiwanBusinessDay(
   persistence: Persistence,
   date: string,
@@ -120,10 +116,14 @@ async function nextTaiwanBusinessDay(
   let cursor = date;
   while (cursor <= calendarEnd) {
     const version = versions.get(Number(cursor.slice(0, 4)));
-    const isBusinessDay = version
-      ? isTradingDayFromCalendar(cursor, versions)
-      : !isWeekendIsoDate(cursor);
-    if (isBusinessDay) return cursor;
+    if (!version) {
+      throw new ResearchServiceError(
+        "research_calendar_unavailable",
+        `Authoritative Taiwan market calendar is unavailable for ${cursor.slice(0, 4)}`,
+        { calendarYear: Number(cursor.slice(0, 4)) },
+      );
+    }
+    if (isTradingDayFromCalendar(cursor, versions)) return cursor;
     cursor = addDays(cursor, 1);
   }
   throw new Error(`Unable to resolve Taiwan business day after ${date}`);
@@ -604,14 +604,13 @@ async function hasMonthlyRevenueAvailable(
   persistence: Persistence,
   listingId: string,
   context: ResearchTemporalContext,
-  latestExpectedMonth: string,
   latestApplicableMonth: string,
 ): Promise<boolean> {
   const records = await persistence.listLatestResearchMonthlyRevenueRecords({
     subject: { kind: "listing_id", listingId },
     effectiveAt: context.effectiveAt,
     knowledgeAt: context.knowledgeAt,
-    startMonth: firstMonthForTrailingWindow(latestExpectedMonth, 24),
+    startMonth: firstMonthForTrailingWindow(latestApplicableMonth, 24),
     endMonth: latestApplicableMonth,
   });
   return effectiveRevenueRecords(records, context.effectiveAt).length > 0;
@@ -695,12 +694,10 @@ export async function getResearchManifest(
           : { id, status: "unavailable" as const, reasonCode: "no_authoritative_price_history" as const };
       }
       if (id === "monthly_revenue") {
-        const freshnessTarget = await resolveMonthlyRevenueFreshnessTarget(persistence, identity);
         return await hasMonthlyRevenueAvailable(
           persistence,
           identity.selector.listingId,
           identity.context,
-          freshnessTarget.latestExpectedMonth,
           latestApplicableRevenueMonth(identity),
         )
           ? { id, status: "available" as const }

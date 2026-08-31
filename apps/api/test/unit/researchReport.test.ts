@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
 import {
@@ -15,6 +15,39 @@ import {
 } from "../../src/services/research/report.js";
 import { canonicalizeOfficialPriceRow } from "../../src/services/research/price.js";
 import { canonicalizeOfficialMonthlyRevenueRow } from "../../src/services/research/monthlyRevenue.js";
+
+function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): void {
+  vi.spyOn(persistence, "listMarketCalendarHistory").mockImplementation(async (marketCode, calendarYear) =>
+    calendarYear === 2026
+      ? [{
+          versionId: "calendar-tw-2026",
+          importOperationId: "calendar-import-tw-2026",
+          marketCode,
+          calendarYear,
+          sourceId: null,
+          sourceLabel: "TW official calendar",
+          sourceType: "official_source" as const,
+          sourceUrl: "https://example.test/tw-calendar-2026",
+          retrievedAt: "2025-12-01T00:00:00.000Z",
+          coverage: { scope: "full_year" as const, evidence: "test fixture" },
+          confirmedAt: "2025-12-01T00:00:00.000Z",
+          invalidatedAt: null,
+          invalidationReason: null,
+          status: "confirmed" as const,
+          isActive: true,
+          annualCounts: {
+            tradingDayCount: 261,
+            nonTradingDayCount: 104,
+            weekdayClosedCount: 0,
+            weekendOpenCount: 0,
+          },
+          exceptions: [],
+          createdAt: "2025-12-01T00:00:00.000Z",
+          updatedAt: "2025-12-01T00:00:00.000Z",
+        }]
+      : []
+  );
+}
 
 describe("identity-only Taiwan ResearchReport", () => {
   it("canonical report: build from stored identity → render only report-carried claims with provenance references", async () => {
@@ -288,6 +321,7 @@ describe("identity-only Taiwan ResearchReport", () => {
 
   it("monthly revenue report: build a focused conclusion without crossing into recommendation language", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",
@@ -388,6 +422,7 @@ describe("identity-only Taiwan ResearchReport", () => {
 
   it("monthly revenue report: unavailable manifest dataset → reject instead of emitting an empty revenue profile", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",
@@ -420,6 +455,7 @@ describe("identity-only Taiwan ResearchReport", () => {
 
   it("monthly revenue report: withhold the conclusion when the latest due month is missing → keep the scope descriptive", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",

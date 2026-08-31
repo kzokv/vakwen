@@ -535,8 +535,43 @@ describe("Taiwan research store-only service", () => {
     expect(pageSpy).toHaveBeenCalledWith(expect.objectContaining({ limit: 2 }));
   });
 
+  it("monthly revenue freshness: authoritative calendar is unavailable → fail closed without fabricating weekday business days", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:missing-calendar", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+
+    await expect(getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      page: { limit: 24, order: "desc" },
+    })).rejects.toMatchObject({
+      code: "research_calendar_unavailable",
+      statusCode: 422,
+      metadata: { calendarYear: 2026 },
+    });
+  });
+
   it("early filing: expose availability and default results newer than the latest expected filing month", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-05",
@@ -1195,6 +1230,7 @@ describe("Taiwan research store-only service", () => {
 
   it("monthly revenue: return bounded latest-per-month facts, derived metrics, and cursor paging from the canonical store only", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",
@@ -1349,6 +1385,7 @@ describe("Taiwan research store-only service", () => {
 
   it("monthly revenue gates: withhold only the affected derived claims → preserve source facts and read-only behavior", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const appendIdentitySpy = vi.spyOn(persistence, "appendResearchIdentityRecords");
     const appendRevenueSpy = vi.spyOn(persistence, "appendResearchMonthlyRevenueRecords");
     const identity = canonicalizeOfficialIdentityRow({
@@ -1514,6 +1551,7 @@ describe("Taiwan research store-only service", () => {
 
   it("monthly revenue comparisons: filing basis is unreported → preserve source facts and withhold basis-dependent metrics", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",
@@ -1600,6 +1638,7 @@ describe("Taiwan research store-only service", () => {
 
   it("monthly revenue evidence: explicit output range → include provenance for canonical support months used by derived metrics", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-01",
@@ -1723,6 +1762,7 @@ describe("Taiwan research store-only service", () => {
     };
 
     const missingComparablePersistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(missingComparablePersistence);
     const missingComparableIdentity = makeIdentity("2330", "8");
     await missingComparablePersistence.appendResearchIdentityRecords([missingComparableIdentity]);
     for (const [index, revenueMonth] of [
@@ -1767,6 +1807,7 @@ describe("Taiwan research store-only service", () => {
     });
 
     const shortWindowPersistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(shortWindowPersistence);
     const shortWindowIdentity = makeIdentity("2331", "9", "2026-05-01");
     await shortWindowPersistence.appendResearchIdentityRecords([shortWindowIdentity]);
     for (const [index, revenueMonth] of ["2026-05", "2026-06", "2026-07"].entries()) {
@@ -1805,6 +1846,7 @@ describe("Taiwan research store-only service", () => {
 
   it("monthly revenue timing: use the effective cutoff for visibility and freshness → withhold months published after that cutoff", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-01",
@@ -1910,6 +1952,7 @@ describe("Taiwan research store-only service", () => {
 
   it("monthly revenue TPEX: resolve a ticker_venue query and preserve TPEX routing in the returned selector and facts", async () => {
     const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TPEX",
       snapshotDate: "2026-08-01",
