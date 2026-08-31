@@ -1259,6 +1259,9 @@ describe("Taiwan research store-only service", () => {
     expect(result.items[0]).toMatchObject({
       revenueMonth: "2026-07",
       publicationContext: { declaredUnit: "TWD_THOUSANDS", basis: "consolidated" },
+      sourceFacts: {
+        currentMonthRevenue: { raw: "1070", normalized: { state: "present", value: "1070" } },
+      },
     });
     expect(result.items[0]?.derivedMetrics.yearOverYearPercent.status).toBe("available");
     expect(result.items[0]?.derivedMetrics.trailing12MonthRevenue.status).toBe("available");
@@ -1440,7 +1443,7 @@ describe("Taiwan research store-only service", () => {
       revenueMonth: "2026-07",
       sourceFacts: {
         publisherComparisons: {
-          yearOverYearPercent: { state: "present", value: "11.11" },
+          yearOverYearPercent: { raw: "11.11", normalized: { state: "present", value: "11.11" } },
         },
       },
       derivedMetrics: {
@@ -1527,10 +1530,10 @@ describe("Taiwan research store-only service", () => {
     expect(result.items[0]).toMatchObject({
       sourceFacts: {
         publisherComparisons: {
-          yearOverYearPercent: { state: "present", value: "11.11" },
-          currentYearToDateRevenue: { state: "present", value: "7000" },
-          priorYearToDateRevenue: { state: "present", value: "6300" },
-          yearToDateYearOverYearPercent: { state: "present", value: "11.11" },
+          yearOverYearPercent: { raw: "11.11", normalized: { state: "present", value: "11.11" } },
+          currentYearToDateRevenue: { raw: "7000", normalized: { state: "present", value: "7000" } },
+          priorYearToDateRevenue: { raw: "6300", normalized: { state: "present", value: "6300" } },
+          yearToDateYearOverYearPercent: { raw: "11.11", normalized: { state: "present", value: "11.11" } },
         },
       },
       derivedMetrics: {

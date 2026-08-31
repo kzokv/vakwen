@@ -74,6 +74,7 @@ export const OFFICIAL_PRICE_SOURCES = {
 
 const TPEX_DELISTING_FIRST_YEAR = 2021;
 const ETF_ABSENCE_COMPLETENESS_GUARD_PERCENT = 1;
+const MONTHLY_REVENUE_MINIMUM_COVERAGE_PERCENT = 80;
 
 export class ResearchAcquisitionDisabledError extends Error {
   readonly code = "research_acquisition_disabled";
@@ -198,6 +199,30 @@ function assertPriceSnapshotCompleteness(
     throw new Error(
       `Official ${venue} price snapshot failed completeness guard: `
       + `${missingListings.length} of ${activeListings.length} active listings are absent`,
+    );
+  }
+}
+
+function assertMonthlyRevenueSnapshotCompleteness(
+  venue: "TWSE" | "TPEX",
+  listings: ResearchIdentityRecord[],
+  records: ResearchMonthlyRevenueRecord[],
+): void {
+  const activeCompanies = listings.filter(
+    (record) => record.listing.status === "active" && record.eligibility.profile === "operating_company",
+  );
+  if (activeCompanies.length === 0) {
+    throw new Error(`Official ${venue} monthly revenue snapshot has no active canonical company universe`);
+  }
+  if (records.length === 0) {
+    throw new Error(`Official ${venue} monthly revenue snapshot returned no canonical rows`);
+  }
+  const observedListingIds = new Set(records.map((record) => record.listingId));
+  const observedCount = activeCompanies.filter((record) => observedListingIds.has(record.listing.id)).length;
+  if (observedCount * 100 < activeCompanies.length * MONTHLY_REVENUE_MINIMUM_COVERAGE_PERCENT) {
+    throw new Error(
+      `Official ${venue} monthly revenue snapshot failed completeness guard: `
+      + `${activeCompanies.length - observedCount} of ${activeCompanies.length} active companies are absent`,
     );
   }
 }
@@ -826,10 +851,21 @@ export async function runOfficialMonthlyRevenueAcquisition(
       .filter((record) => record.listing.status === "active")
       .map((record) => [record.listing.ticker, { listingId: record.listing.id, issuerId: record.issuer.id }] as const),
   );
-  const records: ResearchMonthlyRevenueRecord[] = [
-    ...parseOfficialMonthlyRevenueSnapshot(twseRevenue.payload, { ...twseRevenue.metadata, retrievedAt }, "TWSE", twseIdentitiesByTicker),
-    ...parseOfficialMonthlyRevenueSnapshot(tpexRevenue.payload, { ...tpexRevenue.metadata, retrievedAt }, "TPEX", tpexIdentitiesByTicker),
-  ].map((record) => ({
+  const twseRecords = parseOfficialMonthlyRevenueSnapshot(
+    twseRevenue.payload,
+    { ...twseRevenue.metadata, retrievedAt },
+    "TWSE",
+    twseIdentitiesByTicker,
+  );
+  const tpexRecords = parseOfficialMonthlyRevenueSnapshot(
+    tpexRevenue.payload,
+    { ...tpexRevenue.metadata, retrievedAt },
+    "TPEX",
+    tpexIdentitiesByTicker,
+  );
+  assertMonthlyRevenueSnapshotCompleteness("TWSE", twseListings, twseRecords);
+  assertMonthlyRevenueSnapshotCompleteness("TPEX", tpexListings, tpexRecords);
+  const records: ResearchMonthlyRevenueRecord[] = [...twseRecords, ...tpexRecords].map((record) => ({
     ...record,
     provenance: {
       ...record.provenance,

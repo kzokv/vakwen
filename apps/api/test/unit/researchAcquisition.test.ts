@@ -555,6 +555,20 @@ describe("official Taiwan identity acquisition", () => {
         }),
       }),
     ]);
+
+    payloads.set(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue, []);
+    await expect(runOfficialMonthlyRevenueAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-12T03:00:00.000Z",
+      acquisitionRunId: "monthly-revenue-empty-tpex",
+    })).rejects.toThrow("Official TPEX monthly revenue snapshot returned no canonical rows");
+    expect(await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: tpexIdentity.listing.id },
+      effectiveAt: "2026-08-12T03:00:00.000Z",
+      knowledgeAt: "2026-08-12T03:00:00.000Z",
+      startMonth: "2026-07",
+      endMonth: "2026-07",
+    })).toHaveLength(1);
   });
 
   it("fresh database: historical company and ETN retirements → seed queryable inactive identities", async () => {

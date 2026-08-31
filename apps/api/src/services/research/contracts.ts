@@ -467,6 +467,14 @@ const researchMonthlyRevenueMetricSchema = z.discriminatedUnion("status", [
   }).strict(),
 ]);
 
+const researchMonthlyRevenueSourceValueSchema = z.object({
+  raw: z.string(),
+  normalized: z.discriminatedUnion("state", [
+    z.object({ state: z.literal("present"), value: z.string() }).strict(),
+    z.object({ state: z.literal("missing"), reason: z.literal("unparseable") }).strict(),
+  ]),
+}).strict();
+
 const researchMonthlyRevenueOutputSchema = z.object({
   contractVersion: z.literal("monthly-revenue/1.0.0"),
   selector: immutableListingSelectorSchema,
@@ -498,15 +506,15 @@ const researchMonthlyRevenueOutputSchema = z.object({
     sourceFacts: z.object({
       companyName: z.string(),
       industryName: z.string(),
-      currentMonthRevenue: canonicalObservationSchema.shape.normalized,
-      priorMonthRevenue: canonicalObservationSchema.shape.normalized,
-      priorYearSameMonthRevenue: canonicalObservationSchema.shape.normalized,
+      currentMonthRevenue: researchMonthlyRevenueSourceValueSchema,
+      priorMonthRevenue: researchMonthlyRevenueSourceValueSchema,
+      priorYearSameMonthRevenue: researchMonthlyRevenueSourceValueSchema,
       publisherComparisons: z.object({
-        monthOverMonthPercent: canonicalObservationSchema.shape.normalized,
-        yearOverYearPercent: canonicalObservationSchema.shape.normalized,
-        currentYearToDateRevenue: canonicalObservationSchema.shape.normalized,
-        priorYearToDateRevenue: canonicalObservationSchema.shape.normalized,
-        yearToDateYearOverYearPercent: canonicalObservationSchema.shape.normalized,
+        monthOverMonthPercent: researchMonthlyRevenueSourceValueSchema,
+        yearOverYearPercent: researchMonthlyRevenueSourceValueSchema,
+        currentYearToDateRevenue: researchMonthlyRevenueSourceValueSchema,
+        priorYearToDateRevenue: researchMonthlyRevenueSourceValueSchema,
+        yearToDateYearOverYearPercent: researchMonthlyRevenueSourceValueSchema,
       }).strict(),
       note: z.string().nullable(),
     }).strict(),
