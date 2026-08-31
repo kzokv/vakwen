@@ -150,6 +150,7 @@ Use this shape when the user asked for revenue research and the manifest marks `
       "id": "monthly_revenue",
       "freshness": "returned monthly revenue freshness object",
       "latestMonth": "latest returned YYYY-MM month or null",
+      "latestRecord": "the complete latest returned monthly-revenue item, including publication context, raw and normalized source facts, publisher comparisons, basis-change state, and derived metrics, or null",
       "latestYearOverYearPercent": "returned derived metric object or null"
     }
   ],
@@ -175,6 +176,7 @@ Include:
 - effective and knowledge timestamps
 - latest returned revenue month or `Not available`
 - freshness latest expected month and due status
+- latest record publication context, raw and normalized source facts, publisher comparisons, and basis-change state when present
 - the latest returned YoY metric status and value or withheld reason
 - conclusion status, exact statement, and every reason code
 - every provenance ID

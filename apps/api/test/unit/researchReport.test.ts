@@ -351,10 +351,38 @@ describe("identity-only Taiwan ResearchReport", () => {
     expect(researchRevenueFocusedReportSchema.parse(report)).toEqual(report);
     expect(report.profile).toBe("monthly_revenue");
     expect(report.conclusion.status).toBe("supported");
+    expect(report.sections[2].latestRecord).toMatchObject({
+      revenueMonth: "2026-07",
+      publicationContext: {
+        rawPublishedAt: "1150817",
+        declaredUnit: "TWD_THOUSANDS",
+        basis: "consolidated",
+      },
+      sourceFacts: {
+        currentMonthRevenue: {
+          raw: "1110",
+          normalized: { state: "present", value: "1110" },
+        },
+        publisherComparisons: {
+          yearOverYearPercent: {
+            raw: "11.11",
+            normalized: { state: "present", value: "11.11" },
+          },
+        },
+      },
+    });
     expect(report.evidence.provenanceIds).toContain(identity.provenance.id);
     expect(report.evidence.provenanceIds.length).toBeGreaterThan(1);
     expect(report.conclusion.statement.toLowerCase()).not.toContain("buy");
     expect(report.conclusion.statement.toLowerCase()).not.toContain("target price");
+    expect(() => researchRevenueFocusedReportSchema.parse({
+      ...report,
+      sections: [report.sections[0], report.sections[0], report.sections[0]],
+    })).toThrow();
+    expect(() => researchRevenueFocusedReportSchema.parse({
+      ...report,
+      generatedAt: "2026-08-29T00:00:00.000Z",
+    })).toThrow();
   });
 
   it("monthly revenue report: unavailable manifest dataset → reject instead of emitting an empty revenue profile", async () => {

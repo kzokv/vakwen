@@ -476,6 +476,55 @@ const researchMonthlyRevenueSourceValueSchema = z.object({
   ]),
 }).strict();
 
+const researchMonthlyRevenueFreshnessSchema = z.object({
+  basis: z.enum(["standard_10th", "insurance_15th"]),
+  gracePolicy: z.literal("next_taiwan_business_day"),
+  latestExpectedMonth: isoMonthSchema,
+  statutoryDueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  latestDueStatus: z.enum(["reported", "missing"]),
+}).strict();
+
+const researchMonthlyRevenueSourceFactsSchema = z.object({
+  companyName: z.string(),
+  industryName: z.string(),
+  currentMonthRevenue: researchMonthlyRevenueSourceValueSchema,
+  priorMonthRevenue: researchMonthlyRevenueSourceValueSchema,
+  priorYearSameMonthRevenue: researchMonthlyRevenueSourceValueSchema,
+  publisherComparisons: z.object({
+    monthOverMonthPercent: researchMonthlyRevenueSourceValueSchema,
+    yearOverYearPercent: researchMonthlyRevenueSourceValueSchema,
+    currentYearToDateRevenue: researchMonthlyRevenueSourceValueSchema,
+    priorYearToDateRevenue: researchMonthlyRevenueSourceValueSchema,
+    yearToDateYearOverYearPercent: researchMonthlyRevenueSourceValueSchema,
+  }).strict(),
+  note: z.string().nullable(),
+}).strict();
+
+const researchMonthlyRevenueItemSchema = z.object({
+  revenueMonth: isoMonthSchema,
+  publicationContext: z.object({
+    publishedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    rawPublishedAt: z.string().min(1),
+    declaredUnit: z.enum(["TWD_THOUSANDS", "UNKNOWN"]),
+    basis: z.enum(["consolidated", "individual", "unknown"]),
+    qualifier: z.enum(["estimated", "final", "unknown"]),
+  }).strict(),
+  sourceFacts: researchMonthlyRevenueSourceFactsSchema,
+  basisChange: z.object({
+    state: z.enum(["present", "absent"]),
+    reasonCode: z.enum(["merged_entity_change", "comparative_restatement", "scope_change"]).nullable(),
+  }).strict(),
+  derivedMetrics: z.object({
+    yearOverYearPercent: researchMonthlyRevenueMetricSchema,
+    rolling3MonthRevenue: researchMonthlyRevenueMetricSchema,
+    trailing12MonthRevenue: researchMonthlyRevenueMetricSchema,
+    currentYearToDateRevenue: researchMonthlyRevenueMetricSchema,
+    priorYearToDateRevenue: researchMonthlyRevenueMetricSchema,
+    yearToDateYearOverYearPercent: researchMonthlyRevenueMetricSchema,
+    seasonalityShareOfTrailing12MonthRevenue: researchMonthlyRevenueMetricSchema,
+  }).strict(),
+}).strict();
+
 const researchMonthlyRevenueOutputSchema = z.object({
   contractVersion: z.literal("monthly-revenue/1.0.0"),
   selector: immutableListingSelectorSchema,
@@ -488,51 +537,8 @@ const researchMonthlyRevenueOutputSchema = z.object({
     defaultMonths: z.literal(24),
     maxMonths: z.literal(120),
   }).strict(),
-  freshness: z.object({
-    basis: z.enum(["standard_10th", "insurance_15th"]),
-    gracePolicy: z.literal("next_taiwan_business_day"),
-    latestExpectedMonth: isoMonthSchema,
-    statutoryDueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    latestDueStatus: z.enum(["reported", "missing"]),
-  }).strict(),
-  items: z.array(z.object({
-    revenueMonth: isoMonthSchema,
-    publicationContext: z.object({
-      publishedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-      rawPublishedAt: z.string().min(1),
-      declaredUnit: z.enum(["TWD_THOUSANDS", "UNKNOWN"]),
-      basis: z.enum(["consolidated", "individual", "unknown"]),
-      qualifier: z.enum(["estimated", "final", "unknown"]),
-    }).strict(),
-    sourceFacts: z.object({
-      companyName: z.string(),
-      industryName: z.string(),
-      currentMonthRevenue: researchMonthlyRevenueSourceValueSchema,
-      priorMonthRevenue: researchMonthlyRevenueSourceValueSchema,
-      priorYearSameMonthRevenue: researchMonthlyRevenueSourceValueSchema,
-      publisherComparisons: z.object({
-        monthOverMonthPercent: researchMonthlyRevenueSourceValueSchema,
-        yearOverYearPercent: researchMonthlyRevenueSourceValueSchema,
-        currentYearToDateRevenue: researchMonthlyRevenueSourceValueSchema,
-        priorYearToDateRevenue: researchMonthlyRevenueSourceValueSchema,
-        yearToDateYearOverYearPercent: researchMonthlyRevenueSourceValueSchema,
-      }).strict(),
-      note: z.string().nullable(),
-    }).strict(),
-    basisChange: z.object({
-      state: z.enum(["present", "absent"]),
-      reasonCode: z.enum(["merged_entity_change", "comparative_restatement", "scope_change"]).nullable(),
-    }).strict(),
-    derivedMetrics: z.object({
-      yearOverYearPercent: researchMonthlyRevenueMetricSchema,
-      rolling3MonthRevenue: researchMonthlyRevenueMetricSchema,
-      trailing12MonthRevenue: researchMonthlyRevenueMetricSchema,
-      currentYearToDateRevenue: researchMonthlyRevenueMetricSchema,
-      priorYearToDateRevenue: researchMonthlyRevenueMetricSchema,
-      yearToDateYearOverYearPercent: researchMonthlyRevenueMetricSchema,
-      seasonalityShareOfTrailing12MonthRevenue: researchMonthlyRevenueMetricSchema,
-    }).strict(),
-  }).strict()),
+  freshness: researchMonthlyRevenueFreshnessSchema,
+  items: z.array(researchMonthlyRevenueItemSchema),
   page: z.object({
     nextCursor: z.string().nullable(),
   }).strict(),
@@ -639,9 +645,27 @@ export const researchRevenueFocusedReportSchema = z.object({
   selector: immutableListingSelectorSchema,
   context: fixedResearchContextSchema,
   generatedAt: z.string().datetime({ offset: true }),
-  sections: z.array(z.object({
-    id: z.enum(["identity", "eligibility", "monthly_revenue"]),
-  }).passthrough()).length(3),
+  sections: z.tuple([
+    z.object({
+      id: z.literal("identity"),
+      issuer: issuerSchema,
+      security: securitySchema,
+      listing: listingSchema,
+    }).strict(),
+    z.object({
+      id: z.literal("eligibility"),
+      profile: eligibilitySchema.shape.profile,
+      state: eligibilitySchema.shape.state,
+      reasonCode: eligibilitySchema.shape.reasonCode,
+    }).strict(),
+    z.object({
+      id: z.literal("monthly_revenue"),
+      freshness: researchMonthlyRevenueFreshnessSchema,
+      latestMonth: isoMonthSchema.nullable(),
+      latestRecord: researchMonthlyRevenueItemSchema.nullable(),
+      latestYearOverYearPercent: researchMonthlyRevenueMetricSchema.nullable(),
+    }).strict(),
+  ]),
   conclusion: z.object({
     status: z.enum(["supported", "withheld"]),
     statement: z.string().min(1),
@@ -650,7 +674,15 @@ export const researchRevenueFocusedReportSchema = z.object({
   evidence: z.object({
     provenanceIds: z.array(canonicalIdSchema),
   }).strict(),
-}).strict();
+}).strict().superRefine((report, refinement) => {
+  if (report.generatedAt !== report.context.knowledgeAt) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["generatedAt"],
+      message: "generatedAt must equal the fixed knowledgeAt timestamp",
+    });
+  }
+});
 
 export type ResearchSubjectSelector = z.infer<typeof researchSubjectSelectorSchema>;
 export type ResearchTemporalContext = z.infer<typeof researchTemporalContextSchema>;

@@ -256,6 +256,7 @@ export async function buildRevenueFocusedResearchReport(
         id: "monthly_revenue" as const,
         freshness: monthlyRevenue.freshness,
         latestMonth: latestItem?.revenueMonth ?? null,
+        latestRecord: latestItem,
         latestYearOverYearPercent: latestYoy ?? null,
       },
     ],
