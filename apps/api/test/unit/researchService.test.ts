@@ -535,6 +535,70 @@ describe("Taiwan research store-only service", () => {
     expect(pageSpy).toHaveBeenCalledWith(expect.objectContaining({ limit: 2 }));
   });
 
+  it("early-month manifest: retain monthly-revenue availability from the latest expected filing month", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-05",
+      retrievedAt: "2026-08-05T02:00:00.000Z",
+      artifact: { contentHash: "sha256:early-month-manifest", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchMonthlyRevenueRecords([canonicalizeOfficialMonthlyRevenueRow({
+      venue: "TWSE",
+      listingId: identity.listing.id,
+      issuerId: identity.issuer.id,
+      ticker: "2330",
+      companyName: "台積電",
+      industryName: "半導體業",
+      revenueMonth: "2026-06",
+      rawRevenueMonth: "11506",
+      publishedAt: "2026-07-10",
+      rawPublishedAt: "1150710",
+      retrievedAt: "2026-07-10T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:early-month-revenue",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+        publisherDataset: "t187ap05_L",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      source: {
+        currentMonthRevenue: "1000",
+        priorMonthRevenue: "900",
+        priorYearSameMonthRevenue: "800",
+        monthOverMonthPercent: "11.11",
+        yearOverYearPercent: "25",
+        currentYearToDateRevenue: "6000",
+        priorYearToDateRevenue: "5000",
+        yearToDateYearOverYearPercent: "20",
+        note: "-",
+      },
+    })]);
+
+    const manifest = await getResearchManifest(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-05T12:00:00.000Z",
+        effectiveAt: "2026-08-05T12:00:00.000Z",
+        assessmentMode: "effective",
+      },
+    });
+
+    expect(manifest.datasets.find((dataset) => dataset.id === "monthly_revenue")).toEqual({
+      id: "monthly_revenue",
+      status: "available",
+    });
+  });
+
   it("price-series manifest and service: read stored TWSE bars only → expose price availability, lineage, and no write-side effects", async () => {
     const persistence = new MemoryPersistence();
     installAuthoritativeCalendarCoverage(persistence);
@@ -1214,6 +1278,18 @@ describe("Taiwan research store-only service", () => {
       },
     });
     expect(secondPage.items[0]?.revenueMonth).toBe("2026-05");
+
+    const historicalWindow = await getMonthlyRevenue(persistence, {
+      subject: result.selector,
+      context: result.context,
+      range: { startMonth: "2026-01", endMonth: "2026-06" },
+      page: { limit: 12, order: "desc" },
+    });
+    expect(historicalWindow.items[0]?.revenueMonth).toBe("2026-06");
+    expect(historicalWindow.freshness).toMatchObject({
+      latestExpectedMonth: "2026-07",
+      latestDueStatus: "reported",
+    });
   });
 
   it("monthly revenue gates: withhold only the affected derived claims → preserve source facts and read-only behavior", async () => {

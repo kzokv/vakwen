@@ -571,13 +571,14 @@ async function hasMonthlyRevenueAvailable(
   persistence: Persistence,
   listingId: string,
   context: ResearchTemporalContext,
+  latestExpectedMonth: string,
 ): Promise<boolean> {
   const records = await persistence.listLatestResearchMonthlyRevenueRecords({
     subject: { kind: "listing_id", listingId },
     effectiveAt: context.effectiveAt,
     knowledgeAt: context.knowledgeAt,
-    startMonth: firstMonthForTrailingWindow(context.effectiveAt.slice(0, 7), 2),
-    endMonth: context.effectiveAt.slice(0, 7),
+    startMonth: firstMonthForTrailingWindow(latestExpectedMonth, 24),
+    endMonth: latestExpectedMonth,
   });
   return records.length > 0;
 }
@@ -652,7 +653,18 @@ export async function getResearchManifest(
           : { id, status: "unavailable" as const, reasonCode: "no_authoritative_price_history" as const };
       }
       if (id === "monthly_revenue") {
-        return await hasMonthlyRevenueAvailable(persistence, identity.selector.listingId, identity.context)
+        const freshnessTarget = await latestExpectedRevenueMonth(
+          persistence,
+          identity.context.effectiveAt,
+          identity.context.knowledgeAt,
+          resolveFreshnessBasis(identity),
+        );
+        return await hasMonthlyRevenueAvailable(
+          persistence,
+          identity.selector.listingId,
+          identity.context,
+          freshnessTarget.latestExpectedMonth,
+        )
           ? { id, status: "available" as const }
           : { id, status: "unavailable" as const, reasonCode: "not_acquired" as const };
       }
@@ -1504,6 +1516,16 @@ export async function getMonthlyRevenue(
   );
   const { startMonth, endMonth } = resolveMonthlyRevenueWindow(query, freshnessTarget.latestExpectedMonth);
   const supportStartMonth = metricSupportStartMonth(startMonth);
+  const freshnessRecords = resolveLatestMonthlyRevenueRecords(effectiveRevenueRecords(
+    await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: identity.selector.listingId },
+      effectiveAt: query.context.effectiveAt,
+      knowledgeAt: query.context.knowledgeAt,
+      startMonth: freshnessTarget.latestExpectedMonth,
+      endMonth: freshnessTarget.latestExpectedMonth,
+    }),
+    query.context.effectiveAt,
+  ));
   const latestRecords = resolveLatestMonthlyRevenueRecords(effectiveRevenueRecords(
     await persistence.listLatestResearchMonthlyRevenueRecords({
       subject: { kind: "listing_id", listingId: identity.selector.listingId },
@@ -1569,7 +1591,7 @@ export async function getMonthlyRevenue(
       gracePolicy: "next_taiwan_business_day" as const,
       latestExpectedMonth: freshnessTarget.latestExpectedMonth,
       statutoryDueDate: freshnessTarget.statutoryDueDate,
-      latestDueStatus: latestRecords.some((record) => record.revenueMonth === freshnessTarget.latestExpectedMonth)
+      latestDueStatus: freshnessRecords.length > 0
         ? "reported" as const
         : "missing" as const,
     },
