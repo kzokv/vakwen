@@ -651,6 +651,7 @@ export const researchRevenueFocusedReportSchema = z.object({
       issuer: issuerSchema,
       security: securitySchema,
       listing: listingSchema,
+      displayName: z.string().nullable(),
     }).strict(),
     z.object({
       id: z.literal("eligibility"),

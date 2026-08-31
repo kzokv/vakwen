@@ -351,6 +351,7 @@ describe("identity-only Taiwan ResearchReport", () => {
     expect(researchRevenueFocusedReportSchema.parse(report)).toEqual(report);
     expect(report.profile).toBe("monthly_revenue");
     expect(report.conclusion.status).toBe("supported");
+    expect(report.sections[0].displayName).toBe("台積電");
     expect(report.sections[2].latestRecord).toMatchObject({
       revenueMonth: "2026-07",
       publicationContext: {

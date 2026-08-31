@@ -138,7 +138,8 @@ Use this shape when the user asked for revenue research and the manifest marks `
       "id": "identity",
       "issuer": "canonical issuer object",
       "security": "canonical security object",
-      "listing": "canonical listing object"
+      "listing": "canonical listing object",
+      "displayName": "latest effective normalized value or null"
     },
     {
       "id": "eligibility",

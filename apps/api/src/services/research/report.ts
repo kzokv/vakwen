@@ -245,6 +245,7 @@ export async function buildRevenueFocusedResearchReport(
         issuer: identity.identity.issuer,
         security: identity.identity.security,
         listing: identity.identity.listing,
+        displayName: presentFactValue(identity.identity.facts, "display_name"),
       },
       {
         id: "eligibility" as const,
