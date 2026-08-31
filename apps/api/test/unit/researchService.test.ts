@@ -1687,7 +1687,7 @@ describe("Taiwan research store-only service", () => {
           currentYearToDateRevenue: String(10000 + sequence * 100),
           priorYearToDateRevenue: String(9000 + sequence * 100),
           yearToDateYearOverYearPercent: "11.11",
-          note: "-",
+          note: "合併營收",
         },
       })]);
     };
@@ -1765,6 +1765,9 @@ describe("Taiwan research store-only service", () => {
       derivedMetrics: {
         rolling3MonthRevenue: { status: "withheld", reasonCode: "short_window" },
         trailing12MonthRevenue: { status: "withheld", reasonCode: "short_window" },
+        currentYearToDateRevenue: { status: "withheld", reasonCode: "short_window" },
+        priorYearToDateRevenue: { status: "withheld", reasonCode: "short_window" },
+        yearToDateYearOverYearPercent: { status: "withheld", reasonCode: "short_window" },
       },
     });
   });

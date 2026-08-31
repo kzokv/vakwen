@@ -1465,7 +1465,7 @@ function deriveMonthlyRevenueMetrics(
     const currentYtdCoverage = supportPresenceGate(currentYearPrefixMonths, currentYearRecords);
     const currentYtdComparable = currentRecordGate(record) !== "ok"
       ? currentRecordGate(record)
-      : currentYtdCoverage === "ok" ? comparable(record, currentYearRecords) : "missing_comparable_month";
+      : currentYtdCoverage === "ok" ? comparable(record, currentYearRecords) : currentYtdCoverage;
     const currentYtdSum = currentYearRecords.length === currentYearPrefixMonths.length ? sumCurrentRevenue(currentYearRecords) : null;
     const currentYearToDateRevenue = currentYtdComparable !== "ok" || currentYtdSum === null
       ? metricWithheld(currentYtdComparable === "ok" ? "missing_comparable_month" : currentYtdComparable, currentYearPrefixMonths)
@@ -1476,7 +1476,7 @@ function deriveMonthlyRevenueMetrics(
     const previousYtdCoverage = supportPresenceGate(previousYearPrefixMonths, previousYearRecords);
     const previousYtdComparable = currentRecordGate(record) !== "ok"
       ? currentRecordGate(record)
-      : previousYtdCoverage === "ok" ? comparable(record, previousYearRecords) : "missing_comparable_month";
+      : previousYtdCoverage === "ok" ? comparable(record, previousYearRecords) : previousYtdCoverage;
     const previousYtdSum = previousYearRecords.length === previousYearPrefixMonths.length ? sumCurrentRevenue(previousYearRecords) : null;
     const priorYearToDateRevenue = previousYtdComparable !== "ok" || previousYtdSum === null
       ? metricWithheld(previousYtdComparable === "ok" ? "missing_comparable_month" : previousYtdComparable, previousYearPrefixMonths)

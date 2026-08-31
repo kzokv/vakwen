@@ -42,6 +42,7 @@ When enabled, the API adds read-only canonical-store MCP tools under `research:r
 
 - `get_research_manifest`
 - `get_research_identity`
+- `get_price_series`
 - `get_monthly_revenue`
 
 `get_monthly_revenue` returns authoritative MOPS monthly-revenue source facts, derived trend metrics with explicit lineage, freshness gating, and cursor pagination for one immutable listing and fixed temporal context. Reads are store-only: they do not fetch providers, enqueue work, populate caches, mutate freshness, or change portfolio state.

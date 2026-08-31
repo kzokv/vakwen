@@ -438,7 +438,7 @@ describe("official Taiwan identity acquisition", () => {
     }
   });
 
-  it("monthly revenue acquisition: fetch official TWSE and TPEX snapshots → append authoritative raw-month revenue records only for known active listings", async () => {
+  it("monthly revenue acquisition: fetch official TWSE and TPEX snapshots → append authoritative rows for listings applicable to each revenue month", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
     stubActiveTaiwanCalendar(persistence);
@@ -472,6 +472,33 @@ describe("official Taiwan identity acquisition", () => {
         listedAt: "2013-04-30",
       },
     });
+    const activeBeforeFinalRevenue = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-07-01",
+      retrievedAt: "2026-07-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:inactive-twse-revenue-identity", sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseCompanies },
+      row: {
+        kind: "company",
+        ticker: "1234",
+        legalName: "下市測試股份有限公司",
+        displayName: "下市測試",
+        unifiedBusinessNumber: "87654321",
+        industryCode: "24",
+        listedAt: "2001-01-01",
+      },
+    });
+    const inactiveTwseIdentity = appendOfficialListingStatusRevision(activeBeforeFinalRevenue, {
+      status: "inactive",
+      effectiveDate: "2026-07-31",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      acquisitionRunId: "inactive-before-final-revenue",
+      artifact: {
+        contentHash: "sha256:inactive-twse-revenue-delisting",
+        sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseDelistings,
+        publisherDataset: "company/suspendListingCsvAndHtml",
+        accessProvider: "TWSE_OPENAPI",
+      },
+    });
     const twseInsuranceIdentity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-01",
@@ -487,7 +514,13 @@ describe("official Taiwan identity acquisition", () => {
         listedAt: "1963-12-02",
       },
     });
-    await persistence.appendResearchIdentityRecords([twseIdentity, twseInsuranceIdentity, tpexIdentity]);
+    await persistence.appendResearchIdentityRecords([
+      twseIdentity,
+      twseInsuranceIdentity,
+      activeBeforeFinalRevenue,
+      inactiveTwseIdentity,
+      tpexIdentity,
+    ]);
 
     const requested: string[] = [];
     const payloads = new Map<string, unknown>([
@@ -540,6 +573,22 @@ describe("official Taiwan identity acquisition", () => {
           "累計營業收入-前期比較增減(%)": "11.11",
           備註: "-",
         },
+        {
+          出表日期: "1150810",
+          資料年月: "11507",
+          公司代號: "1234",
+          公司名稱: "下市測試股份有限公司",
+          產業別: "24",
+          "營業收入-當月營收": "300",
+          "營業收入-上月營收": "290",
+          "營業收入-去年當月營收": "250",
+          "營業收入-上月比較增減(%)": "3.45",
+          "營業收入-去年同月增減(%)": "20",
+          "累計營業收入-當月累計營收": "1,900",
+          "累計營業收入-去年累計營收": "1,700",
+          "累計營業收入-前期比較增減(%)": "11.76",
+          備註: "下市前末期申報",
+        },
       ]],
       [OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue, [
         {
@@ -582,7 +631,7 @@ describe("official Taiwan identity acquisition", () => {
     expect(result).toMatchObject({
       acquisitionRunId: "monthly-revenue-run",
       sourceCount: 2,
-      recordCount: 3,
+      recordCount: 4,
       months: ["2026-06", "2026-07"],
     });
     const twseRecords = await persistence.listLatestResearchMonthlyRevenueRecords({
@@ -641,6 +690,15 @@ describe("official Taiwan identity acquisition", () => {
       endMonth: "2026-06",
     })).toEqual([
       expect.objectContaining({ revenueMonth: "2026-06" }),
+    ]);
+    expect(await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: inactiveTwseIdentity.listing.id },
+      effectiveAt: "2026-08-12T02:00:00.000Z",
+      knowledgeAt: "2026-08-12T02:00:00.000Z",
+      startMonth: "2026-07",
+      endMonth: "2026-07",
+    })).toEqual([
+      expect.objectContaining({ revenueMonth: "2026-07", listingId: inactiveTwseIdentity.listing.id }),
     ]);
 
     const currentTpexPayload = payloads.get(OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue);

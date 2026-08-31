@@ -18,7 +18,10 @@ import {
   canonicalizeOfficialPriceRow,
   type ResearchPriceRecord,
 } from "./price.js";
-import { parseOfficialMonthlyRevenueSnapshot } from "./providers/monthlyRevenue.js";
+import {
+  parseOfficialMonthlyRevenueSnapshot,
+  type RevenueIdentityLookup,
+} from "./providers/monthlyRevenue.js";
 import { researchAcquisitionEnabled } from "./rollout.js";
 import {
   parseOfficialSecuritiesFirmDirectory,
@@ -256,7 +259,16 @@ function assertMonthlyRevenueSnapshotCompleteness(
       );
     }
   }
-  return currentRecords;
+  const inactiveCutoffByListingId = new Map(listings.flatMap((record) =>
+    record.listing.status === "inactive" && record.listing.inactiveAt
+      ? [[record.listing.id, record.listing.inactiveAt.slice(0, 7)] as const]
+      : []
+  ));
+  const inactiveFinalRecords = records.filter((record) => {
+    const inactiveCutoff = inactiveCutoffByListingId.get(record.listingId);
+    return inactiveCutoff !== undefined && record.revenueMonth <= inactiveCutoff;
+  });
+  return [...currentRecords, ...inactiveFinalRecords];
 }
 
 function shiftIsoMonth(month: string, offset: number): string {
@@ -914,16 +926,27 @@ export async function runOfficialMonthlyRevenueAcquisition(
       knowledgeAt: retrievedAt,
     }),
   ]);
-  const twseIdentitiesByTicker = new Map(
-    twseListings
-      .filter((record) => record.listing.status === "active")
-      .map((record) => [record.listing.ticker, { listingId: record.listing.id, issuerId: record.issuer.id }] as const),
-  );
-  const tpexIdentitiesByTicker = new Map(
-    tpexListings
-      .filter((record) => record.listing.status === "active")
-      .map((record) => [record.listing.ticker, { listingId: record.listing.id, issuerId: record.issuer.id }] as const),
-  );
+  const indexRevenueIdentities = (listings: ResearchIdentityRecord[]) => {
+    const byTicker = new Map<string, RevenueIdentityLookup[]>();
+    for (const record of listings) {
+      const companyNames = [
+        normalizedObservationValue(record, "legal_name", "issuer"),
+        normalizedObservationValue(record, "display_name", "security"),
+      ].filter((name): name is string => name !== undefined);
+      const candidates = byTicker.get(record.listing.ticker) ?? [];
+      candidates.push({
+        listingId: record.listing.id,
+        issuerId: record.issuer.id,
+        listedAt: record.listing.listedAt,
+        ...(record.listing.inactiveAt ? { inactiveAt: record.listing.inactiveAt } : {}),
+        companyNames,
+      });
+      byTicker.set(record.listing.ticker, candidates);
+    }
+    return byTicker;
+  };
+  const twseIdentitiesByTicker = indexRevenueIdentities(twseListings);
+  const tpexIdentitiesByTicker = indexRevenueIdentities(tpexListings);
   const twseRecords = parseOfficialMonthlyRevenueSnapshot(
     twseRevenue.payload,
     { ...twseRevenue.metadata, retrievedAt },

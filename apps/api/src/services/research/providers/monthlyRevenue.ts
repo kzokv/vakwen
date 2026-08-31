@@ -33,18 +33,48 @@ interface SnapshotMetadata {
 export interface RevenueIdentityLookup {
   listingId: string;
   issuerId: string;
+  listedAt: string;
+  inactiveAt?: string;
+  companyNames: readonly string[];
+}
+
+function normalizedCompanyName(value: string): string {
+  return value.replace(/\s+/g, "").trim();
+}
+
+function resolveRevenueIdentity(
+  candidates: readonly RevenueIdentityLookup[],
+  revenueMonth: string,
+  companyName: string,
+): RevenueIdentityLookup | undefined {
+  const applicable = candidates.filter((candidate) =>
+    candidate.listedAt.slice(0, 7) <= revenueMonth
+      && (candidate.inactiveAt === undefined || revenueMonth <= candidate.inactiveAt.slice(0, 7))
+  );
+  if (applicable.length <= 1) return applicable[0];
+
+  const normalizedRowName = normalizedCompanyName(companyName);
+  const nameMatches = applicable.filter((candidate) =>
+    candidate.companyNames.some((name) => normalizedCompanyName(name) === normalizedRowName)
+  );
+  return nameMatches.length === 1 ? nameMatches[0] : undefined;
 }
 
 export function parseOfficialMonthlyRevenueSnapshot(
   rows: unknown,
   metadata: SnapshotMetadata,
   venue: ResearchRevenueListingVenue,
-  identitiesByTicker: ReadonlyMap<string, RevenueIdentityLookup>,
+  identitiesByTicker: ReadonlyMap<string, readonly RevenueIdentityLookup[]>,
 ): ReturnType<typeof canonicalizeOfficialMonthlyRevenueRow>[] {
   const publisherDataset = venue === "TWSE" ? "t187ap05_L" : "mopsfin_t187ap05_O";
   const accessProvider = venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI";
   return z.array(monthlyRevenueRowSchema).parse(rows).flatMap((row) => {
-    const identity = identitiesByTicker.get(row.公司代號.trim());
+    const revenueMonth = parseTaiwanOfficialMonth(row.資料年月);
+    const identity = resolveRevenueIdentity(
+      identitiesByTicker.get(row.公司代號.trim()) ?? [],
+      revenueMonth,
+      row.公司名稱,
+    );
     if (!identity) return [];
     const input: OfficialMonthlyRevenueInput = {
       venue,
@@ -53,7 +83,7 @@ export function parseOfficialMonthlyRevenueSnapshot(
       ticker: row.公司代號.trim(),
       companyName: row.公司名稱,
       industryName: row.產業別,
-      revenueMonth: parseTaiwanOfficialMonth(row.資料年月),
+      revenueMonth,
       rawRevenueMonth: row.資料年月.trim(),
       publishedAt: parseTaiwanOfficialDate(row.出表日期),
       rawPublishedAt: row.出表日期.trim(),
