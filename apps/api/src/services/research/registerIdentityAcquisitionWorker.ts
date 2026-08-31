@@ -8,8 +8,8 @@ export const RESEARCH_IDENTITY_ACQUISITION_QUEUE = "research-identity-acquisitio
 // 18:15 UTC Sunday-Thursday is 02:15 Monday-Friday in Taiwan.
 export const RESEARCH_IDENTITY_ACQUISITION_CRON = "15 18 * * 0-4";
 export const RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE = "research-monthly-revenue-acquisition";
-// 16:15 UTC Monday-Friday is 00:15 Tuesday-Saturday in Taiwan, after each filing day closes.
-export const RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON = "15 16 * * 1-5";
+// 16:15 UTC daily is 00:15 the next day in Taiwan, covering declared weekend-open filing days.
+export const RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON = "15 16 * * *";
 
 interface ResearchIdentityAcquisitionJobData {
   bootstrapMonthlyRevenue?: boolean;

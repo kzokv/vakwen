@@ -43,9 +43,9 @@ function stubActiveTaiwanCalendar(
 describe("official Taiwan identity acquisition", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
 
-  it("scheduled acquisition: UTC crons → run identity on Taiwan weekdays and revenue after each filing day closes", () => {
+  it("scheduled acquisition: UTC crons → run identity on Taiwan weekdays and revenue after every possible filing day closes", () => {
     expect(RESEARCH_IDENTITY_ACQUISITION_CRON).toBe("15 18 * * 0-4");
-    expect(RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON).toBe("15 16 * * 1-5");
+    expect(RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON).toBe("15 16 * * *");
   });
 
   it("worker registration: split identity and revenue schedules → keep startup bootstrap ordered", async () => {
