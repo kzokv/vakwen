@@ -574,6 +574,36 @@ export const RESEARCH_DATASET_IDS = [
   "investor_materials",
 ] as const;
 
+type ResearchIdentityResult = Awaited<ReturnType<typeof getResearchIdentity>>;
+
+async function resolveMonthlyRevenueFreshnessTarget(
+  persistence: Persistence,
+  identity: ResearchIdentityResult,
+) {
+  const freshnessBasis = resolveFreshnessBasis(identity);
+  const uncappedTarget = await latestExpectedRevenueMonth(
+    persistence,
+    identity.context.effectiveAt,
+    identity.context.knowledgeAt,
+    freshnessBasis,
+  );
+  const inactiveAt = identity.identity.listing.status === "inactive"
+    ? identity.identity.listing.inactiveAt
+    : null;
+  const finalApplicableMonth = inactiveAt?.slice(0, 7);
+  return finalApplicableMonth && uncappedTarget.latestExpectedMonth > finalApplicableMonth
+    ? {
+        latestExpectedMonth: finalApplicableMonth,
+        statutoryDueDate: await dueDateForRevenueMonth(
+          persistence,
+          finalApplicableMonth,
+          freshnessBasis,
+          identity.context.knowledgeAt,
+        ),
+      }
+    : uncappedTarget;
+}
+
 async function hasMonthlyRevenueAvailable(
   persistence: Persistence,
   listingId: string,
@@ -660,12 +690,7 @@ export async function getResearchManifest(
           : { id, status: "unavailable" as const, reasonCode: "no_authoritative_price_history" as const };
       }
       if (id === "monthly_revenue") {
-        const freshnessTarget = await latestExpectedRevenueMonth(
-          persistence,
-          identity.context.effectiveAt,
-          identity.context.knowledgeAt,
-          resolveFreshnessBasis(identity),
-        );
+        const freshnessTarget = await resolveMonthlyRevenueFreshnessTarget(persistence, identity);
         return await hasMonthlyRevenueAvailable(
           persistence,
           identity.selector.listingId,
@@ -679,8 +704,6 @@ export async function getResearchManifest(
     })),
   };
 }
-
-type ResearchIdentityResult = Awaited<ReturnType<typeof getResearchIdentity>>;
 
 function priceSeriesCursorBinding(listingId: string, query: ResearchPriceSeriesQuery): string {
   return createHash("sha256")
@@ -1515,28 +1538,7 @@ export async function getMonthlyRevenue(
     history: { limit: 1 },
   });
   const freshnessBasis = resolveFreshnessBasis(identity);
-  const uncappedFreshnessTarget = await latestExpectedRevenueMonth(
-    persistence,
-    query.context.effectiveAt,
-    query.context.knowledgeAt,
-    freshnessBasis,
-  );
-  const inactiveAt = identity.identity.listing.status === "inactive"
-    ? identity.identity.listing.inactiveAt
-    : null;
-  const finalApplicableMonth = inactiveAt?.slice(0, 7);
-  const freshnessTarget = finalApplicableMonth
-    && uncappedFreshnessTarget.latestExpectedMonth > finalApplicableMonth
-    ? {
-        latestExpectedMonth: finalApplicableMonth,
-        statutoryDueDate: await dueDateForRevenueMonth(
-          persistence,
-          finalApplicableMonth,
-          freshnessBasis,
-          query.context.knowledgeAt,
-        ),
-      }
-    : uncappedFreshnessTarget;
+  const freshnessTarget = await resolveMonthlyRevenueFreshnessTarget(persistence, identity);
   const { startMonth, endMonth } = resolveMonthlyRevenueWindow(query, freshnessTarget.latestExpectedMonth);
   const supportStartMonth = metricSupportStartMonth(startMonth);
   const freshnessRecords = resolveLatestMonthlyRevenueRecords(effectiveRevenueRecords(

@@ -124,6 +124,7 @@ export async function buildFocusedMarketResearchReport(
     history: { limit: 1 },
   });
   const provenanceIds = [...new Set([
+    ...identity.identity.provenance.map((item) => item.id),
     ...priceSeries.sessions
       .flatMap((session: ResearchPriceSession) => ("provenance" in session ? [session.provenance.provenanceId] : [])),
     ...priceSeries.metrics.flatMap((metric) => metric.status === "returned" ? metric.provenanceIds : []),
@@ -205,12 +206,25 @@ export async function buildRevenueFocusedResearchReport(
   persistence: Persistence,
   query: ResearchQuery,
 ) {
+  const manifest = await getResearchManifest(persistence, query);
+  const monthlyRevenueDataset = manifest.datasets.find((dataset) => dataset.id === "monthly_revenue")!;
+  if (monthlyRevenueDataset.status !== "available") {
+    throw new ResearchServiceError(
+      "research_dataset_unavailable",
+      "Monthly-revenue research requires available canonical monthly revenue",
+      { datasetId: "monthly_revenue", reasonCode: monthlyRevenueDataset.reasonCode },
+    );
+  }
+  const frozenQuery = {
+    subject: manifest.selector,
+    context: manifest.context,
+  };
   const identity = await getResearchIdentity(persistence, {
-    ...query,
+    ...frozenQuery,
     history: { limit: 1 },
   });
   const monthlyRevenue = await getMonthlyRevenue(persistence, {
-    ...query,
+    ...frozenQuery,
     page: { limit: 24, order: "desc" },
   });
   const latestItem = monthlyRevenue.items[0] ?? null;
@@ -263,7 +277,10 @@ export async function buildRevenueFocusedResearchReport(
               ],
         },
     evidence: {
-      provenanceIds: monthlyRevenue.evidence.provenanceIds,
+      provenanceIds: [...new Set([
+        ...identity.identity.provenance.map((item) => item.id),
+        ...monthlyRevenue.evidence.provenanceIds,
+      ])],
     },
   });
 }

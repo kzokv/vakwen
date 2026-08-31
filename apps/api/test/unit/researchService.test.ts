@@ -16,7 +16,7 @@ function installAuthoritativeCalendarCoverage(
   exceptions: MarketCalendarExceptionInput[] = [],
 ): void {
   vi.spyOn(persistence, "listMarketCalendarHistory").mockImplementation(async (marketCode, calendarYear) =>
-    calendarYear === 2026
+    calendarYear === 2026 || calendarYear === 2024
       ? [{
           versionId: "calendar-tw-2026",
           importOperationId: "calendar-import-tw-2026",
@@ -2050,8 +2050,8 @@ describe("Taiwan research store-only service", () => {
     installAuthoritativeCalendarCoverage(persistence);
     const activeIdentity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
-      snapshotDate: "2026-03-01",
-      retrievedAt: "2026-03-01T02:00:00.000Z",
+      snapshotDate: "2024-03-01",
+      retrievedAt: "2024-03-01T02:00:00.000Z",
       artifact: { contentHash: "sha256:inactive-revenue-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
       row: {
         kind: "company",
@@ -2065,8 +2065,8 @@ describe("Taiwan research store-only service", () => {
     });
     const inactiveIdentity = appendOfficialListingStatusRevision(activeIdentity, {
       status: "inactive",
-      effectiveDate: "2026-03-31",
-      retrievedAt: "2026-04-01T02:00:00.000Z",
+      effectiveDate: "2024-03-31",
+      retrievedAt: "2024-04-01T02:00:00.000Z",
       artifact: {
         contentHash: "sha256:inactive-revenue-delisting",
         sourceUrl: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
@@ -2081,13 +2081,13 @@ describe("Taiwan research store-only service", () => {
       ticker: "1234",
       companyName: "下市測試",
       industryName: "測試業",
-      revenueMonth: "2026-03",
-      rawRevenueMonth: "11503",
-      publishedAt: "2026-04-10",
-      rawPublishedAt: "1150410",
-      retrievedAt: "2026-04-10T02:00:00.000Z",
+      revenueMonth: "2024-03",
+      rawRevenueMonth: "11303",
+      publishedAt: "2024-04-10",
+      rawPublishedAt: "1130410",
+      retrievedAt: "2024-04-10T02:00:00.000Z",
       artifact: {
-        contentHash: "sha256:inactive-revenue-2026-03",
+        contentHash: "sha256:inactive-revenue-2024-03",
         sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
         publisherDataset: "t187ap05_L",
         accessProvider: "TWSE_OPENAPI",
@@ -2105,23 +2105,31 @@ describe("Taiwan research store-only service", () => {
       },
     })]);
 
-    const result = await getMonthlyRevenue(persistence, {
-      subject: { kind: "listing_id", listingId: activeIdentity.listing.id },
+    const query = {
+      subject: { kind: "listing_id" as const, listingId: activeIdentity.listing.id },
       context: {
         knowledgeAt: "2026-08-28T00:00:00.000Z",
         effectiveAt: "2026-08-28T00:00:00.000Z",
-        assessmentMode: "effective",
+        assessmentMode: "effective" as const,
       },
+    };
+    const result = await getMonthlyRevenue(persistence, {
+      ...query,
       page: { limit: 12, order: "desc" },
     });
+    const manifest = await getResearchManifest(persistence, query);
 
     expect(result.freshness).toMatchObject({
       basis: "standard_10th",
-      latestExpectedMonth: "2026-03",
-      statutoryDueDate: "2026-04-10",
+      latestExpectedMonth: "2024-03",
+      statutoryDueDate: "2024-04-10",
       latestDueStatus: "reported",
     });
-    expect(result.window.endMonth).toBe("2026-03");
-    expect(result.items[0]?.revenueMonth).toBe("2026-03");
+    expect(result.window.endMonth).toBe("2024-03");
+    expect(result.items[0]?.revenueMonth).toBe("2024-03");
+    expect(manifest.datasets.find((dataset) => dataset.id === "monthly_revenue")).toEqual({
+      id: "monthly_revenue",
+      status: "available",
+    });
   });
 });

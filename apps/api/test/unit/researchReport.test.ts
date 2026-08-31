@@ -196,6 +196,7 @@ describe("identity-only Taiwan ResearchReport", () => {
       assessmentMode: "effective",
     });
     expect(report.evidence.provenanceIds).toEqual([
+      record.provenance.id,
       priceRecord.provenance.id,
       olderPriceRecord.provenance.id,
     ]);
@@ -350,8 +351,42 @@ describe("identity-only Taiwan ResearchReport", () => {
     expect(researchRevenueFocusedReportSchema.parse(report)).toEqual(report);
     expect(report.profile).toBe("monthly_revenue");
     expect(report.conclusion.status).toBe("supported");
+    expect(report.evidence.provenanceIds).toContain(identity.provenance.id);
+    expect(report.evidence.provenanceIds.length).toBeGreaterThan(1);
     expect(report.conclusion.statement.toLowerCase()).not.toContain("buy");
     expect(report.conclusion.statement.toLowerCase()).not.toContain("target price");
+  });
+
+  it("monthly revenue report: unavailable manifest dataset → reject instead of emitting an empty revenue profile", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:report-revenue-unavailable", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2317",
+        legalName: "鴻海精密工業股份有限公司",
+        displayName: "鴻海",
+        unifiedBusinessNumber: "04541302",
+        industryCode: "31",
+        listedAt: "1991-06-18",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+
+    await expect(buildRevenueFocusedResearchReport(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+    })).rejects.toMatchObject({
+      code: "research_dataset_unavailable",
+      metadata: { datasetId: "monthly_revenue", reasonCode: "not_acquired" },
+    });
   });
 
   it("monthly revenue report: withhold the conclusion when the latest due month is missing → keep the scope descriptive", async () => {

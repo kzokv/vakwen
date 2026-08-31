@@ -4,7 +4,7 @@ Construct one of these canonical shapes from `get_research_manifest` and the rel
 
 ## Identity-only contract
 
-Use this shape when the user asked for identity research only, or when `monthly_revenue` is not available in the manifest.
+Use this shape when the user asked for identity research only, or when the dataset required by the requested path is unavailable in the manifest: `monthly_revenue` for revenue research or `price_series` for settled-market research. Revenue availability must not control a settled-market request, and price availability must not control a revenue request.
 
 ```json
 {
@@ -81,7 +81,7 @@ Use this profile only when the manifest marks `price_series` as `available`. The
     }
   ],
   "evidence": {
-    "provenanceIds": ["each distinct price-series provenance record used by the report"],
+    "provenanceIds": ["each distinct identity and price-series provenance record used by the report"],
     "sessionDates": ["each returned sessionDate in the report"]
   }
 }
