@@ -406,7 +406,7 @@ export const researchPriceSeriesOutputSchema = z.object({
 
 const researchToolErrorOutputShape = {
   code: z.string().regex(
-    /^(?:research_subject_not_found|research_subject_ambiguous|research_cursor_invalid|research_assessment_mode_unsupported|research_dataset_unavailable|research_record_too_large|research_window_invalid|mcp_[a-z0-9_]+)$/,
+    /^(?:research_subject_not_found|research_subject_ambiguous|research_cursor_invalid|research_assessment_mode_unsupported|research_dataset_unavailable|research_calendar_unavailable|research_record_too_large|research_window_invalid|mcp_[a-z0-9_]+)$/,
   ),
   message: z.string().min(1),
   statusCode: z.number().int().min(400).max(499),

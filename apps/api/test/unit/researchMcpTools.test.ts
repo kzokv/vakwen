@@ -59,6 +59,16 @@ describe("Taiwan research MCP tool contracts", () => {
   });
 
   it("monthly revenue output schema: accept wrapped structured results and reject bare payloads", () => {
+    const calendarError = {
+      result: {
+        code: "research_calendar_unavailable",
+        message: "Authoritative Taiwan market calendar is unavailable for 2026",
+        statusCode: 422,
+        metadata: { calendarYear: 2026 },
+      },
+    };
+    expect(researchMonthlyRevenueToolOutputSchema.parse(calendarError)).toEqual(calendarError);
+
     const structured = {
       result: {
         contractVersion: "monthly-revenue/1.0.0",
