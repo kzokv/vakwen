@@ -1199,10 +1199,11 @@ describe("Taiwan research store-only service", () => {
       },
     });
     await persistence.appendResearchIdentityRecords([identity]);
+    let latestFreshnessProvenanceId = "";
     for (const revenueMonth of ["2025-07", "2025-08", "2025-09", "2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"]) {
       const [year, month] = revenueMonth.split("-").map(Number);
       const rocYear = year - 1911;
-      await persistence.appendResearchMonthlyRevenueRecords([canonicalizeOfficialMonthlyRevenueRow({
+      const record = canonicalizeOfficialMonthlyRevenueRow({
         venue: "TWSE",
         listingId: identity.listing.id,
         issuerId: identity.issuer.id,
@@ -1229,9 +1230,11 @@ describe("Taiwan research store-only service", () => {
           currentYearToDateRevenue: String(5000 + month * 100),
           priorYearToDateRevenue: String(4500 + month * 100),
           yearToDateYearOverYearPercent: "11.11",
-          note: revenueMonth === "2026-03" ? "115/3月起加計子公司萊陽, 致營收增加." : "-",
+          note: "合併營收",
         },
-      })]);
+      });
+      if (revenueMonth === "2026-07") latestFreshnessProvenanceId = record.provenance.id;
+      await persistence.appendResearchMonthlyRevenueRecords([record]);
     }
 
     const result = await getMonthlyRevenue(persistence, {
@@ -1293,6 +1296,7 @@ describe("Taiwan research store-only service", () => {
       latestExpectedMonth: "2026-07",
       latestDueStatus: "reported",
     });
+    expect(historicalWindow.evidence.provenanceIds).toContain(latestFreshnessProvenanceId);
   });
 
   it("monthly revenue gates: withhold only the affected derived claims → preserve source facts and read-only behavior", async () => {
@@ -1460,7 +1464,7 @@ describe("Taiwan research store-only service", () => {
     });
   });
 
-  it("monthly revenue comparisons: keep publisher comparison fields as source facts → withhold YoY and YTD derived metrics until canonical support months exist", async () => {
+  it("monthly revenue comparisons: filing basis is unreported → preserve source facts and withhold basis-dependent metrics", async () => {
     const persistence = new MemoryPersistence();
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
@@ -1528,6 +1532,7 @@ describe("Taiwan research store-only service", () => {
 
     expect(result.items).toHaveLength(1);
     expect(result.items[0]).toMatchObject({
+      publicationContext: { basis: "unknown" },
       sourceFacts: {
         publisherComparisons: {
           yearOverYearPercent: { raw: "11.11", normalized: { state: "present", value: "11.11" } },
@@ -1537,10 +1542,10 @@ describe("Taiwan research store-only service", () => {
         },
       },
       derivedMetrics: {
-        yearOverYearPercent: { status: "withheld", reasonCode: "missing_comparable_month" },
-        currentYearToDateRevenue: { status: "withheld", reasonCode: "missing_comparable_month" },
-        priorYearToDateRevenue: { status: "withheld", reasonCode: "missing_comparable_month" },
-        yearToDateYearOverYearPercent: { status: "withheld", reasonCode: "missing_comparable_month" },
+        yearOverYearPercent: { status: "withheld", reasonCode: "unknown_basis" },
+        currentYearToDateRevenue: { status: "withheld", reasonCode: "unknown_basis" },
+        priorYearToDateRevenue: { status: "withheld", reasonCode: "unknown_basis" },
+        yearToDateYearOverYearPercent: { status: "withheld", reasonCode: "unknown_basis" },
       },
     });
   });
@@ -1590,7 +1595,7 @@ describe("Taiwan research store-only service", () => {
         currentYearToDateRevenue: "7000",
         priorYearToDateRevenue: "6300",
         yearToDateYearOverYearPercent: "11.11",
-        note: "-",
+        note: "合併營收",
       },
     }));
     await persistence.appendResearchMonthlyRevenueRecords(records);

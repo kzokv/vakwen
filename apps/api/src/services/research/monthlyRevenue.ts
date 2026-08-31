@@ -142,7 +142,7 @@ function normalizedNumericField(value: string) {
 function detectBasis(note: string): MonthlyRevenueBasis {
   if (/個別/.test(note)) return "individual";
   if (/合併|併入|新增合併個體|合併數/.test(note)) return "consolidated";
-  return "consolidated";
+  return "unknown";
 }
 
 function detectQualifier(note: string): MonthlyRevenueQualifier {

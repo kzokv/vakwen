@@ -458,6 +458,7 @@ const researchMonthlyRevenueMetricSchema = z.discriminatedUnion("status", [
     status: z.literal("withheld"),
     reasonCode: z.enum([
       "unknown_unit",
+      "unknown_basis",
       "missing_comparable_month",
       "basis_change",
       "short_window",

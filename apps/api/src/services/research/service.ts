@@ -253,7 +253,7 @@ function metricAvailable(value: number, lineageMonths: string[]) {
 }
 
 function metricWithheld(
-  reasonCode: "unknown_unit" | "missing_comparable_month" | "basis_change" | "short_window" | "latest_due_gap",
+  reasonCode: "unknown_unit" | "unknown_basis" | "missing_comparable_month" | "basis_change" | "short_window" | "latest_due_gap",
   lineageMonths: string[],
 ) {
   return { status: "withheld" as const, reasonCode, lineageMonths };
@@ -261,9 +261,12 @@ function metricWithheld(
 
 function currentRecordGate(
   current: ResearchMonthlyRevenueRecord,
-): "ok" | "basis_change" | "unknown_unit" {
+): "ok" | "basis_change" | "unknown_unit" | "unknown_basis" {
   if (current.publicationContext.declaredUnit === "UNKNOWN") {
     return "unknown_unit";
+  }
+  if (current.publicationContext.basis === "unknown") {
+    return "unknown_basis";
   }
   return "ok";
 }
@@ -271,7 +274,7 @@ function currentRecordGate(
 function comparable(
   current: ResearchMonthlyRevenueRecord,
   others: ResearchMonthlyRevenueRecord[],
-): "ok" | "basis_change" | "unknown_unit" {
+): "ok" | "basis_change" | "unknown_unit" | "unknown_basis" {
   const currentGate = currentRecordGate(current);
   if (currentGate !== "ok") return currentGate;
   if (current.basisChange.state === "present") {
@@ -279,6 +282,9 @@ function comparable(
   }
   if (others.some((record) => record.publicationContext.declaredUnit === "UNKNOWN")) {
     return "unknown_unit";
+  }
+  if (others.some((record) => record.publicationContext.basis === "unknown")) {
+    return "unknown_basis";
   }
   if (others.some((record) => record.basisChange.state === "present")) {
     return "basis_change";
@@ -1570,9 +1576,12 @@ export async function getMonthlyRevenue(
     ...Object.values(record.derivedMetrics).flatMap((metric) => metric.lineageMonths),
   ]));
   const provenanceIds = [...new Set(
-    latestRecords
-      .filter((record) => evidenceMonths.has(record.revenueMonth))
-      .map((record) => record.provenance.id),
+    [
+      ...latestRecords
+        .filter((record) => evidenceMonths.has(record.revenueMonth))
+        .map((record) => record.provenance.id),
+      ...freshnessRecords.map((record) => record.provenance.id),
+    ],
   )];
   return {
     contractVersion: "monthly-revenue/1.0.0" as const,

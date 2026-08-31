@@ -528,7 +528,7 @@ describe("official Taiwan identity acquisition", () => {
           publishedAt: "2026-08-10",
           rawPublishedAt: "1150810",
           declaredUnit: "TWD_THOUSANDS",
-          basis: "consolidated",
+          basis: "unknown",
           qualifier: "estimated",
         },
         provenance: expect.objectContaining({

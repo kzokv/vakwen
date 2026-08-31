@@ -333,7 +333,7 @@ describe("identity-only Taiwan ResearchReport", () => {
           currentYearToDateRevenue: String(10000 + index * 100),
           priorYearToDateRevenue: String(9000 + index * 100),
           yearToDateYearOverYearPercent: "11.11",
-          note: "-",
+          note: "合併營收",
         },
       })]);
     }
@@ -402,7 +402,7 @@ describe("identity-only Taiwan ResearchReport", () => {
           currentYearToDateRevenue: String(5000 + month * 100),
           priorYearToDateRevenue: String(4500 + month * 100),
           yearToDateYearOverYearPercent: "11.11",
-          note: "-",
+          note: "合併營收",
         },
       })]);
     }
