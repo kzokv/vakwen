@@ -297,7 +297,7 @@ async function expectedMonthlyRevenueMonth(
   if (!dueDateResolved) {
     throw new Error(`Official TW market calendar has no revenue due date after ${rawDueDate}`);
   }
-  return shiftIsoMonth(currentMonth, localDate >= dueDate ? -1 : -2);
+  return shiftIsoMonth(currentMonth, localDate > dueDate ? -1 : -2);
 }
 
 function recordOrder(left: ResearchIdentityRecord, right: ResearchIdentityRecord): number {

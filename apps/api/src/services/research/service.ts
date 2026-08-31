@@ -167,7 +167,7 @@ async function latestExpectedRevenueMonth(
   const candidate = shiftMonth(currentMonth, -1);
   const candidateDueDate = await dueDateForRevenueMonth(persistence, candidate, basis, knowledgeAt);
   const knowledgeDate = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-  if (knowledgeDate >= candidateDueDate) {
+  if (knowledgeDate > candidateDueDate) {
     return { latestExpectedMonth: candidate, statutoryDueDate: candidateDueDate };
   }
   const previous = shiftMonth(candidate, -1);

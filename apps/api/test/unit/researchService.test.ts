@@ -2012,16 +2012,7 @@ describe("Taiwan research store-only service", () => {
       },
     })]);
 
-    const beforeGrace = await getMonthlyRevenue(persistence, {
-      subject: { kind: "listing_id", listingId: baseIdentity.listing.id },
-      context: {
-        knowledgeAt: "2026-08-17T00:00:00.000Z",
-        effectiveAt: "2026-08-17T00:00:00.000Z",
-        assessmentMode: "effective",
-      },
-      page: { limit: 1, order: "desc" },
-    });
-    const afterGrace = await getMonthlyRevenue(persistence, {
+    const onFilingDay = await getMonthlyRevenue(persistence, {
       subject: { kind: "listing_id", listingId: baseIdentity.listing.id },
       context: {
         knowledgeAt: "2026-08-18T00:00:00.000Z",
@@ -2030,14 +2021,23 @@ describe("Taiwan research store-only service", () => {
       },
       page: { limit: 1, order: "desc" },
     });
+    const afterFilingDay = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: baseIdentity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-19T00:00:00.000Z",
+        effectiveAt: "2026-08-19T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      page: { limit: 1, order: "desc" },
+    });
 
-    expect(beforeGrace.freshness).toMatchObject({
+    expect(onFilingDay.freshness).toMatchObject({
       basis: "insurance_15th",
       latestExpectedMonth: "2026-06",
       statutoryDueDate: "2026-07-15",
       latestDueStatus: "reported",
     });
-    expect(afterGrace.freshness).toMatchObject({
+    expect(afterFilingDay.freshness).toMatchObject({
       basis: "insurance_15th",
       latestExpectedMonth: "2026-07",
       statutoryDueDate: "2026-08-18",
