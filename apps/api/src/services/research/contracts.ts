@@ -463,6 +463,7 @@ const researchMonthlyRevenueMetricSchema = z.discriminatedUnion("status", [
       "basis_change",
       "short_window",
       "latest_due_gap",
+      "zero_denominator",
     ]),
     lineageMonths: z.array(isoMonthSchema),
   }).strict(),

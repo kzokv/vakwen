@@ -1537,14 +1537,14 @@ describe("Taiwan research store-only service", () => {
       },
       derivedMetrics: {
         yearOverYearPercent: { status: "withheld", reasonCode: "missing_comparable_month" },
-        rolling3MonthRevenue: { status: "withheld", reasonCode: "short_window" },
+        rolling3MonthRevenue: { status: "withheld", reasonCode: "missing_comparable_month" },
       },
     });
     expect(result.items[1]).toMatchObject({
       revenueMonth: "2026-06",
       derivedMetrics: {
         yearOverYearPercent: { status: "withheld", reasonCode: "unknown_unit" },
-        trailing12MonthRevenue: { status: "withheld", reasonCode: "short_window" },
+        trailing12MonthRevenue: { status: "withheld", reasonCode: "missing_comparable_month" },
       },
     });
   });
@@ -1636,7 +1636,7 @@ describe("Taiwan research store-only service", () => {
     });
   });
 
-  it("monthly revenue evidence: explicit output range → include provenance for canonical support months used by derived metrics", async () => {
+  it("monthly revenue evidence: zero prior-year revenue → withhold the ratio without claiming evidence is missing", async () => {
     const persistence = new MemoryPersistence();
     installAuthoritativeCalendarCoverage(persistence);
     const identity = canonicalizeOfficialIdentityRow({
@@ -1674,7 +1674,7 @@ describe("Taiwan research store-only service", () => {
         accessProvider: "TWSE_OPENAPI",
       },
       source: {
-        currentMonthRevenue: index === 0 ? "900" : "1000",
+        currentMonthRevenue: index === 0 ? "0" : "1000",
         priorMonthRevenue: "890",
         priorYearSameMonthRevenue: "800",
         monthOverMonthPercent: "1.12",
@@ -1698,11 +1698,15 @@ describe("Taiwan research store-only service", () => {
       page: { limit: 1, order: "desc" },
     });
 
-    expect(result.items[0]?.derivedMetrics.yearOverYearPercent).toMatchObject({ status: "available" });
+    expect(result.items[0]?.derivedMetrics.yearOverYearPercent).toMatchObject({
+      status: "withheld",
+      reasonCode: "zero_denominator",
+      lineageMonths: ["2025-07", "2026-07"],
+    });
     expect(result.evidence.provenanceIds).toEqual(records.map((record) => record.provenance.id));
   });
 
-  it("monthly revenue derived windows: distinguish an interior missing canonical month from a genuine early-series short window", async () => {
+  it("monthly revenue derived windows: distinguish a post-listing acquisition gap from a genuine early-series short window", async () => {
     const makeIdentity = (ticker: string, suffix: string, listedAt = "1994-09-05") => canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",
@@ -1765,19 +1769,7 @@ describe("Taiwan research store-only service", () => {
     installAuthoritativeCalendarCoverage(missingComparablePersistence);
     const missingComparableIdentity = makeIdentity("2330", "8");
     await missingComparablePersistence.appendResearchIdentityRecords([missingComparableIdentity]);
-    for (const [index, revenueMonth] of [
-      "2025-07",
-      "2025-08",
-      "2025-09",
-      "2025-10",
-      "2025-11",
-      "2025-12",
-      "2026-01",
-      "2026-03",
-      "2026-04",
-      "2026-06",
-      "2026-07",
-    ].entries()) {
+    for (const [index, revenueMonth] of ["2026-06", "2026-07"].entries()) {
       await appendRevenueMonth(missingComparablePersistence, missingComparableIdentity, revenueMonth, index);
     }
 

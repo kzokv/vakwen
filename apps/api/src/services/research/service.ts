@@ -250,7 +250,7 @@ function metricAvailable(value: number, lineageMonths: string[]) {
 }
 
 function metricWithheld(
-  reasonCode: "unknown_unit" | "unknown_basis" | "missing_comparable_month" | "basis_change" | "short_window" | "latest_due_gap",
+  reasonCode: "unknown_unit" | "unknown_basis" | "missing_comparable_month" | "basis_change" | "short_window" | "latest_due_gap" | "zero_denominator",
   lineageMonths: string[],
 ) {
   return { status: "withheld" as const, reasonCode, lineageMonths };
@@ -295,16 +295,13 @@ function comparable(
 function supportPresenceGate(
   expectedMonths: readonly string[],
   records: readonly ResearchMonthlyRevenueRecord[],
+  listingStartMonth: string,
 ): "ok" | "missing_comparable_month" | "short_window" {
   const availableMonths = new Set(records.map((record) => record.revenueMonth));
   const missingMonths = expectedMonths.filter((month) => !availableMonths.has(month));
   if (missingMonths.length === 0) return "ok";
 
-  const coverageStartMonth = records.reduce<string | null>(
-    (earliest, record) => earliest === null || record.revenueMonth < earliest ? record.revenueMonth : earliest,
-    null,
-  );
-  return coverageStartMonth === null || missingMonths.every((month) => month < coverageStartMonth)
+  return missingMonths.every((month) => month < listingStartMonth)
     ? "short_window"
     : "missing_comparable_month";
 }
@@ -1436,13 +1433,17 @@ function deriveMonthlyRevenueMetrics(
         : previousYearMonth < listingStartMonth ? "short_window" : "missing_comparable_month";
     const yoyCurrent = numericValue(record.sourceFacts.currentMonthRevenue);
     const yoyPrior = previousYear ? numericValue(previousYear.sourceFacts.currentMonthRevenue) : null;
-    const yearOverYearPercent = yoyComparable !== "ok" || yoyCurrent === null || yoyPrior === null || yoyPrior === 0
-      ? metricWithheld(yoyComparable === "ok" ? "missing_comparable_month" : yoyComparable, [previousYearMonth, record.revenueMonth])
-      : metricAvailable(((yoyCurrent - yoyPrior) / yoyPrior) * 100, [previousYearMonth, record.revenueMonth]);
+    const yearOverYearPercent = yoyComparable !== "ok"
+      ? metricWithheld(yoyComparable, [previousYearMonth, record.revenueMonth])
+      : yoyCurrent === null || yoyPrior === null
+        ? metricWithheld("missing_comparable_month", [previousYearMonth, record.revenueMonth])
+        : yoyPrior === 0
+          ? metricWithheld("zero_denominator", [previousYearMonth, record.revenueMonth])
+          : metricAvailable(((yoyCurrent - yoyPrior) / yoyPrior) * 100, [previousYearMonth, record.revenueMonth]);
 
     const rolling3Months = [shiftMonth(record.revenueMonth, -2), shiftMonth(record.revenueMonth, -1), record.revenueMonth];
     const rolling3Records = rolling3Months.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
-    const rolling3Coverage = supportPresenceGate(rolling3Months, supportRecords);
+    const rolling3Coverage = supportPresenceGate(rolling3Months, supportRecords, listingStartMonth);
     const rolling3Comparable = rolling3Coverage === "ok"
       ? comparable(record, rolling3Records)
       : rolling3Coverage;
@@ -1453,7 +1454,7 @@ function deriveMonthlyRevenueMetrics(
 
     const trailing12Months = Array.from({ length: 12 }, (_, index) => shiftMonth(record.revenueMonth, index - 11));
     const trailing12Records = trailing12Months.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
-    const trailing12Coverage = supportPresenceGate(trailing12Months, supportRecords);
+    const trailing12Coverage = supportPresenceGate(trailing12Months, supportRecords, listingStartMonth);
     const trailing12Comparable = trailing12Coverage === "ok"
       ? comparable(record, trailing12Records)
       : trailing12Coverage;
@@ -1464,7 +1465,7 @@ function deriveMonthlyRevenueMetrics(
 
     const currentYearPrefixMonths = Array.from({ length: Number(record.revenueMonth.slice(5, 7)) }, (_, index) => `${record.revenueMonth.slice(0, 4)}-${String(index + 1).padStart(2, "0")}`);
     const currentYearRecords = currentYearPrefixMonths.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
-    const currentYtdCoverage = supportPresenceGate(currentYearPrefixMonths, supportRecords);
+    const currentYtdCoverage = supportPresenceGate(currentYearPrefixMonths, supportRecords, listingStartMonth);
     const currentYtdComparable = currentRecordGate(record) !== "ok"
       ? currentRecordGate(record)
       : currentYtdCoverage === "ok" ? comparable(record, currentYearRecords) : currentYtdCoverage;
@@ -1475,7 +1476,7 @@ function deriveMonthlyRevenueMetrics(
 
     const previousYearPrefixMonths = currentYearPrefixMonths.map((month) => shiftMonth(month, -12));
     const previousYearRecords = previousYearPrefixMonths.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
-    const previousYtdCoverage = supportPresenceGate(previousYearPrefixMonths, supportRecords);
+    const previousYtdCoverage = supportPresenceGate(previousYearPrefixMonths, supportRecords, listingStartMonth);
     const previousYtdComparable = currentRecordGate(record) !== "ok"
       ? currentRecordGate(record)
       : previousYtdCoverage === "ok" ? comparable(record, previousYearRecords) : previousYtdCoverage;
@@ -1496,16 +1497,17 @@ function deriveMonthlyRevenueMetrics(
             ? currentYearToDateRevenue.reasonCode
             : priorYearToDateRevenue.status === "withheld"
               ? priorYearToDateRevenue.reasonCode
-              : "missing_comparable_month",
+              : "zero_denominator",
           [...previousYearPrefixMonths, ...currentYearPrefixMonths],
         );
 
-    const seasonalityShareOfTrailing12MonthRevenue = trailing12MonthRevenue.status === "available" && yoyCurrent !== null && Number(trailing12MonthRevenue.value) !== 0
-      ? metricAvailable((yoyCurrent / Number(trailing12MonthRevenue.value)) * 100, trailing12Months)
-      : metricWithheld(
-          trailing12MonthRevenue.status === "withheld" ? trailing12MonthRevenue.reasonCode : "short_window",
-          trailing12Months,
-        );
+    const seasonalityShareOfTrailing12MonthRevenue = trailing12MonthRevenue.status === "withheld"
+      ? metricWithheld(trailing12MonthRevenue.reasonCode, trailing12Months)
+      : yoyCurrent === null
+        ? metricWithheld("missing_comparable_month", trailing12Months)
+        : Number(trailing12MonthRevenue.value) === 0
+          ? metricWithheld("zero_denominator", trailing12Months)
+          : metricAvailable((yoyCurrent / Number(trailing12MonthRevenue.value)) * 100, trailing12Months);
 
     return {
       ...record,
