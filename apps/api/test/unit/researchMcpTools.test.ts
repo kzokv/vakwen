@@ -83,6 +83,11 @@ describe("Taiwan research MCP tool contracts", () => {
           statutoryDueDate: "2026-08-10",
           latestDueStatus: "reported",
         },
+        conclusion: {
+          status: "withheld",
+          statement: "Monthly revenue conclusion withheld because the current window does not pass the required comparability gates.",
+          reasonCodes: ["not_acquired"],
+        },
         items: [],
         page: { nextCursor: null },
         evidence: { provenanceIds: [] },
@@ -116,6 +121,11 @@ describe("Taiwan research MCP tool contracts", () => {
           latestExpectedMonth: "2026-07",
           statutoryDueDate: "2026-08-10",
           latestDueStatus: "missing",
+        },
+        conclusion: {
+          status: "withheld",
+          statement: "Monthly revenue conclusion withheld because the latest due month 2026-07 is not yet present in the canonical store.",
+          reasonCodes: ["latest_due_gap"],
         },
         items: [{
           revenueMonth: "2026-07",
