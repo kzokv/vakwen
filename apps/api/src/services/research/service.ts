@@ -1515,12 +1515,28 @@ export async function getMonthlyRevenue(
     history: { limit: 1 },
   });
   const freshnessBasis = resolveFreshnessBasis(identity);
-  const freshnessTarget = await latestExpectedRevenueMonth(
+  const uncappedFreshnessTarget = await latestExpectedRevenueMonth(
     persistence,
     query.context.effectiveAt,
     query.context.knowledgeAt,
     freshnessBasis,
   );
+  const inactiveAt = identity.identity.listing.status === "inactive"
+    ? identity.identity.listing.inactiveAt
+    : null;
+  const finalApplicableMonth = inactiveAt?.slice(0, 7);
+  const freshnessTarget = finalApplicableMonth
+    && uncappedFreshnessTarget.latestExpectedMonth > finalApplicableMonth
+    ? {
+        latestExpectedMonth: finalApplicableMonth,
+        statutoryDueDate: await dueDateForRevenueMonth(
+          persistence,
+          finalApplicableMonth,
+          freshnessBasis,
+          query.context.knowledgeAt,
+        ),
+      }
+    : uncappedFreshnessTarget;
   const { startMonth, endMonth } = resolveMonthlyRevenueWindow(query, freshnessTarget.latestExpectedMonth);
   const supportStartMonth = metricSupportStartMonth(startMonth);
   const freshnessRecords = resolveLatestMonthlyRevenueRecords(effectiveRevenueRecords(

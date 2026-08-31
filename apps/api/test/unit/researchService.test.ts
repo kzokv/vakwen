@@ -2044,4 +2044,84 @@ describe("Taiwan research store-only service", () => {
       latestDueStatus: "missing",
     });
   });
+
+  it("monthly revenue freshness: inactive listing queried later → cap the target at its final applicable filing month", async () => {
+    const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
+    const activeIdentity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-03-01",
+      retrievedAt: "2026-03-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:inactive-revenue-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "1234",
+        legalName: "下市測試股份有限公司",
+        displayName: "下市測試",
+        unifiedBusinessNumber: "87654321",
+        industryCode: "24",
+        listedAt: "2001-01-01",
+      },
+    });
+    const inactiveIdentity = appendOfficialListingStatusRevision(activeIdentity, {
+      status: "inactive",
+      effectiveDate: "2026-03-31",
+      retrievedAt: "2026-04-01T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:inactive-revenue-delisting",
+        sourceUrl: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
+        publisherDataset: "company/suspendListingCsvAndHtml",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([activeIdentity, inactiveIdentity]);
+    await persistence.appendResearchMonthlyRevenueRecords([canonicalizeOfficialMonthlyRevenueRow({
+      venue: "TWSE",
+      listingId: activeIdentity.listing.id,
+      issuerId: activeIdentity.issuer.id,
+      ticker: "1234",
+      companyName: "下市測試",
+      industryName: "測試業",
+      revenueMonth: "2026-03",
+      rawRevenueMonth: "11503",
+      publishedAt: "2026-04-10",
+      rawPublishedAt: "1150410",
+      retrievedAt: "2026-04-10T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:inactive-revenue-2026-03",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+        publisherDataset: "t187ap05_L",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      source: {
+        currentMonthRevenue: "100",
+        priorMonthRevenue: "90",
+        priorYearSameMonthRevenue: "80",
+        monthOverMonthPercent: "11.11",
+        yearOverYearPercent: "25",
+        currentYearToDateRevenue: "270",
+        priorYearToDateRevenue: "240",
+        yearToDateYearOverYearPercent: "12.5",
+        note: "-",
+      },
+    })]);
+
+    const result = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: activeIdentity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      page: { limit: 12, order: "desc" },
+    });
+
+    expect(result.freshness).toMatchObject({
+      basis: "standard_10th",
+      latestExpectedMonth: "2026-03",
+      statutoryDueDate: "2026-04-10",
+      latestDueStatus: "reported",
+    });
+    expect(result.window.endMonth).toBe("2026-03");
+    expect(result.items[0]?.revenueMonth).toBe("2026-03");
+  });
 });
