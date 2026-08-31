@@ -7,6 +7,7 @@ import type {
   ResearchPriceSeriesOutput,
   ResearchQuery,
   ResearchPriceSession,
+  ResearchMonthlyRevenueQuery,
   ResearchTemporalContext,
 } from "./contracts.js";
 import {
@@ -22,6 +23,11 @@ import {
   type CanonicalPriceObservation,
   type ResearchPriceRecord,
 } from "./price.js";
+import {
+  firstMonthForTrailingWindow,
+  resolveLatestMonthlyRevenueRecords,
+  type ResearchMonthlyRevenueRecord,
+} from "./monthlyRevenue.js";
 import { researchSkillExposureEnabled } from "./rollout.js";
 
 export class ResearchServiceError extends Error {
@@ -34,7 +40,8 @@ export class ResearchServiceError extends Error {
       | "research_cursor_invalid"
       | "research_assessment_mode_unsupported"
       | "research_dataset_unavailable"
-      | "research_record_too_large",
+      | "research_record_too_large"
+      | "research_window_invalid",
     message: string,
     readonly metadata?: Record<string, unknown>,
   ) {
@@ -57,6 +64,234 @@ const RESEARCH_PRICE_FRESHNESS_POLICY_VERSION = "taiwan-authoritative-freshness/
 const RESEARCH_PRICE_METRIC_POLICY_VERSION = "research-price-metrics/1.0.0";
 const RESEARCH_PRICE_RUNTIME_POLICY_VERSION = "canonical-store-only/1.0.0";
 const METRIC_LINEAGE_MAX_RETURNED_OBSERVATIONS = 64;
+const DEFAULT_MONTHLY_REVENUE_MONTHS = 24;
+const MAX_MONTHLY_REVENUE_WINDOW_MONTHS = 120;
+
+const taiwanLocalDateFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Taipei",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function taiwanLocalDateParts(isoDateTime: string) {
+  const instant = new Date(isoDateTime);
+  if (Number.isNaN(instant.valueOf())) {
+    throw new Error(`Invalid Taiwan local timestamp: ${isoDateTime}`);
+  }
+  const parts = Object.fromEntries(
+    taiwanLocalDateFormatter.formatToParts(instant).map(({ type, value }) => [type, value]),
+  );
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+  };
+}
+
+function formatMonth(year: number, month: number): string {
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`;
+}
+
+function monthYear(month: string): number {
+  return Number(month.slice(0, 4));
+}
+
+function shiftMonth(month: string, delta: number): string {
+  const [yearPart, monthPart] = month.split("-");
+  const absolute = (Number(yearPart) * 12) + Number(monthPart) - 1 + delta;
+  return formatMonth(Math.floor(absolute / 12), (absolute % 12) + 1);
+}
+
+function monthsInclusive(startMonth: string, endMonth: string): number {
+  const [startYear, startMon] = startMonth.split("-").map(Number);
+  const [endYear, endMon] = endMonth.split("-").map(Number);
+  return ((endYear * 12) + endMon) - ((startYear * 12) + startMon) + 1;
+}
+
+function isWeekendIsoDate(date: string): boolean {
+  const day = new Date(`${date}T00:00:00.000Z`).getUTCDay();
+  return day === 0 || day === 6;
+}
+
+function nextTaiwanBusinessDay(date: string): string {
+  let cursor = date;
+  while (isWeekendIsoDate(cursor)) {
+    const next = new Date(`${cursor}T00:00:00.000Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    cursor = next.toISOString().slice(0, 10);
+  }
+  return cursor;
+}
+
+function dueDateForRevenueMonth(month: string, basis: "standard_10th" | "insurance_15th"): string {
+  const [yearPart, monthPart] = month.split("-").map(Number);
+  const dueMonth = monthPart === 12 ? 1 : monthPart + 1;
+  const dueYear = monthPart === 12 ? yearPart + 1 : yearPart;
+  const dueDay = basis === "insurance_15th" ? 15 : 10;
+  return nextTaiwanBusinessDay(`${String(dueYear).padStart(4, "0")}-${String(dueMonth).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`);
+}
+
+function resolveFreshnessBasis(identity: Awaited<ReturnType<typeof getResearchIdentity>>): "standard_10th" | "insurance_15th" {
+  return identity.identity.issuer.classification === "financial_institution"
+    ? "insurance_15th"
+    : "standard_10th";
+}
+
+function latestExpectedRevenueMonth(
+  effectiveAt: string,
+  basis: "standard_10th" | "insurance_15th",
+): { latestExpectedMonth: string; statutoryDueDate: string } {
+  const { year, month, day } = taiwanLocalDateParts(effectiveAt);
+  const currentMonth = formatMonth(year, month);
+  const candidate = shiftMonth(currentMonth, -1);
+  const candidateDueDate = dueDateForRevenueMonth(candidate, basis);
+  const knowledgeDate = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  if (knowledgeDate >= candidateDueDate) {
+    return { latestExpectedMonth: candidate, statutoryDueDate: candidateDueDate };
+  }
+  const previous = shiftMonth(candidate, -1);
+  return { latestExpectedMonth: previous, statutoryDueDate: dueDateForRevenueMonth(previous, basis) };
+}
+
+function revenueCursorBinding(
+  listingId: string,
+  context: ResearchTemporalContext,
+  startMonth: string,
+  endMonth: string,
+  order: "asc" | "desc",
+): string {
+  return createHash("sha256")
+    .update([
+      listingId,
+      context.effectiveAt,
+      context.knowledgeAt,
+      context.assessmentMode,
+      context.policySetVersion ?? "",
+      startMonth,
+      endMonth,
+      order,
+    ].join("\u001f"))
+    .digest("base64url")
+    .slice(0, 32);
+}
+
+function decodeRevenueCursor(
+  cursor: string | undefined,
+  listingId: string,
+  context: ResearchTemporalContext,
+  startMonth: string,
+  endMonth: string,
+  order: "asc" | "desc",
+): string | undefined {
+  if (!cursor) return undefined;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new ResearchServiceError("research_cursor_invalid", "The monthly revenue cursor is invalid");
+  }
+  if (
+    !decoded
+    || typeof decoded !== "object"
+    || Array.isArray(decoded)
+    || (decoded as { version?: unknown }).version !== 1
+    || (decoded as { binding?: unknown }).binding !== revenueCursorBinding(listingId, context, startMonth, endMonth, order)
+    || typeof (decoded as { revenueMonth?: unknown }).revenueMonth !== "string"
+  ) {
+    throw new ResearchServiceError("research_cursor_invalid", "The monthly revenue cursor is invalid");
+  }
+  return (decoded as { revenueMonth: string }).revenueMonth;
+}
+
+function encodeRevenueCursor(
+  revenueMonth: string,
+  listingId: string,
+  context: ResearchTemporalContext,
+  startMonth: string,
+  endMonth: string,
+  order: "asc" | "desc",
+): string {
+  return Buffer.from(JSON.stringify({
+    version: 1,
+    revenueMonth,
+    binding: revenueCursorBinding(listingId, context, startMonth, endMonth, order),
+  }), "utf8").toString("base64url");
+}
+
+function numericValue(
+  metric: { normalized: { state: "present"; value: string } | { state: "missing"; reason: "unparseable" } },
+): number | null {
+  return metric.normalized.state === "present" ? Number(metric.normalized.value) : null;
+}
+
+function metricAvailable(value: number, lineageMonths: string[]) {
+  return { status: "available" as const, value: value.toFixed(6).replace(/\.?0+$/, ""), lineageMonths };
+}
+
+function metricWithheld(
+  reasonCode: "unknown_unit" | "missing_comparable_month" | "basis_change" | "short_window" | "latest_due_gap",
+  lineageMonths: string[],
+) {
+  return { status: "withheld" as const, reasonCode, lineageMonths };
+}
+
+function currentRecordGate(
+  current: ResearchMonthlyRevenueRecord,
+): "ok" | "basis_change" | "unknown_unit" {
+  if (current.publicationContext.declaredUnit === "UNKNOWN") {
+    return "unknown_unit";
+  }
+  return "ok";
+}
+
+function comparable(
+  current: ResearchMonthlyRevenueRecord,
+  others: ResearchMonthlyRevenueRecord[],
+): "ok" | "basis_change" | "unknown_unit" {
+  const currentGate = currentRecordGate(current);
+  if (currentGate !== "ok") return currentGate;
+  if (current.basisChange.state === "present") {
+    return "basis_change";
+  }
+  if (others.some((record) => record.publicationContext.declaredUnit === "UNKNOWN")) {
+    return "unknown_unit";
+  }
+  if (others.some((record) => record.basisChange.state === "present")) {
+    return "basis_change";
+  }
+  if (others.some((record) => record.publicationContext.basis !== current.publicationContext.basis)) {
+    return "basis_change";
+  }
+  return "ok";
+}
+
+function supportPresenceGate(
+  expectedMonths: readonly string[],
+  records: readonly ResearchMonthlyRevenueRecord[],
+): "ok" | "missing_comparable_month" | "short_window" {
+  const availableMonths = new Set(records.map((record) => record.revenueMonth));
+  const missingIndexes = expectedMonths
+    .map((month, index) => availableMonths.has(month) ? null : index)
+    .filter((index): index is number => index !== null);
+  if (missingIndexes.length === 0) return "ok";
+
+  const firstPresentIndex = expectedMonths.findIndex((month) => availableMonths.has(month));
+  if (firstPresentIndex === -1) return "short_window";
+
+  const missingOnlyAtStart = missingIndexes.every((index) => index < firstPresentIndex);
+  return missingOnlyAtStart ? "short_window" : "missing_comparable_month";
+}
+
+function sumCurrentRevenue(records: ResearchMonthlyRevenueRecord[]): number | null {
+  let total = 0;
+  for (const record of records) {
+    const value = numericValue(record.sourceFacts.currentMonthRevenue);
+    if (value === null) return null;
+    total += value;
+  }
+  return total;
+}
 
 function persistenceSubject(query: ResearchIdentityQuery) {
   return query.subject.kind === "listing_id"
@@ -309,6 +544,21 @@ export const RESEARCH_DATASET_IDS = [
   "investor_materials",
 ] as const;
 
+async function hasMonthlyRevenueAvailable(
+  persistence: Persistence,
+  listingId: string,
+  context: ResearchTemporalContext,
+): Promise<boolean> {
+  const records = await persistence.listLatestResearchMonthlyRevenueRecords({
+    subject: { kind: "listing_id", listingId },
+    effectiveAt: context.effectiveAt,
+    knowledgeAt: context.knowledgeAt,
+    startMonth: firstMonthForTrailingWindow(context.effectiveAt.slice(0, 7), 2),
+    endMonth: context.effectiveAt.slice(0, 7),
+  });
+  return records.length > 0;
+}
+
 export async function getResearchManifest(
   persistence: Persistence,
   query: ResearchQuery,
@@ -349,7 +599,7 @@ export async function getResearchManifest(
     orchestration: {
       skillExposure: researchSkillExposureEnabled() ? "enabled" as const : "disabled" as const,
     },
-    datasets: RESEARCH_DATASET_IDS.map((id) => {
+    datasets: await Promise.all(RESEARCH_DATASET_IDS.map(async (id) => {
       if (id === "research_identity") return { id, status: "available" as const };
       if (id === "price_series") {
         if (identity.identity.eligibility.profile === "identity_only") {
@@ -378,8 +628,13 @@ export async function getResearchManifest(
             }
           : { id, status: "unavailable" as const, reasonCode: "no_authoritative_price_history" as const };
       }
+      if (id === "monthly_revenue") {
+        return await hasMonthlyRevenueAvailable(persistence, identity.selector.listingId, identity.context)
+          ? { id, status: "available" as const }
+          : { id, status: "unavailable" as const, reasonCode: "not_acquired" as const };
+      }
       return { id, status: "unavailable" as const, reasonCode: "identity_only_release" as const };
-    }),
+    })),
   };
 }
 
@@ -1069,5 +1324,241 @@ export async function getPriceSeries(
       truncatedByBudget,
     },
     sessions: pageSessions,
+  };
+}
+
+function resolveMonthlyRevenueWindow(
+  query: ResearchMonthlyRevenueQuery,
+  latestExpectedMonth: string,
+) {
+  const explicitStart = query.range?.startMonth;
+  const explicitEnd = query.range?.endMonth;
+  const endMonth = explicitEnd ?? latestExpectedMonth;
+  const startMonth = explicitStart ?? firstMonthForTrailingWindow(endMonth, DEFAULT_MONTHLY_REVENUE_MONTHS);
+  if (startMonth > endMonth) {
+    throw new ResearchServiceError("research_window_invalid", "The monthly revenue range is invalid");
+  }
+  if (monthsInclusive(startMonth, endMonth) > MAX_MONTHLY_REVENUE_WINDOW_MONTHS) {
+    throw new ResearchServiceError(
+      "research_window_invalid",
+      `The monthly revenue range must not exceed ${MAX_MONTHLY_REVENUE_WINDOW_MONTHS} months`,
+    );
+  }
+  return { startMonth, endMonth };
+}
+
+function metricSupportStartMonth(startMonth: string): string {
+  return `${String(monthYear(startMonth) - 1).padStart(4, "0")}-01`;
+}
+
+function taiwanLocalIsoDate(isoDateTime: string): string {
+  const { year, month, day } = taiwanLocalDateParts(isoDateTime);
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function deriveMonthlyRevenueMetrics(
+  outputRecords: ResearchMonthlyRevenueRecord[],
+  supportRecords: readonly ResearchMonthlyRevenueRecord[],
+) {
+  const byMonth = new Map(supportRecords.map((record) => [record.revenueMonth, record]));
+  return outputRecords.map((record) => {
+    const previousYearMonth = shiftMonth(record.revenueMonth, -12);
+    const previousYear = byMonth.get(previousYearMonth);
+    const yoyComparable = currentRecordGate(record) !== "ok"
+      ? currentRecordGate(record)
+      : previousYear ? comparable(record, [previousYear]) : "missing_comparable_month";
+    const yoyCurrent = numericValue(record.sourceFacts.currentMonthRevenue);
+    const yoyPrior = previousYear ? numericValue(previousYear.sourceFacts.currentMonthRevenue) : null;
+    const yearOverYearPercent = yoyComparable !== "ok" || yoyCurrent === null || yoyPrior === null || yoyPrior === 0
+      ? metricWithheld(yoyComparable === "ok" ? "missing_comparable_month" : yoyComparable, [previousYearMonth, record.revenueMonth])
+      : metricAvailable(((yoyCurrent - yoyPrior) / yoyPrior) * 100, [previousYearMonth, record.revenueMonth]);
+
+    const rolling3Months = [shiftMonth(record.revenueMonth, -2), shiftMonth(record.revenueMonth, -1), record.revenueMonth];
+    const rolling3Records = rolling3Months.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
+    const rolling3Coverage = supportPresenceGate(rolling3Months, rolling3Records);
+    const rolling3Comparable = rolling3Coverage === "ok"
+      ? comparable(record, rolling3Records)
+      : rolling3Coverage;
+    const rolling3Sum = rolling3Records.length === 3 ? sumCurrentRevenue(rolling3Records) : null;
+    const rolling3MonthRevenue = rolling3Comparable !== "ok" || rolling3Sum === null
+      ? metricWithheld(rolling3Comparable === "ok" ? "short_window" : rolling3Comparable, rolling3Months)
+      : metricAvailable(rolling3Sum, rolling3Months);
+
+    const trailing12Months = Array.from({ length: 12 }, (_, index) => shiftMonth(record.revenueMonth, index - 11));
+    const trailing12Records = trailing12Months.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
+    const trailing12Coverage = supportPresenceGate(trailing12Months, trailing12Records);
+    const trailing12Comparable = trailing12Coverage === "ok"
+      ? comparable(record, trailing12Records)
+      : trailing12Coverage;
+    const trailing12Sum = trailing12Records.length === 12 ? sumCurrentRevenue(trailing12Records) : null;
+    const trailing12MonthRevenue = trailing12Comparable !== "ok" || trailing12Sum === null
+      ? metricWithheld(trailing12Comparable === "ok" ? "short_window" : trailing12Comparable, trailing12Months)
+      : metricAvailable(trailing12Sum, trailing12Months);
+
+    const currentYearPrefixMonths = Array.from({ length: Number(record.revenueMonth.slice(5, 7)) }, (_, index) => `${record.revenueMonth.slice(0, 4)}-${String(index + 1).padStart(2, "0")}`);
+    const currentYearRecords = currentYearPrefixMonths.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
+    const currentYtdCoverage = supportPresenceGate(currentYearPrefixMonths, currentYearRecords);
+    const currentYtdComparable = currentRecordGate(record) !== "ok"
+      ? currentRecordGate(record)
+      : currentYtdCoverage === "ok" ? comparable(record, currentYearRecords) : "missing_comparable_month";
+    const currentYtdSum = currentYearRecords.length === currentYearPrefixMonths.length ? sumCurrentRevenue(currentYearRecords) : null;
+    const currentYearToDateRevenue = currentYtdComparable !== "ok" || currentYtdSum === null
+      ? metricWithheld(currentYtdComparable === "ok" ? "missing_comparable_month" : currentYtdComparable, currentYearPrefixMonths)
+      : metricAvailable(currentYtdSum, currentYearPrefixMonths);
+
+    const previousYearPrefixMonths = currentYearPrefixMonths.map((month) => shiftMonth(month, -12));
+    const previousYearRecords = previousYearPrefixMonths.map((month) => byMonth.get(month)).filter((item): item is ResearchMonthlyRevenueRecord => item !== undefined);
+    const previousYtdCoverage = supportPresenceGate(previousYearPrefixMonths, previousYearRecords);
+    const previousYtdComparable = currentRecordGate(record) !== "ok"
+      ? currentRecordGate(record)
+      : previousYtdCoverage === "ok" ? comparable(record, previousYearRecords) : "missing_comparable_month";
+    const previousYtdSum = previousYearRecords.length === previousYearPrefixMonths.length ? sumCurrentRevenue(previousYearRecords) : null;
+    const priorYearToDateRevenue = previousYtdComparable !== "ok" || previousYtdSum === null
+      ? metricWithheld(previousYtdComparable === "ok" ? "missing_comparable_month" : previousYtdComparable, previousYearPrefixMonths)
+      : metricAvailable(previousYtdSum, previousYearPrefixMonths);
+
+    const yearToDateYearOverYearPercent = currentYearToDateRevenue.status === "available"
+      && priorYearToDateRevenue.status === "available"
+      && Number(priorYearToDateRevenue.value) !== 0
+      ? metricAvailable(
+          ((Number(currentYearToDateRevenue.value) - Number(priorYearToDateRevenue.value)) / Number(priorYearToDateRevenue.value)) * 100,
+          [...previousYearPrefixMonths, ...currentYearPrefixMonths],
+        )
+      : metricWithheld(
+          currentYearToDateRevenue.status === "withheld"
+            ? currentYearToDateRevenue.reasonCode
+            : priorYearToDateRevenue.status === "withheld"
+              ? priorYearToDateRevenue.reasonCode
+              : "missing_comparable_month",
+          [...previousYearPrefixMonths, ...currentYearPrefixMonths],
+        );
+
+    const seasonalityShareOfTrailing12MonthRevenue = trailing12MonthRevenue.status === "available" && yoyCurrent !== null && Number(trailing12MonthRevenue.value) !== 0
+      ? metricAvailable((yoyCurrent / Number(trailing12MonthRevenue.value)) * 100, trailing12Months)
+      : metricWithheld(
+          trailing12MonthRevenue.status === "withheld" ? trailing12MonthRevenue.reasonCode : "short_window",
+          trailing12Months,
+        );
+
+    return {
+      ...record,
+      derivedMetrics: {
+        yearOverYearPercent,
+        rolling3MonthRevenue,
+        trailing12MonthRevenue,
+        currentYearToDateRevenue,
+        priorYearToDateRevenue,
+        yearToDateYearOverYearPercent,
+        seasonalityShareOfTrailing12MonthRevenue,
+      },
+    };
+  });
+}
+
+function effectiveRevenueRecords(
+  records: readonly ResearchMonthlyRevenueRecord[],
+  effectiveAt: string,
+) {
+  const effectiveDate = taiwanLocalIsoDate(effectiveAt);
+  return records.filter((record) => record.publicationContext.publishedAt <= effectiveDate);
+}
+
+export async function getMonthlyRevenue(
+  persistence: Persistence,
+  query: ResearchMonthlyRevenueQuery,
+) {
+  const identity = await getResearchIdentity(persistence, {
+    subject: query.subject,
+    context: query.context,
+    history: { limit: 1 },
+  });
+  const freshnessBasis = resolveFreshnessBasis(identity);
+  const freshnessTarget = latestExpectedRevenueMonth(query.context.effectiveAt, freshnessBasis);
+  const { startMonth, endMonth } = resolveMonthlyRevenueWindow(query, freshnessTarget.latestExpectedMonth);
+  const supportStartMonth = metricSupportStartMonth(startMonth);
+  const latestRecords = resolveLatestMonthlyRevenueRecords(effectiveRevenueRecords(
+    await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: identity.selector.listingId },
+      effectiveAt: query.context.effectiveAt,
+      knowledgeAt: query.context.knowledgeAt,
+      startMonth: supportStartMonth,
+      endMonth,
+    }),
+    query.context.effectiveAt,
+  ));
+  const windowRecords = latestRecords.filter((record) =>
+    record.revenueMonth >= startMonth && record.revenueMonth <= endMonth
+  );
+  const derived = deriveMonthlyRevenueMetrics(windowRecords, latestRecords);
+  const ordered = query.page.order === "asc" ? derived : [...derived].reverse();
+  const cursorMonth = decodeRevenueCursor(
+    query.page.cursor,
+    identity.selector.listingId,
+    query.context,
+    startMonth,
+    endMonth,
+    query.page.order,
+  );
+  const filtered = cursorMonth === undefined
+    ? ordered
+    : ordered.filter((record) => query.page.order === "asc"
+      ? record.revenueMonth > cursorMonth
+      : record.revenueMonth < cursorMonth);
+  const pageItems = filtered.slice(0, query.page.limit);
+  const nextCursor = filtered.length > query.page.limit
+    ? encodeRevenueCursor(
+        pageItems.at(-1)!.revenueMonth,
+        identity.selector.listingId,
+        query.context,
+        startMonth,
+        endMonth,
+        query.page.order,
+      )
+    : null;
+  const provenanceIds = [...new Set(windowRecords.map((record) => record.provenance.id))];
+  return {
+    contractVersion: "monthly-revenue/1.0.0" as const,
+    selector: identity.selector,
+    context: identity.context,
+    window: {
+      startMonth,
+      endMonth,
+      requestedOrder: query.page.order,
+      pageLimit: query.page.limit,
+      defaultMonths: 24 as const,
+      maxMonths: 120 as const,
+    },
+    freshness: {
+      basis: freshnessBasis,
+      gracePolicy: "next_taiwan_business_day" as const,
+      latestExpectedMonth: freshnessTarget.latestExpectedMonth,
+      statutoryDueDate: freshnessTarget.statutoryDueDate,
+      latestDueStatus: latestRecords.some((record) => record.revenueMonth === freshnessTarget.latestExpectedMonth)
+        ? "reported" as const
+        : "missing" as const,
+    },
+    items: pageItems.map((record) => ({
+      revenueMonth: record.revenueMonth,
+      publicationContext: record.publicationContext,
+      sourceFacts: {
+        companyName: record.sourceFacts.companyName,
+        industryName: record.sourceFacts.industryName,
+        currentMonthRevenue: record.sourceFacts.currentMonthRevenue.normalized,
+        priorMonthRevenue: record.sourceFacts.priorMonthRevenue.normalized,
+        priorYearSameMonthRevenue: record.sourceFacts.priorYearSameMonthRevenue.normalized,
+        publisherComparisons: {
+          monthOverMonthPercent: record.sourceFacts.publisherComparisons.monthOverMonthPercent.normalized,
+          yearOverYearPercent: record.sourceFacts.publisherComparisons.yearOverYearPercent.normalized,
+          currentYearToDateRevenue: record.sourceFacts.publisherComparisons.currentYearToDateRevenue.normalized,
+          priorYearToDateRevenue: record.sourceFacts.publisherComparisons.priorYearToDateRevenue.normalized,
+          yearToDateYearOverYearPercent: record.sourceFacts.publisherComparisons.yearToDateYearOverYearPercent.normalized,
+        },
+        note: record.sourceFacts.note,
+      },
+      basisChange: record.basisChange,
+      derivedMetrics: record.derivedMetrics,
+    })),
+    page: { nextCursor },
+    evidence: { provenanceIds },
   };
 }

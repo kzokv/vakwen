@@ -13,6 +13,8 @@ import { bookedChargeFieldSchema } from "../validation/bookedCharge.js";
 import {
   researchIdentityToolOutputSchema,
   researchIdentityQuerySchema,
+  researchMonthlyRevenueQuerySchema,
+  researchMonthlyRevenueToolOutputSchema,
   researchManifestToolOutputSchema,
   researchPriceSeriesQuerySchema,
   researchPriceSeriesToolOutputSchema,
@@ -274,6 +276,13 @@ const toolDefinitions = {
     description: "Return canonical Taiwan authoritative price-series sessions, freshness, basis policy, and derived metrics for one immutable listing and fixed temporal context. Reads the canonical store only.",
     inputSchema: researchPriceSeriesQuerySchema,
     outputSchema: researchPriceSeriesToolOutputSchema,
+    scope: "research:read" as const,
+    accessKind: "read" as const,
+  },
+  get_monthly_revenue: {
+    description: "Return authoritative MOPS monthly revenue source facts, derived trend metrics with lineage, freshness gating, and cursor pagination for one immutable listing and fixed temporal context. Reads the canonical store only.",
+    inputSchema: researchMonthlyRevenueQuerySchema,
+    outputSchema: researchMonthlyRevenueToolOutputSchema,
     scope: "research:read" as const,
     accessKind: "read" as const,
   },
@@ -1295,7 +1304,12 @@ export function listMcpToolDefinitions(options: {
     _meta: "_meta" in value ? value._meta : undefined,
   }))
     .filter((tool) => {
-      if (tool.name === "get_research_manifest" || tool.name === "get_research_identity" || tool.name === "get_price_series") {
+      if (
+        tool.name === "get_research_manifest"
+        || tool.name === "get_research_identity"
+        || tool.name === "get_price_series"
+        || tool.name === "get_monthly_revenue"
+      ) {
         return includeRolloutDisabled || researchScopeAcquisitionAllowed();
       }
       return tool.name !== "search_instruments" || legacyReadGroupEnabled || researchMcpExposureEnabled();

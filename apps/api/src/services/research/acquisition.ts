@@ -18,6 +18,7 @@ import {
   canonicalizeOfficialPriceRow,
   type ResearchPriceRecord,
 } from "./price.js";
+import { parseOfficialMonthlyRevenueSnapshot } from "./providers/monthlyRevenue.js";
 import { researchAcquisitionEnabled } from "./rollout.js";
 import {
   parseOfficialSecuritiesFirmDirectory,
@@ -45,6 +46,7 @@ import {
   parseTwsePriceSnapshot,
   parseTwseSuspensionSnapshot,
 } from "./providers/twsePrice.js";
+import type { ResearchMonthlyRevenueRecord } from "./monthlyRevenue.js";
 
 export const OFFICIAL_IDENTITY_SOURCES = {
   twseCompanies: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
@@ -58,6 +60,8 @@ export const OFFICIAL_IDENTITY_SOURCES = {
   tpexEtnRetirements: "https://www.tpex.org.tw/www/zh-tw/ETN/list?type=delisted",
   twseDelistings: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
   tpexDelistings: "https://www.tpex.org.tw/www/zh-tw/company/deListed?code=&reason=-1",
+  twseMonthlyRevenue: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+  tpexMonthlyRevenue: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O",
 } as const;
 
 export const OFFICIAL_PRICE_SOURCES = {
@@ -785,5 +789,59 @@ export async function runOfficialPriceAcquisition(
     sourceCount: Object.keys(OFFICIAL_PRICE_SOURCES).length,
     recordCount: records.length,
     retrievedAt,
+  };
+}
+
+export async function runOfficialMonthlyRevenueAcquisition(
+  persistence: Persistence,
+  options: AcquisitionOptions = {},
+) {
+  if (!researchAcquisitionEnabled()) {
+    throw new ResearchAcquisitionDisabledError();
+  }
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const retrievedAt = options.retrievedAt ?? new Date().toISOString();
+  const acquisitionRunId = options.acquisitionRunId ?? `monthly-revenue:${retrievedAt}`;
+  const [twseRevenue, tpexRevenue, twseListings, tpexListings] = await Promise.all([
+    fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.twseMonthlyRevenue),
+    fetchArtifact(fetchImpl, OFFICIAL_IDENTITY_SOURCES.tpexMonthlyRevenue),
+    persistence.listLatestResearchIdentityRecords({
+      subject: { kind: "venue", venue: "TWSE" },
+      effectiveAt: retrievedAt,
+      knowledgeAt: retrievedAt,
+    }),
+    persistence.listLatestResearchIdentityRecords({
+      subject: { kind: "venue", venue: "TPEX" },
+      effectiveAt: retrievedAt,
+      knowledgeAt: retrievedAt,
+    }),
+  ]);
+  const twseIdentitiesByTicker = new Map(
+    twseListings
+      .filter((record) => record.listing.status === "active")
+      .map((record) => [record.listing.ticker, { listingId: record.listing.id, issuerId: record.issuer.id }] as const),
+  );
+  const tpexIdentitiesByTicker = new Map(
+    tpexListings
+      .filter((record) => record.listing.status === "active")
+      .map((record) => [record.listing.ticker, { listingId: record.listing.id, issuerId: record.issuer.id }] as const),
+  );
+  const records: ResearchMonthlyRevenueRecord[] = [
+    ...parseOfficialMonthlyRevenueSnapshot(twseRevenue.payload, { ...twseRevenue.metadata, retrievedAt }, "TWSE", twseIdentitiesByTicker),
+    ...parseOfficialMonthlyRevenueSnapshot(tpexRevenue.payload, { ...tpexRevenue.metadata, retrievedAt }, "TPEX", tpexIdentitiesByTicker),
+  ].map((record) => ({
+    ...record,
+    provenance: {
+      ...record.provenance,
+      acquisitionRunId,
+    },
+  }));
+  await persistence.appendResearchMonthlyRevenueRecords(records);
+  return {
+    acquisitionRunId,
+    sourceCount: 2,
+    recordCount: records.length,
+    retrievedAt,
+    months: [...new Set(records.map((record) => record.revenueMonth))].sort(),
   };
 }

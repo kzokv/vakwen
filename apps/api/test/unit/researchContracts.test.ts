@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { researchPriceSeriesQuerySchema, researchQuerySchema } from "../../src/services/research/contracts.js";
+import {
+  researchMonthlyRevenueQuerySchema,
+  researchPriceSeriesQuerySchema,
+  researchQuerySchema,
+} from "../../src/services/research/contracts.js";
 
 describe("Taiwan research contracts", () => {
   it("listing selector: parse a leading-zero ticker → preserve the ticker and fix effectiveAt to knowledgeAt", () => {
@@ -85,4 +89,74 @@ describe("Taiwan research contracts", () => {
       expect(result.success).toBe(false);
     },
   );
+
+  it("monthly revenue query: preserve explicit range and paging defaults for a fixed listing context", () => {
+    const query = researchMonthlyRevenueQuerySchema.parse({
+      subject: { kind: "listing_id", listingId: "lst_demo" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+      },
+      range: {
+        startMonth: "2025-08",
+        endMonth: "2026-07",
+      },
+    });
+
+    expect(query.page).toEqual({
+      limit: 24,
+      order: "desc",
+    });
+    expect(query.range).toEqual({
+      startMonth: "2025-08",
+      endMonth: "2026-07",
+    });
+  });
+
+  it("monthly revenue query: reject malformed month tokens and oversize page limits", () => {
+    expect(() => researchMonthlyRevenueQuerySchema.parse({
+      subject: { kind: "listing_id", listingId: "lst_demo" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+      },
+      range: {
+        startMonth: "2025-8",
+        endMonth: "2026-07",
+      },
+    })).toThrow();
+    expect(() => researchMonthlyRevenueQuerySchema.parse({
+      subject: { kind: "listing_id", listingId: "lst_demo" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+      },
+      range: {
+        startMonth: "2025-00",
+        endMonth: "2026-07",
+      },
+    })).toThrow();
+    expect(() => researchMonthlyRevenueQuerySchema.parse({
+      subject: { kind: "listing_id", listingId: "lst_demo" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+      },
+      range: {
+        startMonth: "2025-08",
+        endMonth: "2025-13",
+      },
+    })).toThrow();
+    expect(() => researchMonthlyRevenueQuerySchema.parse({
+      subject: { kind: "listing_id", listingId: "lst_demo" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+      },
+      page: {
+        limit: 61,
+        order: "desc",
+      },
+    })).toThrow();
+  });
 });

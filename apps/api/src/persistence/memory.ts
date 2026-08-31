@@ -86,6 +86,13 @@ import {
   type ResearchPriceRecord,
   type ResearchPriceRecordQuery,
 } from "../services/research/price.js";
+import {
+  researchMonthlyRevenueRecordKey,
+  researchMonthlyRevenueRecordSortOrder,
+  resolveLatestMonthlyRevenueRecords,
+  type ResearchMonthlyRevenueRecord,
+  type ResearchMonthlyRevenueRecordQuery,
+} from "../services/research/monthlyRevenue.js";
 import type {
   AdminAuditLogResponse,
   AdminInviteListResponse,
@@ -253,6 +260,24 @@ import type {
   ResolvedFxRate,
   UserRole,
 } from "./types.js";
+
+const taiwanLocalDateFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Taipei",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function taiwanLocalIsoDate(isoDateTime: string): string {
+  const instant = new Date(isoDateTime);
+  if (Number.isNaN(instant.valueOf())) {
+    throw new Error(`Invalid Taiwan local timestamp: ${isoDateTime}`);
+  }
+  const parts = Object.fromEntries(
+    taiwanLocalDateFormatter.formatToParts(instant).map(({ type, value }) => [type, value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
 // KZO-199: anonymous-share token cap and retention are now resolver-backed
 // (DB override → env-fallback). Read at method invocation time so admin
 // PATCHes take effect on the next call without restart.
@@ -675,6 +700,7 @@ function stockDividendLotIdsForScope(
 export class MemoryPersistence implements Persistence {
   private readonly researchIdentityRecords = new Map<string, ResearchIdentityRecord>();
   private readonly researchPriceRecords = new Map<string, ResearchPriceRecord>();
+  private readonly researchMonthlyRevenueRecords = new Map<string, ResearchMonthlyRevenueRecord>();
   private readonly stores = new Map<string, Store>();
   private readonly idempotencyKeys = new Map<string, Set<string>>();
   private readonly dailyBars: MemoryDailyBar[] = [];
@@ -1026,6 +1052,43 @@ export class MemoryPersistence implements Persistence {
       dates.add(record.sessionDate);
     }
     return [...dates].sort((left, right) => left.localeCompare(right));
+  }
+
+  async appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void> {
+    for (const record of records) {
+      const key = researchMonthlyRevenueRecordKey(record);
+      if (!this.researchMonthlyRevenueRecords.has(key)) {
+        this.researchMonthlyRevenueRecords.set(key, structuredClone(record));
+      }
+    }
+  }
+
+  async listResearchMonthlyRevenueRecords(
+    query: ResearchMonthlyRevenueRecordQuery,
+  ): Promise<ResearchMonthlyRevenueRecord[]> {
+    const effectiveDate = taiwanLocalIsoDate(query.effectiveAt);
+    return [...this.researchMonthlyRevenueRecords.values()]
+      .filter((record) => {
+        const subjectMatches = query.subject.kind === "listing_id"
+          ? record.listingId === query.subject.listingId
+          : record.ticker === query.subject.ticker && record.venue === query.subject.venue;
+        if (!subjectMatches) return false;
+        if (record.publicationContext.publishedAt > effectiveDate) return false;
+        if (record.provenance.retrievedAt > query.knowledgeAt) return false;
+        if (query.startMonth && record.revenueMonth < query.startMonth) return false;
+        if (query.endMonth && record.revenueMonth > query.endMonth) return false;
+        return true;
+      })
+      .sort(researchMonthlyRevenueRecordSortOrder)
+      .map((record) => structuredClone(record));
+  }
+
+  async listLatestResearchMonthlyRevenueRecords(
+    query: ResearchMonthlyRevenueRecordQuery,
+  ): Promise<ResearchMonthlyRevenueRecord[]> {
+    return resolveLatestMonthlyRevenueRecords(
+      await this.listResearchMonthlyRevenueRecords(query),
+    ).map((record) => structuredClone(record));
   }
 
   async init(): Promise<void> {

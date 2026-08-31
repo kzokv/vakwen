@@ -2,6 +2,7 @@ import type { Persistence } from "../../persistence/types.js";
 import {
   MARKET_CONTEXT_SCOPE_STATEMENT,
   researchFocusedMarketReportSchema,
+  researchRevenueFocusedReportSchema,
   IDENTITY_ONLY_SCOPE_STATEMENT,
   researchIdentityOnlyReportSchema,
   type ResearchFocusedMarketReport,
@@ -9,8 +10,9 @@ import {
   type ResearchPriceSession,
   type ResearchPriceSeriesQuery,
   type ResearchQuery,
+  type ResearchRevenueFocusedReport,
 } from "./contracts.js";
-import { getPriceSeries, getResearchIdentity, getResearchManifest, ResearchServiceError } from "./service.js";
+import { getMonthlyRevenue, getPriceSeries, getResearchIdentity, getResearchManifest, ResearchServiceError } from "./service.js";
 
 function presentFactValue(
   facts: Awaited<ReturnType<typeof getResearchIdentity>>["identity"]["facts"],
@@ -63,6 +65,7 @@ export async function buildIdentityOnlyResearchReport(
 
 export type IdentityOnlyResearchReport = ResearchIdentityOnlyReport;
 export type FocusedMarketResearchReport = ResearchFocusedMarketReport;
+export type RevenueFocusedResearchReport = ResearchRevenueFocusedReport;
 
 function markdownValue(value: string | null): string {
   return value === null ? "Not reported" : value.replaceAll("|", "\\|").replaceAll("\n", " ");
@@ -196,4 +199,71 @@ export function renderFocusedMarketResearchReportMarkdown(input: FocusedMarketRe
     "",
     ...report.evidence.provenanceIds.map((id) => `- ${id}`),
   ].join("\n");
+}
+
+export async function buildRevenueFocusedResearchReport(
+  persistence: Persistence,
+  query: ResearchQuery,
+) {
+  const identity = await getResearchIdentity(persistence, {
+    ...query,
+    history: { limit: 1 },
+  });
+  const monthlyRevenue = await getMonthlyRevenue(persistence, {
+    ...query,
+    page: { limit: 24, order: "desc" },
+  });
+  const latestItem = monthlyRevenue.items[0] ?? null;
+  const latestYoy = latestItem?.derivedMetrics.yearOverYearPercent;
+  const latestDueGap = monthlyRevenue.freshness.latestDueStatus === "missing";
+  const supported = latestItem !== null
+    && latestYoy?.status === "available"
+    && !latestDueGap;
+  return researchRevenueFocusedReportSchema.parse({
+    contractVersion: "research-report/2.0.0" as const,
+    profile: "monthly_revenue" as const,
+    selector: identity.selector,
+    context: identity.context,
+    generatedAt: identity.context.knowledgeAt,
+    sections: [
+      {
+        id: "identity" as const,
+        issuer: identity.identity.issuer,
+        security: identity.identity.security,
+        listing: identity.identity.listing,
+      },
+      {
+        id: "eligibility" as const,
+        profile: identity.identity.eligibility.profile,
+        state: identity.identity.eligibility.state,
+        reasonCode: identity.identity.eligibility.reasonCode,
+      },
+      {
+        id: "monthly_revenue" as const,
+        freshness: monthlyRevenue.freshness,
+        latestMonth: latestItem?.revenueMonth ?? null,
+        latestYearOverYearPercent: latestYoy ?? null,
+      },
+    ],
+    conclusion: supported
+      ? {
+          status: "supported" as const,
+          statement: `Monthly revenue trend remains descriptive only: latest available month ${latestItem!.revenueMonth} shows YoY ${latestYoy.value}% with authoritative MOPS lineage.`,
+          reasonCodes: [],
+        }
+      : {
+          status: "withheld" as const,
+          statement: latestDueGap
+            ? `Monthly revenue conclusion withheld because the latest due month ${monthlyRevenue.freshness.latestExpectedMonth} is not yet present in the canonical store.`
+            : `Monthly revenue conclusion withheld because the current window does not pass the required comparability gates.`,
+          reasonCodes: latestDueGap
+            ? ["latest_due_gap"]
+            : [
+                ...(latestYoy?.status === "withheld" ? [latestYoy.reasonCode] : latestItem === null ? ["not_acquired"] : []),
+              ],
+        },
+    evidence: {
+      provenanceIds: monthlyRevenue.evidence.provenanceIds,
+    },
+  });
 }

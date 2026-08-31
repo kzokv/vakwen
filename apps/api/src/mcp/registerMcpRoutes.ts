@@ -145,9 +145,10 @@ import {
   manageAdminMarketCalendarImportTool,
   updateAdminMarketCalendarSourceTool,
 } from "./adminCalendarTools.js";
-import { getPriceSeries, getResearchIdentity, getResearchManifest } from "../services/research/service.js";
+import { getMonthlyRevenue, getPriceSeries, getResearchIdentity, getResearchManifest } from "../services/research/service.js";
 import type {
   ResearchIdentityQuery,
+  ResearchMonthlyRevenueQuery,
   ResearchPriceSeriesQuery,
   ResearchQuery,
 } from "../services/research/contracts.js";
@@ -292,6 +293,12 @@ function researchToolSummary(toolName: McpToolName, value: Record<string, unknow
     const listing = value.listing as { venue?: string; ticker?: string } | undefined;
     const sessions = Array.isArray(value.sessions) ? value.sessions.length : 0;
     return `Research price series for ${listing?.venue ?? "unknown"}:${listing?.ticker ?? "unknown"} (${selector?.listingId ?? "unknown listing"}); ${sessions} session records returned.`;
+  }
+  if (toolName === "get_monthly_revenue") {
+    const selector = value.selector as { listingId?: string } | undefined;
+    const items = Array.isArray(value.items) ? value.items : [];
+    const freshness = value.freshness as { latestExpectedMonth?: string; latestDueStatus?: string } | undefined;
+    return `Monthly revenue for ${selector?.listingId ?? "unknown listing"}: ${items.length} months returned; latest expected ${freshness?.latestExpectedMonth ?? "unknown"} is ${freshness?.latestDueStatus ?? "unknown"}.`;
   }
   return undefined;
 }
@@ -622,6 +629,9 @@ export async function registerMcpRoutes(
           }
           break;
         }
+        case "get_monthly_revenue":
+          result = await getMonthlyRevenue(app.persistence, args as ResearchMonthlyRevenueQuery);
+          break;
         case "get_portfolio_overview":
           result = await getPortfolioOverview(
             { app, requestContext, tradingCalendar: app.tradingCalendarCache },
@@ -1150,7 +1160,8 @@ export async function registerMcpRoutes(
       const adapted = adaptMcpToolResultForHost({ toolName, auth, result }) as Record<string, unknown>;
       const isResearchTool = toolName === "get_research_manifest"
         || toolName === "get_research_identity"
-        || toolName === "get_price_series";
+        || toolName === "get_price_series"
+        || toolName === "get_monthly_revenue";
       return buildToolResult(
         isResearchTool ? { result: adapted } : adapted,
         researchToolSummary(toolName, adapted),
@@ -1181,7 +1192,8 @@ export async function registerMcpRoutes(
           error as Error & { statusCode?: unknown; code?: unknown; metadata?: unknown },
           toolName === "get_research_manifest"
             || toolName === "get_research_identity"
-            || toolName === "get_price_series",
+            || toolName === "get_price_series"
+            || toolName === "get_monthly_revenue",
         );
       }
       throw error;

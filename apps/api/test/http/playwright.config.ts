@@ -31,6 +31,10 @@ export default createPlaywrightConfig({
     AU_CATALOG_PROVIDER_MOCK: "true",
     KR_PROVIDER_MOCK: "true",
     KR_CATALOG_PROVIDER_MOCK: "true",
+    // Enable research MCP tools in the HTTP harness so acceptance specs exercise
+    // the registered tool contract instead of the rollout-disabled catalog.
+    MCP_RESEARCH_ACQUISITION_ENABLED: "true",
+    MCP_RESEARCH_MCP_ENABLED: "true",
     // HTTP tests run many mutations per minute from one IP + "anonymous" user
     // (e.g. POST /__e2e/oauth-session for every testUser fixture). The default
     // 120/min cap trips under the full suite; bump for tests only.

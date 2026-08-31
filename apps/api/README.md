@@ -33,3 +33,15 @@ These run the API test suite and write results to files. Use them for CI artifac
 | `npm run test:api:junit` | `npm run test:junit` | `apps/api/test-results/junit.xml` | JUnit XML for CI (e.g. Jenkins, GitLab, Azure Pipelines). |
 
 Each reporter run also prints the usual Vitest summary to the terminal.
+
+## Additive Taiwan research
+
+The additive Taiwan research rollout remains default-off behind `MCP_RESEARCH_ACQUISITION_ENABLED`, `MCP_RESEARCH_MCP_ENABLED`, and `MCP_RESEARCH_SKILL_ENABLED`.
+
+When enabled, the API adds read-only canonical-store MCP tools under `research:read`:
+
+- `get_research_manifest`
+- `get_research_identity`
+- `get_monthly_revenue`
+
+`get_monthly_revenue` returns authoritative MOPS monthly-revenue source facts, derived trend metrics with explicit lineage, freshness gating, and cursor pagination for one immutable listing and fixed temporal context. Reads are store-only: they do not fetch providers, enqueue work, populate caches, mutate freshness, or change portfolio state.

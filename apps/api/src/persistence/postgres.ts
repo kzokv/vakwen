@@ -40,6 +40,13 @@ import {
   type ResearchPriceRecord,
   type ResearchPriceRecordQuery,
 } from "../services/research/price.js";
+import {
+  researchMonthlyRevenueRecordKey,
+  researchMonthlyRevenueRecordSortOrder,
+  resolveLatestMonthlyRevenueRecords,
+  type ResearchMonthlyRevenueRecord,
+  type ResearchMonthlyRevenueRecordQuery,
+} from "../services/research/monthlyRevenue.js";
 import { buildRedisSocketOptions } from "../lib/redisClientOptions.js";
 import { loadMigrationManifest } from "./migrationManifest.js";
 import {
@@ -1478,6 +1485,39 @@ export class PostgresPersistence implements Persistence {
     }
   }
 
+  async appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void> {
+    if (records.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of records) {
+        await client.query(
+          `INSERT INTO research.monthly_revenue_records (
+             record_key, listing_id, issuer_id, ticker, venue, revenue_month, published_at, retrieved_at, record
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::timestamptz, $9::jsonb)
+           ON CONFLICT (record_key) DO NOTHING`,
+          [
+            researchMonthlyRevenueRecordKey(record),
+            record.listingId,
+            record.issuerId,
+            record.ticker,
+            record.venue,
+            record.revenueMonth,
+            record.publicationContext.publishedAt,
+            record.provenance.retrievedAt,
+            JSON.stringify(record),
+          ],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async listResearchPriceRecords(query: ResearchPriceRecordQuery): Promise<ResearchPriceRecord[]> {
     const selectorSql = query.subject.kind === "listing_id" ? "listing_id = $1" : "venue = $1";
     const selectorValue = query.subject.kind === "listing_id" ? query.subject.listingId : query.subject.venue;
@@ -1490,6 +1530,39 @@ export class PostgresPersistence implements Persistence {
           AND retrieved_at <= $4::timestamptz
         ORDER BY session_date ASC, retrieved_at ASC, record_key ASC`,
       [selectorValue, query.startDate, query.endDate, query.knowledgeAt],
+    );
+    return result.rows.map(({ record }) => record);
+  }
+
+  async listResearchMonthlyRevenueRecords(
+    query: ResearchMonthlyRevenueRecordQuery,
+  ): Promise<ResearchMonthlyRevenueRecord[]> {
+    const selectorSql = query.subject.kind === "listing_id"
+      ? "listing_id = $1"
+      : "ticker = $1 AND venue = $2";
+    const selectorValues = query.subject.kind === "listing_id"
+      ? [query.subject.listingId]
+      : [query.subject.ticker, query.subject.venue];
+    const effectiveAtIndex = selectorValues.length + 1;
+    const knowledgeAtIndex = selectorValues.length + 2;
+    const startMonthIndex = selectorValues.length + 3;
+    const endMonthIndex = selectorValues.length + 4;
+    const result = await this.pool.query<{ record: ResearchMonthlyRevenueRecord }>(
+      `SELECT record
+       FROM research.monthly_revenue_records
+       WHERE ${selectorSql}
+         AND published_at <= ($${effectiveAtIndex}::timestamptz AT TIME ZONE 'Asia/Taipei')::date
+         AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
+         AND ($${startMonthIndex}::text IS NULL OR revenue_month >= $${startMonthIndex}::text)
+         AND ($${endMonthIndex}::text IS NULL OR revenue_month <= $${endMonthIndex}::text)
+       ORDER BY revenue_month ASC, retrieved_at ASC, record_key ASC`,
+      [
+        ...selectorValues,
+        query.effectiveAt,
+        query.knowledgeAt,
+        query.startMonth ?? null,
+        query.endMonth ?? null,
+      ],
     );
     return result.rows.map(({ record }) => record);
   }
@@ -1533,6 +1606,45 @@ export class PostgresPersistence implements Persistence {
       [venue, fromDate, knowledgeAt],
     );
     return result.rows.map((row) => row.session_date);
+  }
+
+  async listLatestResearchMonthlyRevenueRecords(
+    query: ResearchMonthlyRevenueRecordQuery,
+  ): Promise<ResearchMonthlyRevenueRecord[]> {
+    const selectorSql = query.subject.kind === "listing_id"
+      ? "listing_id = $1"
+      : "ticker = $1 AND venue = $2";
+    const selectorValues = query.subject.kind === "listing_id"
+      ? [query.subject.listingId]
+      : [query.subject.ticker, query.subject.venue];
+    const effectiveAtIndex = selectorValues.length + 1;
+    const knowledgeAtIndex = selectorValues.length + 2;
+    const startMonthIndex = selectorValues.length + 3;
+    const endMonthIndex = selectorValues.length + 4;
+    const result = await this.pool.query<{ record: ResearchMonthlyRevenueRecord }>(
+      `SELECT record
+       FROM (
+         SELECT DISTINCT ON (revenue_month)
+           record_key, revenue_month, published_at, retrieved_at, record
+         FROM research.monthly_revenue_records
+         WHERE ${selectorSql}
+           AND published_at <= ($${effectiveAtIndex}::timestamptz AT TIME ZONE 'Asia/Taipei')::date
+           AND retrieved_at <= $${knowledgeAtIndex}::timestamptz
+           AND ($${startMonthIndex}::text IS NULL OR revenue_month >= $${startMonthIndex}::text)
+           AND ($${endMonthIndex}::text IS NULL OR revenue_month <= $${endMonthIndex}::text)
+         ORDER BY revenue_month, published_at DESC, retrieved_at DESC, record_key DESC
+       ) AS latest
+       ORDER BY revenue_month ASC`,
+      [
+        ...selectorValues,
+        query.effectiveAt,
+        query.knowledgeAt,
+        query.startMonth ?? null,
+        query.endMonth ?? null,
+      ],
+    );
+    return resolveLatestMonthlyRevenueRecords(result.rows.map(({ record }) => record))
+      .sort(researchMonthlyRevenueRecordSortOrder);
   }
 
   private async getLatestQuoteFallbackSnapshotsForPolicyIds(
