@@ -371,7 +371,7 @@ ChatGPT rollout scopes:
 | Scope | Capability | Default state | User-deselectable |
 |---|---|---|---|
 | `portfolio:mcp_read` | Read portfolio, holdings, transaction context, and connector-safe summaries | Enabled when global MCP read tools are enabled | No for the first rollout; ChatGPT needs read context to be useful |
-| `research:read` | Canonical Taiwan identity manifest/history, canonical monthly revenue, and additive Taiwan search, including `get_research_manifest`, `get_research_identity`, `get_monthly_revenue`, `includeInactive`, and per-item `researchIdentity.availability` metadata | Disabled until research acquisition and MCP exposure are intentionally enabled | Yes |
+| `research:read` | Canonical Taiwan identity manifest/history, price series, monthly revenue, and additive Taiwan search, including `get_research_manifest`, `get_research_identity`, `get_price_series`, `get_monthly_revenue`, `includeInactive`, and per-item `researchIdentity.availability` metadata | Disabled until research acquisition and MCP exposure are intentionally enabled | Yes |
 | `transaction_draft:create` | Create draft transaction candidates for user review | Disabled unless admins enable write/draft tools | Yes |
 | `transaction_draft:edit` | Update draft transaction candidates before user review | Disabled unless admins enable write/draft tools | Yes |
 | `transaction_draft:archive` | Archive AI transaction draft batches | Disabled unless admins enable write/draft tools | Yes |
