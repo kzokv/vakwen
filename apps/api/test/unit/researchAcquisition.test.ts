@@ -730,6 +730,24 @@ describe("official Taiwan identity acquisition", () => {
       expect.objectContaining({ revenueMonth: "2026-07", listingId: inactiveTwseIdentity.listing.id }),
     ]);
 
+    await runOfficialMonthlyRevenueAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-13T02:00:00.000Z",
+      acquisitionRunId: "monthly-revenue-unchanged-poll",
+    });
+    const retainedTwseRecords = await persistence.listResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: twseIdentity.listing.id },
+      effectiveAt: "2026-08-13T02:00:00.000Z",
+      knowledgeAt: "2026-08-13T02:00:00.000Z",
+      startMonth: "2026-05",
+      endMonth: "2026-07",
+    });
+    expect(retainedTwseRecords).toHaveLength(2);
+    expect(retainedTwseRecords.every((record) =>
+      record.provenance.retrievedAt === "2026-08-12T02:00:00.000Z"
+      && record.provenance.acquisitionRunId === "monthly-revenue-run"
+    )).toBe(true);
+
     const currentTpexPayload = payloads.get(OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue);
     payloads.set(OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue, []);
     await expect(runOfficialMonthlyRevenueAcquisition(persistence, {

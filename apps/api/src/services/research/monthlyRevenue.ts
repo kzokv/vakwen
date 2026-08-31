@@ -204,7 +204,6 @@ export function canonicalizeOfficialMonthlyRevenueRow(
       input.artifact.contentHash,
       input.ticker,
       input.revenueMonth,
-      input.retrievedAt,
     ].join("\u001f"))
     .digest("hex")
     .slice(0, 32);
