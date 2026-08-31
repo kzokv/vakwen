@@ -1212,7 +1212,8 @@ describe("Taiwan research store-only service", () => {
     });
     await persistence.appendResearchIdentityRecords([identity]);
     let latestFreshnessProvenanceId = "";
-    for (const revenueMonth of ["2025-07", "2025-08", "2025-09", "2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"]) {
+    let latestConclusionComparisonProvenanceId = "";
+    for (const revenueMonth of ["2024-07", "2024-08", "2024-09", "2024-10", "2024-11", "2024-12", "2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06", "2025-07", "2025-08", "2025-09", "2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"]) {
       const [year, month] = revenueMonth.split("-").map(Number);
       const rocYear = year - 1911;
       const record = canonicalizeOfficialMonthlyRevenueRow({
@@ -1246,6 +1247,7 @@ describe("Taiwan research store-only service", () => {
         },
       });
       if (revenueMonth === "2026-07") latestFreshnessProvenanceId = record.provenance.id;
+      if (revenueMonth === "2025-07") latestConclusionComparisonProvenanceId = record.provenance.id;
       await persistence.appendResearchMonthlyRevenueRecords([record]);
     }
 
@@ -1299,6 +1301,19 @@ describe("Taiwan research store-only service", () => {
     });
     expect(secondPage.items[0]?.revenueMonth).toBe("2026-05");
     expect(secondPage.conclusion).toEqual(result.conclusion);
+    expect(secondPage.evidence.provenanceIds).toContain(latestFreshnessProvenanceId);
+    expect(secondPage.evidence.provenanceIds).toContain(latestConclusionComparisonProvenanceId);
+
+    const oldestPage = await getMonthlyRevenue(persistence, {
+      subject: result.selector,
+      context: result.context,
+      range: { startMonth: "2024-08", endMonth: "2026-07" },
+      page: { limit: 1, order: "asc" },
+    });
+    expect(oldestPage.items[0]?.revenueMonth).toBe("2024-08");
+    expect(oldestPage.conclusion).toEqual(result.conclusion);
+    expect(oldestPage.evidence.provenanceIds).toContain(latestFreshnessProvenanceId);
+    expect(oldestPage.evidence.provenanceIds).toContain(latestConclusionComparisonProvenanceId);
 
     for (const revenueMonth of ["1900-01", "not-a-month"]) {
       const decodedCursor = JSON.parse(Buffer.from(result.page.nextCursor!, "base64url").toString("utf8")) as Record<string, unknown>;
@@ -1649,7 +1664,7 @@ describe("Taiwan research store-only service", () => {
   });
 
   it("monthly revenue derived windows: distinguish an interior missing canonical month from a genuine early-series short window", async () => {
-    const makeIdentity = (ticker: string, suffix: string) => canonicalizeOfficialIdentityRow({
+    const makeIdentity = (ticker: string, suffix: string, listedAt = "1994-09-05") => canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-08-27",
       retrievedAt: `2026-08-27T02:00:0${suffix}.000Z`,
@@ -1664,7 +1679,7 @@ describe("Taiwan research store-only service", () => {
         displayName: `測試${suffix}`,
         unifiedBusinessNumber: `2209913${suffix}`,
         industryCode: "24",
-        listedAt: "1994-09-05",
+        listedAt,
       },
     });
     const appendRevenueMonth = async (
@@ -1752,7 +1767,7 @@ describe("Taiwan research store-only service", () => {
     });
 
     const shortWindowPersistence = new MemoryPersistence();
-    const shortWindowIdentity = makeIdentity("2331", "9");
+    const shortWindowIdentity = makeIdentity("2331", "9", "2026-05-01");
     await shortWindowPersistence.appendResearchIdentityRecords([shortWindowIdentity]);
     for (const [index, revenueMonth] of ["2026-05", "2026-06", "2026-07"].entries()) {
       await appendRevenueMonth(shortWindowPersistence, shortWindowIdentity, revenueMonth, index);
@@ -1778,6 +1793,7 @@ describe("Taiwan research store-only service", () => {
     expect(shortWindow.items[0]).toMatchObject({
       revenueMonth: "2026-05",
       derivedMetrics: {
+        yearOverYearPercent: { status: "withheld", reasonCode: "short_window" },
         rolling3MonthRevenue: { status: "withheld", reasonCode: "short_window" },
         trailing12MonthRevenue: { status: "withheld", reasonCode: "short_window" },
         currentYearToDateRevenue: { status: "withheld", reasonCode: "short_window" },

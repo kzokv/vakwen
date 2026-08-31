@@ -1426,6 +1426,7 @@ function taiwanLocalIsoDate(isoDateTime: string): string {
 function deriveMonthlyRevenueMetrics(
   outputRecords: ResearchMonthlyRevenueRecord[],
   supportRecords: readonly ResearchMonthlyRevenueRecord[],
+  listingStartMonth: string,
 ) {
   const byMonth = new Map(supportRecords.map((record) => [record.revenueMonth, record]));
   return outputRecords.map((record) => {
@@ -1433,7 +1434,9 @@ function deriveMonthlyRevenueMetrics(
     const previousYear = byMonth.get(previousYearMonth);
     const yoyComparable = currentRecordGate(record) !== "ok"
       ? currentRecordGate(record)
-      : previousYear ? comparable(record, [previousYear]) : "missing_comparable_month";
+      : previousYear
+        ? comparable(record, [previousYear])
+        : previousYearMonth < listingStartMonth ? "short_window" : "missing_comparable_month";
     const yoyCurrent = numericValue(record.sourceFacts.currentMonthRevenue);
     const yoyPrior = previousYear ? numericValue(previousYear.sourceFacts.currentMonthRevenue) : null;
     const yearOverYearPercent = yoyComparable !== "ok" || yoyCurrent === null || yoyPrior === null || yoyPrior === 0
@@ -1609,7 +1612,11 @@ export async function getMonthlyRevenue(
   const windowRecords = latestRecords.filter((record) =>
     record.revenueMonth >= startMonth && record.revenueMonth <= endMonth
   );
-  const derived = deriveMonthlyRevenueMetrics(windowRecords, latestRecords);
+  const derived = deriveMonthlyRevenueMetrics(
+    windowRecords,
+    latestRecords,
+    identity.identity.listing.listedAt.slice(0, 7),
+  );
   const ordered = query.page.order === "asc" ? derived : [...derived].reverse();
   const cursorMonth = decodeRevenueCursor(
     query.page.cursor,
@@ -1638,10 +1645,16 @@ export async function getMonthlyRevenue(
         query.page.order,
       )
     : null;
-  const evidenceMonths = new Set(pageItems.flatMap((record) => [
-    record.revenueMonth,
-    ...Object.values(record.derivedMetrics).flatMap((metric) => metric.lineageMonths),
-  ]));
+  const conclusionItem = derived.at(-1);
+  const evidenceMonths = new Set([
+    ...pageItems.flatMap((record) => [
+      record.revenueMonth,
+      ...Object.values(record.derivedMetrics).flatMap((metric) => metric.lineageMonths),
+    ]),
+    ...(conclusionItem
+      ? [conclusionItem.revenueMonth, ...conclusionItem.derivedMetrics.yearOverYearPercent.lineageMonths]
+      : []),
+  ]);
   const provenanceIds = [...new Set(
     [
       ...latestRecords
@@ -1671,7 +1684,7 @@ export async function getMonthlyRevenue(
       latestDueStatus,
     },
     conclusion: deriveMonthlyRevenueConclusion(
-      derived.at(-1),
+      conclusionItem,
       freshnessTarget.latestExpectedMonth,
       latestDueStatus,
     ),
