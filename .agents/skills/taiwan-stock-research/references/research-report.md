@@ -1,6 +1,10 @@
-# Identity-Only ResearchReport Contract
+# ResearchReport Contract
 
-Construct this canonical shape from `get_research_manifest` and `get_research_identity` structured content:
+Construct one of these canonical `research-report/1.0.0` shapes from `get_research_manifest`, `get_research_identity`, and, when available and relevant, `get_price_series` structured content.
+
+## `identity_only`
+
+Use this profile when the manifest does not expose `price_series` as available or when the user only needs canonical identity coverage.
 
 ```json
 {
@@ -43,11 +47,51 @@ Construct this canonical shape from `get_research_manifest` and `get_research_id
 }
 ```
 
+## `focused_market`
+
+Use this profile only when the manifest marks `price_series` as `available`. The `selector`, `context`, and price-series request context must stay identical to the manifest-returned values.
+
+```json
+{
+  "contractVersion": "research-report/1.0.0",
+  "profile": "focused_market",
+  "selector": { "kind": "listing_id", "listingId": "..." },
+  "context": {
+    "knowledgeAt": "ISO-8601 timestamp",
+    "effectiveAt": "ISO-8601 timestamp",
+    "assessmentMode": "effective | as_recorded | re_evaluate",
+    "policySetVersion": "present only for re_evaluate"
+  },
+  "generatedAt": "the fixed knowledgeAt timestamp",
+  "sections": [
+    {
+      "id": "identity",
+      "issuer": "canonical issuer object",
+      "security": "canonical security object",
+      "listing": "canonical listing object",
+      "displayName": "latest effective normalized value or null"
+    },
+    {
+      "id": "market_context",
+      "statement": "Market-context research distinguishes settled authoritative closes from intraday and indicative prices, and excludes technical signals, targets, and attractiveness claims.",
+      "priceSeries": "the full get_price_series structured content",
+      "indicativePricesExcluded": true,
+      "intradayPricesExcluded": true,
+      "technicalSignalsExcluded": true
+    }
+  ],
+  "evidence": {
+    "provenanceIds": ["each distinct price-series provenance record used by the report"],
+    "sessionDates": ["each returned sessionDate in the report"]
+  }
+}
+```
+
 ## Faithful Markdown Projection
 
 Markdown may add headings, labels, bullets, escaping, and layout only. Every factual value and scope statement must come from the canonical report artifact.
 
-Include:
+For `identity_only`, include:
 
 - display name
 - venue and exact ticker
@@ -59,5 +103,16 @@ Include:
 - effective and knowledge timestamps
 - the exact unsupported-scope statement
 - every provenance ID
+
+For `focused_market`, include:
+
+- display name
+- venue and exact ticker
+- listing ID
+- effective and knowledge timestamps
+- the exact settled-market scope statement
+- each returned session, preserving its explicit state (`settled_full_bar`, `settled_close_only`, `no_trade`, `suspended`, `stale`, `missing`, `corporate_action_incomplete`)
+- only values already carried by the canonical price-series session
+- every provenance ID present in `evidence.provenanceIds`
 
 Do not add interpretations, comparisons, recommendations, current prices, financial metrics, or source material absent from the artifact.

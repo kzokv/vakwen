@@ -64,6 +64,67 @@ export const researchIdentityQuerySchema = researchQuerySchema.extend({
   history: researchHistoryPageSchema.default({ limit: 25 }),
 }).strict();
 
+const isoDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((value) => {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  }, "Date must be a valid calendar date");
+const researchPriceSeriesPageSchema = z.object({
+  cursor: z.string().min(1).max(1024).optional(),
+  limit: z.number().int().min(1).max(260).default(60),
+}).strict();
+const researchPriceSeriesScopeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("latest") }).strict(),
+  z.object({
+    kind: z.literal("latest_sessions"),
+    count: z.number().int().min(1).max(260),
+  }).strict(),
+  z.object({
+    kind: z.literal("date_range"),
+    startDate: isoDateSchema,
+    endDate: isoDateSchema,
+  }).strict(),
+]).superRefine((scope, refinement) => {
+  if (scope.kind !== "date_range") return;
+  if (scope.startDate > scope.endDate) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endDate"],
+      message: "endDate must be on or after startDate",
+    });
+  }
+  const spanDays = Math.floor(
+    (Date.parse(`${scope.endDate}T00:00:00.000Z`) - Date.parse(`${scope.startDate}T00:00:00.000Z`)) / 86_400_000,
+  );
+  if (spanDays > 366 * 5) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endDate"],
+      message: "date ranges must be no wider than five years",
+    });
+  }
+});
+const researchMetricSchema = z.object({
+  id: z.enum([
+    "simple_price_return",
+    "total_shareholder_return",
+    "annualized_realized_volatility",
+    "maximum_drawdown",
+    "average_daily_volume",
+    "average_daily_traded_value",
+  ]),
+  windowSessions: z.number().int().min(1).max(1260).optional(),
+}).strict();
+export const researchPriceSeriesQuerySchema = researchQuerySchema.extend({
+  scope: researchPriceSeriesScopeSchema.default({ kind: "latest" }),
+  basis: z.enum(["raw", "corporate_action_adjusted"]).default("raw"),
+  order: z.enum(["asc", "desc"]).default("desc"),
+  page: researchPriceSeriesPageSchema.default({ limit: 60 }),
+  metrics: z.array(researchMetricSchema).max(6).default([]),
+}).strict();
+
 const canonicalIdSchema = z.string().min(1).max(120).regex(/^[0-9A-Za-z_-]+$/);
 const fixedResearchContextSchema = z.object({
   knowledgeAt: z.string().datetime({ offset: true }),
@@ -193,12 +254,158 @@ export const researchManifestOutputSchema = z.object({
     ]),
     status: z.enum(["available", "unavailable"]),
     reasonCode: z.string().min(1).max(120).optional(),
+    capabilities: z.object({
+      scopeKinds: z.array(z.enum(["latest", "latest_sessions", "date_range"])).min(1),
+      basis: z.array(z.enum(["raw", "corporate_action_adjusted"])).min(1),
+      metrics: z.array(researchMetricSchema.shape.id).min(1),
+      pageDefault: z.number().int().min(1).max(260),
+      pageMax: z.number().int().min(1).max(260),
+      maxWindowSessions: z.number().int().min(1).max(1260),
+      maxSpanYears: z.number().int().min(1).max(5),
+    }).optional(),
   }).strict()).length(11),
+}).strict();
+
+const researchPriceProvenanceSchema = z.object({
+  provenanceId: canonicalIdSchema,
+  publisher: z.enum(["TWSE", "TPEX"]),
+  accessProvider: z.enum(["TWSE_OPENAPI", "TPEX_OPENAPI", "TWSE_WEB_JSON", "TPEX_WEB_JSON"]),
+  sourceUrl: z.string().url(),
+  contentHash: z.string().min(1),
+  barDate: isoDateSchema,
+  retrievedAt: z.string().datetime({ offset: true }),
+}).strict();
+const researchPriceSessionSchema = z.discriminatedUnion("state", [
+  z.object({
+    state: z.literal("settled_full_bar"),
+    sessionDate: isoDateSchema,
+    prices: z.object({
+      open: z.number(),
+      high: z.number(),
+      low: z.number(),
+      close: z.number(),
+      volume: z.number().nonnegative(),
+      tradedValue: z.number().nonnegative(),
+      tradeCount: z.number().nonnegative(),
+    }).strict(),
+    basisClose: z.number(),
+    provenance: researchPriceProvenanceSchema,
+  }).strict(),
+  z.object({
+    state: z.literal("settled_close_only"),
+    sessionDate: isoDateSchema,
+    prices: z.object({
+      close: z.number(),
+    }).strict(),
+    basisClose: z.number(),
+    provenance: researchPriceProvenanceSchema,
+  }).strict(),
+  z.object({
+    state: z.literal("no_trade"),
+    sessionDate: isoDateSchema,
+    prices: z.object({
+      close: z.number().nullable(),
+      volume: z.number().nonnegative().nullable(),
+      tradedValue: z.number().nonnegative().nullable(),
+      tradeCount: z.number().nonnegative().nullable(),
+    }).strict(),
+    basisClose: z.number().nullable(),
+    provenance: researchPriceProvenanceSchema,
+  }).strict(),
+  z.object({
+    state: z.literal("suspended"),
+    sessionDate: isoDateSchema,
+    reasonCode: z.literal("official_trading_suspension"),
+    note: z.string().nullable(),
+    provenance: researchPriceProvenanceSchema,
+  }).strict(),
+  z.object({
+    state: z.literal("missing"),
+    sessionDate: isoDateSchema,
+    reasonCode: z.enum(["missing_authoritative_price", "listing_inactive"]),
+  }).strict(),
+  z.object({
+    state: z.literal("stale"),
+    sessionDate: isoDateSchema,
+    latestAvailableDate: isoDateSchema.nullable(),
+    reasonCode: z.literal("authoritative_close_overdue"),
+  }).strict(),
+  z.object({
+    state: z.literal("corporate_action_incomplete"),
+    sessionDate: isoDateSchema,
+    close: z.number().nullable(),
+    missingInputs: z.array(z.string().min(1)).min(1),
+    provenance: researchPriceProvenanceSchema,
+  }).strict(),
+]);
+const researchMetricResultSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("returned"),
+    id: researchMetricSchema.shape.id,
+    windowSessions: z.number().int().min(1).max(1260),
+    value: z.number(),
+    units: z.string().min(1),
+    formulaId: z.string().min(1).max(120),
+    formulaVersion: z.string().min(1).max(120),
+    parameters: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
+    observationInputs: z.array(isoDateSchema).min(1).max(64),
+    observationIds: z.array(canonicalIdSchema).min(1).max(64),
+    provenanceIds: z.array(canonicalIdSchema).min(1),
+    lineage: z.object({
+      state: z.enum(["complete", "bounded"]),
+      totalObservationCount: z.number().int().min(1).max(1260),
+      returnedObservationCount: z.number().int().min(1).max(64),
+      totalProvenanceCount: z.number().int().min(1).max(1260),
+      maxReturnedObservations: z.literal(64),
+      digestAlgorithm: z.literal("sha256"),
+      digest: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict(),
+    calculatedAt: z.string().datetime({ offset: true }),
+    rounding: z.string().min(1).max(120),
+  }).strict(),
+  z.object({
+    status: z.literal("withheld"),
+    id: researchMetricSchema.shape.id,
+    windowSessions: z.number().int().min(1).max(1260),
+    reasonCode: z.enum(["insufficient_basis_history", "close_only_series", "corporate_action_incomplete"]),
+  }).strict(),
+  z.object({
+    status: z.literal("not_applicable"),
+    id: researchMetricSchema.shape.id,
+    windowSessions: z.number().int().min(1).max(1260),
+    reasonCode: z.enum(["identity_only_profile"]),
+  }).strict(),
+]);
+
+export const researchPriceSeriesOutputSchema = z.object({
+  contractVersion: z.literal("research-price-series/1.0.0"),
+  selector: immutableListingSelectorSchema,
+  context: fixedResearchContextSchema,
+  listing: listingSchema,
+  scope: researchPriceSeriesScopeSchema,
+  basis: z.enum(["raw", "corporate_action_adjusted"]),
+  basisPolicy: z.object({
+    id: z.literal("taiwan-authoritative-stock-actions/1.0.0"),
+    status: z.enum(["raw", "applied", "incomplete"]),
+  }).strict(),
+  order: z.enum(["asc", "desc"]),
+  freshness: z.object({
+    state: z.enum(["current", "stale", "due_pending", "not_yet_due", "not_applicable"]),
+    authoritativeAsOf: isoDateSchema.nullable(),
+  }).strict(),
+  page: z.object({
+    limit: z.number().int().min(1).max(260),
+    nextCursor: z.string().nullable(),
+    recordCount: z.number().int().min(0).max(260),
+    truncatedByBudget: z.boolean(),
+  }).strict(),
+  sessions: z.array(researchPriceSessionSchema).max(260),
+  metrics: z.array(researchMetricResultSchema).max(6),
 }).strict();
 
 const researchToolErrorOutputShape = {
   code: z.string().regex(
-    /^(?:research_subject_not_found|research_subject_ambiguous|research_cursor_invalid|research_assessment_mode_unsupported|mcp_[a-z0-9_]+)$/,
+    /^(?:research_subject_not_found|research_subject_ambiguous|research_cursor_invalid|research_assessment_mode_unsupported|research_record_too_large|mcp_[a-z0-9_]+)$/,
   ),
   message: z.string().min(1),
   statusCode: z.number().int().min(400).max(499),
@@ -221,8 +428,18 @@ export const researchManifestToolOutputSchema = z.object({
   ]),
 }).strict();
 
+export const researchPriceSeriesToolOutputSchema = z.object({
+  result: z.union([
+    researchPriceSeriesOutputSchema,
+    researchToolErrorOutputSchema,
+  ]),
+}).strict();
+
 export const IDENTITY_ONLY_SCOPE_STATEMENT =
   "This release supports canonical identity research only; market, financial, ownership, trading, dividend, announcement, and investor-material claims are not included.";
+
+export const MARKET_CONTEXT_SCOPE_STATEMENT =
+  "Market-context research distinguishes settled authoritative closes from intraday and indicative prices, and excludes technical signals, targets, and attractiveness claims.";
 
 export const researchIdentityOnlyReportSchema = z.object({
   contractVersion: z.literal("research-report/1.0.0"),
@@ -266,8 +483,50 @@ export const researchIdentityOnlyReportSchema = z.object({
   }
 });
 
+export const researchFocusedMarketReportSchema = z.object({
+  contractVersion: z.literal("research-report/1.0.0"),
+  profile: z.literal("focused_market"),
+  selector: immutableListingSelectorSchema,
+  context: fixedResearchContextSchema,
+  generatedAt: z.string().datetime({ offset: true }),
+  sections: z.tuple([
+    z.object({
+      id: z.literal("identity"),
+      issuer: issuerSchema,
+      security: securitySchema,
+      listing: listingSchema,
+      displayName: z.string().nullable(),
+    }).strict(),
+    z.object({
+      id: z.literal("market_context"),
+      statement: z.literal(MARKET_CONTEXT_SCOPE_STATEMENT),
+      priceSeries: researchPriceSeriesOutputSchema,
+      indicativePricesExcluded: z.literal(true),
+      intradayPricesExcluded: z.literal(true),
+      technicalSignalsExcluded: z.literal(true),
+    }).strict(),
+  ]),
+  evidence: z.object({
+    provenanceIds: z.array(canonicalIdSchema),
+    sessionDates: z.array(isoDateSchema),
+  }).strict(),
+}).strict().superRefine((report, refinement) => {
+  if (report.generatedAt !== report.context.knowledgeAt) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["generatedAt"],
+      message: "generatedAt must equal the fixed knowledgeAt timestamp",
+    });
+  }
+});
+
 export type ResearchSubjectSelector = z.infer<typeof researchSubjectSelectorSchema>;
 export type ResearchTemporalContext = z.infer<typeof researchTemporalContextSchema>;
 export type ResearchQuery = z.infer<typeof researchQuerySchema>;
 export type ResearchIdentityQuery = z.infer<typeof researchIdentityQuerySchema>;
+export type ResearchPriceSeriesQuery = z.infer<typeof researchPriceSeriesQuerySchema>;
+export type ResearchPriceSeriesOutput = z.infer<typeof researchPriceSeriesOutputSchema>;
+export type ResearchPriceSession = ResearchPriceSeriesOutput["sessions"][number];
+export type ResearchPriceMetricResult = ResearchPriceSeriesOutput["metrics"][number];
 export type ResearchIdentityOnlyReport = z.infer<typeof researchIdentityOnlyReportSchema>;
+export type ResearchFocusedMarketReport = z.infer<typeof researchFocusedMarketReportSchema>;

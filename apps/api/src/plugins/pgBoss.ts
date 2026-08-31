@@ -60,6 +60,7 @@ import { upsertDailyBars } from "../services/market-data/upserts.js";
 import { registerMcpReplayPositionRunWorker } from "../services/mcpReplayPositionRunWorker.js";
 import { EodhdEodProvider } from "../services/market-data/providers/eodhdEod.js";
 import { registerResearchIdentityAcquisitionWorker } from "../services/research/registerIdentityAcquisitionWorker.js";
+import { registerResearchPriceAcquisitionWorker } from "../services/research/registerPriceAcquisitionWorker.js";
 import { researchAcquisitionEnabled } from "../services/research/rollout.js";
 
 function createRedisIntradayRefreshRequestBudget(
@@ -214,6 +215,10 @@ export async function registerPgBoss(app: AppInstance, persistenceOverride?: str
 
   if (researchAcquisitionEnabled()) {
     await registerResearchIdentityAcquisitionWorker(boss, {
+      persistence: app.persistence,
+      log: app.log,
+    });
+    await registerResearchPriceAcquisitionWorker(boss, {
       persistence: app.persistence,
       log: app.log,
     });

@@ -1,15 +1,36 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
+import type { MarketCalendarExceptionInput } from "../../src/persistence/types.js";
 import {
   OFFICIAL_IDENTITY_SOURCES,
+  OFFICIAL_PRICE_SOURCES,
   runOfficialIdentityAcquisition,
+  runOfficialPriceAcquisition,
 } from "../../src/services/research/acquisition.js";
 import {
+  appendOfficialListingStatusRevision,
   canonicalizeOfficialIdentityRow,
   officialFundProductIdentityKey,
 } from "../../src/services/research/identity.js";
 import { getResearchIdentity } from "../../src/services/research/service.js";
+
+function stubActiveTaiwanCalendar(
+  persistence: MemoryPersistence,
+  exceptions: MarketCalendarExceptionInput[] = [],
+): void {
+  vi.spyOn(persistence, "getActiveMarketCalendarVersion").mockImplementation(async (marketCode, calendarYear) =>
+    marketCode === "TW"
+      ? {
+          marketCode,
+          calendarYear,
+          status: "confirmed",
+          isActive: true,
+          exceptions: exceptions.filter((item) => item.date.startsWith(`${calendarYear}-`)),
+        } as never
+      : null
+  );
+}
 
 describe("official Taiwan identity acquisition", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
@@ -625,18 +646,465 @@ describe("official Taiwan identity acquisition", () => {
       normalized: { state: "present", value: "absent" },
     });
 
-    currentTpexTickers = ["00610", "00611", "00612"];
     await runOfficialIdentityAcquisition(persistence, {
       fetchImpl,
       retrievedAt: "2026-08-30T04:00:00.000Z",
-      acquisitionRunId: "run-etf-reappeared",
+      acquisitionRunId: "run-closed-day-etf-absence-suppressed",
+      recordEtfAbsenceEvidence: false,
     });
-    const reappearedHistory = await persistence.listResearchIdentityRecords({
+    const suppressedHistory = await persistence.listResearchIdentityRecords({
       subject: { kind: "listing_id", listingId: transientListingId },
       effectiveAt: "2026-08-30T23:59:59.999Z",
       knowledgeAt: "2026-08-30T23:59:59.999Z",
     });
+    expect(suppressedHistory).toHaveLength(2);
+    expect(suppressedHistory.at(-1)?.listing.status).toBe("active");
+
+    currentTpexTickers = ["00610", "00611", "00612"];
+    await runOfficialIdentityAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-31T04:00:00.000Z",
+      acquisitionRunId: "run-etf-reappeared",
+    });
+    const reappearedHistory = await persistence.listResearchIdentityRecords({
+      subject: { kind: "listing_id", listingId: transientListingId },
+      effectiveAt: "2026-08-31T23:59:59.999Z",
+      knowledgeAt: "2026-08-31T23:59:59.999Z",
+    });
     expect(reappearedHistory.at(-1)?.listing.status).toBe("active");
     expect(reappearedHistory.some((record) => record.listing.status === "inactive")).toBe(false);
+  });
+
+  it("enabled price acquisition: fetch official TWSE and TPEx settled snapshots → append canonical price records with full-bar, no-trade, and suspended states", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    stubActiveTaiwanCalendar(persistence);
+    const twseListing = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:twse-listing", sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseCompanies },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    const twseFund = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:twse-fund", sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseFunds },
+      row: {
+        kind: "fund",
+        ticker: "0050",
+        legalName: "元大台灣卓越50證券投資信託基金",
+        displayName: "元大台灣50",
+        identityKey: "twse-etf:0050",
+        fundType: "ETF",
+        listedAt: "2003-06-30",
+      },
+    });
+    const tpexListing = canonicalizeOfficialIdentityRow({
+      venue: "TPEX",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:tpex-listing", sourceUrl: OFFICIAL_IDENTITY_SOURCES.tpexCompanies },
+      row: {
+        kind: "company",
+        ticker: "5274",
+        legalName: "信驊科技股份有限公司",
+        displayName: "信驊",
+        unifiedBusinessNumber: "27490748",
+        industryCode: "24",
+        listedAt: "2013-04-30",
+      },
+    });
+    const suspendedTpexListing = canonicalizeOfficialIdentityRow({
+      venue: "TPEX",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:tpex-suspended-listing", sourceUrl: OFFICIAL_IDENTITY_SOURCES.tpexCompanies },
+      row: {
+        kind: "company",
+        ticker: "6488",
+        legalName: "環球晶圓股份有限公司",
+        displayName: "環球晶",
+        unifiedBusinessNumber: "53036117",
+        industryCode: "24",
+        listedAt: "2011-10-31",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([twseListing, twseFund, tpexListing, suspendedTpexListing]);
+
+    const payloads = new Map<string, unknown>([
+      [OFFICIAL_PRICE_SOURCES.twsePrices, [
+        {
+          Code: "2330",
+          Date: "1150827",
+          OpeningPrice: "970.00",
+          HighestPrice: "975.00",
+          LowestPrice: "965.00",
+          ClosingPrice: "972.00",
+          TradeVolume: "123,456",
+          TradeValue: "120,000,000",
+          Transaction: "12,345",
+        },
+        {
+          證券代號: "0050",
+          出表日期: "1150827",
+          開盤價: "200.00",
+          最高價: "200.00",
+          最低價: "200.00",
+          收盤價: "200.00",
+          成交股數: "0",
+          成交金額: "0",
+          成交筆數: "0",
+        },
+      ]],
+      [OFFICIAL_PRICE_SOURCES.twseSuspensions, [{ Code: "2330", TradingHaltDate: "1150827" }]],
+      [OFFICIAL_PRICE_SOURCES.tpexPrices, [
+        {
+          SecuritiesCompanyCode: "5274",
+          Date: "1150827",
+          Open: "2,500",
+          High: "2,550",
+          Low: "2,480",
+          Close: "2,530",
+          TradingShares: "8,765",
+          TransactionAmount: "88,000,000",
+          TransactionNumber: "4,321",
+        },
+        {
+          SecuritiesCompanyCode: "6488",
+          Date: "1150827",
+          Open: "1,200",
+          High: "1,250",
+          Low: "1,180",
+          Close: "1,230",
+          TradingShares: "9,999",
+          TransactionAmount: "12,345,678",
+          TransactionNumber: "567",
+        },
+      ]],
+      [OFFICIAL_PRICE_SOURCES.tpexSuspensionsToday, [
+        { SecuritiesCompanyCode: "6488", 暫停交易: "是", 恢復交易: "否" },
+        { SecuritiesCompanyCode: "1788", 暫停交易: "否", 恢復交易: "是" },
+      ]],
+      [OFFICIAL_PRICE_SOURCES.tpexSuspensionsHistory, [
+        { SecuritiesCompanyCode: "1788", DateOfSuspendedTrading: "1150618" },
+        { SecuritiesCompanyCode: "1788", DateOfResumedTrading: "1150622" },
+      ]],
+    ]);
+    const fetchImpl: typeof fetch = async (input) => new Response(JSON.stringify(payloads.get(String(input))), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+    const result = await runOfficialPriceAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-27T10:15:00.000Z",
+      acquisitionRunId: "run-price-1",
+    });
+
+    expect(result).toMatchObject({ acquisitionRunId: "run-price-1", sourceCount: 5, recordCount: 4 });
+
+    const twsePrices = await persistence.listLatestResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: twseListing.listing.id },
+      startDate: "2026-08-27",
+      endDate: "2026-08-27",
+      knowledgeAt: "2026-08-27T10:15:00.000Z",
+    });
+    expect(twsePrices).toEqual([
+      expect.objectContaining({
+        listingId: twseListing.listing.id,
+        ticker: "2330",
+        venue: "TWSE",
+        sessionDate: "2026-08-27",
+        state: "suspended",
+        provenance: expect.objectContaining({
+          sourceUrl: OFFICIAL_PRICE_SOURCES.twseSuspensions,
+          publisherDataset: "exchangeReport/TWTAWU",
+          accessProvider: "TWSE_OPENAPI",
+          acquisitionRunId: "run-price-1",
+        }),
+      }),
+    ]);
+
+    const noTrade = await persistence.listLatestResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: twseFund.listing.id },
+      startDate: "2026-08-27",
+      endDate: "2026-08-27",
+      knowledgeAt: "2026-08-27T10:15:00.000Z",
+    });
+    expect(noTrade[0]).toMatchObject({
+      state: "no_trade",
+      observations: expect.arrayContaining([
+        expect.objectContaining({ field: "close", normalized: { state: "present", value: "200.00" } }),
+        expect.objectContaining({ field: "volume", normalized: { state: "present", value: "0" } }),
+      ]),
+    });
+
+    const suspended = await persistence.listLatestResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: suspendedTpexListing.listing.id },
+      startDate: "2026-08-27",
+      endDate: "2026-08-27",
+      knowledgeAt: "2026-08-27T10:15:00.000Z",
+    });
+    expect(suspended[0]).toMatchObject({
+      state: "suspended",
+      provenance: expect.objectContaining({
+        sourceUrl: OFFICIAL_PRICE_SOURCES.tpexSuspensionsToday,
+        publisherDataset: "tpex_spendi_today",
+        accessProvider: "TPEX_OPENAPI",
+        acquisitionRunId: "run-price-1",
+      }),
+      observations: expect.arrayContaining([
+        expect.objectContaining({ field: "session_state", normalized: { state: "present", value: "suspended" } }),
+      ]),
+    });
+
+    payloads.set(OFFICIAL_PRICE_SOURCES.tpexSuspensionsToday, [
+      { SecuritiesCompanyCode: "5274", 暫停交易: "是", 恢復交易: "否" },
+    ]);
+    await runOfficialPriceAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-28T02:00:00.000Z",
+      acquisitionRunId: "run-price-stale-quote",
+    });
+    const staleSnapshotListing = await persistence.listLatestResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: tpexListing.listing.id },
+      startDate: "2026-08-27",
+      endDate: "2026-08-27",
+      knowledgeAt: "2026-08-28T02:00:00.000Z",
+    });
+    expect(staleSnapshotListing[0]).toMatchObject({
+      state: "full_bar",
+      provenance: {
+        sourceUrl: OFFICIAL_PRICE_SOURCES.tpexPrices,
+        publisherDataset: "tpex_mainboard_daily_close_quotes",
+        acquisitionRunId: "run-price-stale-quote",
+      },
+    });
+  });
+
+  it("delayed price snapshot after ticker reuse: resolve identity at quote session → attach bar to predecessor listing", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    stubActiveTaiwanCalendar(persistence);
+    const predecessor = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:predecessor", sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseCompanies },
+      row: {
+        kind: "company",
+        ticker: "1234",
+        legalName: "前手股份有限公司",
+        displayName: "前手",
+        unifiedBusinessNumber: "11111111",
+        industryCode: "24",
+        listedAt: "2010-01-01",
+      },
+    });
+    const retiredPredecessor = appendOfficialListingStatusRevision(predecessor, {
+      status: "inactive",
+      effectiveDate: "2026-08-28",
+      retrievedAt: "2026-08-28T02:00:00.000Z",
+      acquisitionRunId: "identity-reuse",
+      artifact: {
+        contentHash: "sha256:retired-predecessor",
+        sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseDelistings,
+        publisherDataset: "company/suspendListingCsvAndHtml",
+        accessProvider: "TWSE_OPENAPI",
+      },
+    });
+    const successor = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-28",
+      retrievedAt: "2026-08-28T02:00:00.000Z",
+      artifact: { contentHash: "sha256:successor", sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseCompanies },
+      row: {
+        kind: "company",
+        ticker: "1234",
+        legalName: "後手股份有限公司",
+        displayName: "後手",
+        unifiedBusinessNumber: "22222222",
+        industryCode: "24",
+        listedAt: "2026-08-28",
+      },
+    });
+    const tpexListing = canonicalizeOfficialIdentityRow({
+      venue: "TPEX",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:tpex", sourceUrl: OFFICIAL_IDENTITY_SOURCES.tpexCompanies },
+      row: {
+        kind: "company",
+        ticker: "5274",
+        legalName: "信驊科技股份有限公司",
+        displayName: "信驊",
+        unifiedBusinessNumber: "27490748",
+        industryCode: "24",
+        listedAt: "2013-04-30",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([
+      predecessor,
+      retiredPredecessor,
+      successor,
+      tpexListing,
+    ]);
+    const payloads = new Map<string, unknown>([
+      [OFFICIAL_PRICE_SOURCES.twsePrices, [{
+        Code: "1234", Date: "1150827", OpeningPrice: "10", HighestPrice: "11",
+        LowestPrice: "9", ClosingPrice: "10", TradeVolume: "100", TradeValue: "1000", Transaction: "10",
+      }]],
+      [OFFICIAL_PRICE_SOURCES.twseSuspensions, []],
+      [OFFICIAL_PRICE_SOURCES.tpexPrices, [{
+        SecuritiesCompanyCode: "5274", Date: "1150827", Open: "2500", High: "2550",
+        Low: "2480", Close: "2530", TradingShares: "8765", TransactionAmount: "88000000",
+        TransactionNumber: "4321",
+      }]],
+      [OFFICIAL_PRICE_SOURCES.tpexSuspensionsToday, []],
+      [OFFICIAL_PRICE_SOURCES.tpexSuspensionsHistory, []],
+    ]);
+    const fetchImpl: typeof fetch = async (input) => new Response(
+      JSON.stringify(payloads.get(String(input))),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+
+    await runOfficialPriceAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-28T02:00:00.000Z",
+      acquisitionRunId: "run-delayed-reused-ticker",
+    });
+
+    const predecessorPrices = await persistence.listLatestResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: predecessor.listing.id },
+      startDate: "2026-08-27",
+      endDate: "2026-08-27",
+      knowledgeAt: "2026-08-28T02:00:00.000Z",
+    });
+    const successorPrices = await persistence.listLatestResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: successor.listing.id },
+      startDate: "2026-08-27",
+      endDate: "2026-08-27",
+      knowledgeAt: "2026-08-28T02:00:00.000Z",
+    });
+    expect(predecessorPrices).toHaveLength(1);
+    expect(predecessorPrices[0]).toMatchObject({ ticker: "1234", sessionDate: "2026-08-27" });
+    expect(successorPrices).toEqual([]);
+
+    await expect(runOfficialPriceAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-28T10:30:00.000Z",
+      acquisitionRunId: "run-stale-reused-ticker",
+    })).rejects.toThrow(
+      "Official TWSE price snapshot is stale: expected 2026-08-28, received 2026-08-27",
+    );
+    expect(await persistence.listLatestResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: predecessor.listing.id },
+      startDate: "2026-08-27",
+      endDate: "2026-08-27",
+      knowledgeAt: "2026-08-28T10:30:00.000Z",
+    })).toHaveLength(1);
+  });
+
+  it("empty or incomplete price snapshot: validate every active listing before append → reject acquisition", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    stubActiveTaiwanCalendar(persistence);
+    const twseListings = ["1101", "1102", "1103"].map((ticker, index) =>
+      canonicalizeOfficialIdentityRow({
+        venue: "TWSE",
+        snapshotDate: "2026-08-27",
+        retrievedAt: "2026-08-27T02:00:00.000Z",
+        artifact: { contentHash: `sha256:twse-${ticker}`, sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseCompanies },
+        row: {
+          kind: "company",
+          ticker,
+          legalName: `測試公司${index + 1}股份有限公司`,
+          displayName: `測試${index + 1}`,
+          unifiedBusinessNumber: `1234567${index}`,
+          industryCode: "24",
+          listedAt: "2010-01-01",
+        },
+      })
+    );
+    const tpexListing = canonicalizeOfficialIdentityRow({
+      venue: "TPEX",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:tpex-complete", sourceUrl: OFFICIAL_IDENTITY_SOURCES.tpexCompanies },
+      row: {
+        kind: "company",
+        ticker: "5274",
+        legalName: "信驊科技股份有限公司",
+        displayName: "信驊",
+        unifiedBusinessNumber: "27490748",
+        industryCode: "24",
+        listedAt: "2013-04-30",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([...twseListings, tpexListing]);
+    const payloads = new Map<string, unknown>([
+      [OFFICIAL_PRICE_SOURCES.twsePrices, []],
+      [OFFICIAL_PRICE_SOURCES.twseSuspensions, []],
+      [OFFICIAL_PRICE_SOURCES.tpexPrices, [{
+        SecuritiesCompanyCode: "5274", Date: "1150827", Open: "2500", High: "2550",
+        Low: "2480", Close: "2530", TradingShares: "8765", TransactionAmount: "88000000",
+        TransactionNumber: "4321",
+      }]],
+      [OFFICIAL_PRICE_SOURCES.tpexSuspensionsToday, []],
+      [OFFICIAL_PRICE_SOURCES.tpexSuspensionsHistory, []],
+    ]);
+    const fetchImpl: typeof fetch = async (input) => new Response(
+      JSON.stringify(payloads.get(String(input))),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+
+    await expect(runOfficialPriceAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-27T10:15:00.000Z",
+      acquisitionRunId: "run-empty-price",
+    })).rejects.toThrow("Official TWSE price snapshot returned no rows");
+
+    payloads.set(OFFICIAL_PRICE_SOURCES.twsePrices, [{
+      Code: "1101", Date: "1150827", OpeningPrice: "10", HighestPrice: "11",
+      LowestPrice: "9", ClosingPrice: "10", TradeVolume: "100", TradeValue: "1000", Transaction: "10",
+    }, {
+      Code: "1102", Date: "1150826", OpeningPrice: "10", HighestPrice: "11",
+      LowestPrice: "9", ClosingPrice: "10", TradeVolume: "100", TradeValue: "1000", Transaction: "10",
+    }]);
+    await expect(runOfficialPriceAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-27T10:15:00.000Z",
+      acquisitionRunId: "run-mixed-date-price",
+    })).rejects.toThrow(
+      "Official TWSE price snapshot returned multiple session dates: 2026-08-27,2026-08-26",
+    );
+
+    payloads.set(OFFICIAL_PRICE_SOURCES.twsePrices, ["1101", "1102"].map((ticker) => ({
+      Code: ticker, Date: "1150827", OpeningPrice: "10", HighestPrice: "11",
+      LowestPrice: "9", ClosingPrice: "10", TradeVolume: "100", TradeValue: "1000", Transaction: "10",
+    })));
+    await expect(runOfficialPriceAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-27T10:15:00.000Z",
+      acquisitionRunId: "run-truncated-price",
+    })).rejects.toThrow(
+      "Official TWSE price snapshot failed completeness guard: 1 of 3 active listings are absent",
+    );
+    expect(await persistence.listLatestResearchPriceRecords({
+      subject: { kind: "listing_id", listingId: twseListings[0]!.listing.id },
+      startDate: "2026-08-27",
+      endDate: "2026-08-27",
+      knowledgeAt: "2026-08-27T10:15:00.000Z",
+    })).toEqual([]);
   });
 });

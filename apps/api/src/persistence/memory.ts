@@ -52,6 +52,7 @@ import type {
   BookedTradeEvent,
   CashLedgerEntry,
   DividendCalculationVersion,
+  DividendEvent,
   InstrumentDef,
   LotAllocationProjection,
   MarketDataFacts,
@@ -77,6 +78,14 @@ import {
   type ResearchIdentityRecord,
   type ResearchIdentityRecordQuery,
 } from "../services/research/identity.js";
+import {
+  latestResearchPriceRecord,
+  researchPriceRecordKey,
+  researchPriceRecordSortOrder,
+  validateResearchPriceRecord,
+  type ResearchPriceRecord,
+  type ResearchPriceRecordQuery,
+} from "../services/research/price.js";
 import type {
   AdminAuditLogResponse,
   AdminInviteListResponse,
@@ -665,9 +674,11 @@ function stockDividendLotIdsForScope(
 
 export class MemoryPersistence implements Persistence {
   private readonly researchIdentityRecords = new Map<string, ResearchIdentityRecord>();
+  private readonly researchPriceRecords = new Map<string, ResearchPriceRecord>();
   private readonly stores = new Map<string, Store>();
   private readonly idempotencyKeys = new Map<string, Set<string>>();
   private readonly dailyBars: MemoryDailyBar[] = [];
+  private readonly researchDividendEvents: DividendEvent[] = [];
   private readonly intradayOverlays = new Map<string, IntradayPriceOverlay>();
   private readonly tickerFundamentals = new Map<string, MemoryTickerFundamentalsRecord>();
   /** email → MemoryUser (identity resolution index) */
@@ -954,6 +965,67 @@ export class MemoryPersistence implements Persistence {
       .sort(researchIdentityRecordSortOrder)
       .slice(0, query.limit)
       .map((record) => structuredClone(record));
+  }
+
+  async appendResearchPriceRecords(records: ResearchPriceRecord[]): Promise<void> {
+    for (const record of records) {
+      validateResearchPriceRecord(record);
+    }
+    for (const record of records) {
+      const key = researchPriceRecordKey(record);
+      if (!this.researchPriceRecords.has(key)) {
+        this.researchPriceRecords.set(key, structuredClone(record));
+      }
+    }
+  }
+
+  async listResearchPriceRecords(query: ResearchPriceRecordQuery): Promise<ResearchPriceRecord[]> {
+    return [...this.researchPriceRecords.values()]
+      .filter((record) => {
+        const subjectMatches = query.subject.kind === "listing_id"
+          ? record.listingId === query.subject.listingId
+          : record.venue === query.subject.venue;
+        return subjectMatches
+          && record.sessionDate >= query.startDate
+          && record.sessionDate <= query.endDate
+          && record.provenance.retrievedAt <= query.knowledgeAt;
+      })
+      .sort(researchPriceRecordSortOrder)
+      .map((record) => structuredClone(record));
+  }
+
+  async listLatestResearchPriceRecords(query: {
+    subject: { kind: "listing_id"; listingId: string };
+    startDate: string;
+    endDate: string;
+    knowledgeAt: string;
+  }): Promise<ResearchPriceRecord[]> {
+    const grouped = new Map<string, ResearchPriceRecord[]>();
+    for (const record of await this.listResearchPriceRecords(query)) {
+      const current = grouped.get(record.sessionDate) ?? [];
+      current.push(record);
+      grouped.set(record.sessionDate, current);
+    }
+    return [...grouped.values()]
+      .map((records) => latestResearchPriceRecord(records))
+      .filter((record): record is ResearchPriceRecord => record !== undefined)
+      .sort(researchPriceRecordSortOrder)
+      .map((record) => structuredClone(record));
+  }
+
+  async getDistinctResearchPriceSessionDates(
+    venue: import("../services/research/identity.js").ResearchListingVenue,
+    fromDate: string,
+    knowledgeAt: string,
+  ): Promise<string[]> {
+    const dates = new Set<string>();
+    for (const record of this.researchPriceRecords.values()) {
+      if (record.venue !== venue) continue;
+      if (record.sessionDate < fromDate) continue;
+      if (record.provenance.retrievedAt > knowledgeAt) continue;
+      dates.add(record.sessionDate);
+    }
+    return [...dates].sort((left, right) => left.localeCompare(right));
   }
 
   async init(): Promise<void> {
@@ -5079,6 +5151,10 @@ export class MemoryPersistence implements Persistence {
       }
     }
   }
+  _seedDividendEvents(events: DividendEvent[]): void {
+    this.researchDividendEvents.length = 0;
+    this.researchDividendEvents.push(...events.map((event) => ({ ...event })));
+  }
   _clearDailyBars(): void { this.dailyBars.length = 0; }
   _seedHoldingSnapshots(snapshots: HoldingSnapshot[]): void { this.holdingSnapshots.push(...snapshots); }
   _clearHoldingSnapshots(): void { this.holdingSnapshots.length = 0; }
@@ -5280,6 +5356,26 @@ export class MemoryPersistence implements Persistence {
         && bar.barDate <= endDate
       ))
       .sort((left, right) => left.barDate.localeCompare(right.barDate));
+  }
+
+  async listDividendEventsForTickerMarket(
+    ticker: string,
+    marketCode: MarketCode,
+    startDate: string,
+    endDate: string,
+  ): Promise<DividendEvent[]> {
+    return this.researchDividendEvents
+      .filter((event) => (
+        event.ticker === ticker
+        && (event.marketCode ?? "TW") === marketCode
+        && event.exDividendDate >= startDate
+        && event.exDividendDate <= endDate
+      ))
+      .sort((left, right) =>
+        left.exDividendDate.localeCompare(right.exDividendDate)
+        || left.id.localeCompare(right.id),
+      )
+      .map((event) => ({ ...event }));
   }
 
   async getDailyBarsForTickerMarkets(

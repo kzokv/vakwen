@@ -26,11 +26,14 @@ import { resetMcpRateLimitBucketsForTest } from "../../src/mcp/policy.js";
 import { createDividendEvent } from "../../src/services/dividends.js";
 import { replayPositionHistory } from "../../src/services/replayPositionHistory.js";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import { canonicalizeOfficialPriceRow } from "../../src/services/research/price.js";
 import {
   researchIdentityOutputSchema,
   researchIdentityToolOutputSchema,
   researchManifestOutputSchema,
   researchManifestToolOutputSchema,
+  researchPriceSeriesOutputSchema,
+  researchPriceSeriesToolOutputSchema,
 } from "../../src/services/research/contracts.js";
 
 let app: Awaited<ReturnType<typeof buildApp>>;
@@ -756,6 +759,53 @@ describe("mcp routes", () => {
     });
     expect(identity.result.content[0]?.text).toContain("Research identity for TWSE:2330");
 
+    await app.persistence.appendResearchPriceRecords([
+      canonicalizeOfficialPriceRow({
+        listingId: record.listing.id,
+        ticker: "2330",
+        venue: "TWSE",
+        sessionDate: "2026-08-27",
+        retrievedAt: "2026-08-27T10:00:00.000Z",
+        artifact: {
+          contentHash: "sha256:mcp-price",
+          sourceUrl: "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+          publisherDataset: "exchangeReport/STOCK_DAY_ALL",
+          accessProvider: "TWSE_OPENAPI",
+        },
+        row: {
+          state: "full_bar",
+          open: "100",
+          high: "102",
+          low: "99",
+          close: "101",
+          volume: "1000",
+          tradedValue: "101000",
+          tradeCount: "100",
+        },
+      }),
+    ]);
+
+    const priceResponse = await callMcpTool(headers, sessionId, "get_price_series", {
+      ...query,
+      subject: { kind: "listing_id", listingId: record.listing.id },
+      scope: { kind: "latest" },
+      basis: "raw",
+      order: "desc",
+      page: { limit: 10 },
+      metrics: [],
+    });
+    expect(priceResponse.statusCode).toBe(200);
+    const price = parseMcpJson<{ result: { content: Array<{ text: string }>; structuredContent: Record<string, unknown>; isError?: boolean } }>(priceResponse.body);
+    expect(price.result.isError).not.toBe(true);
+    const priceResult = (price.result.structuredContent as { result: unknown }).result;
+    expect(researchPriceSeriesOutputSchema.parse(priceResult)).toEqual(priceResult);
+    expect(priceResult).toMatchObject({
+      selector: { kind: "listing_id", listingId: record.listing.id },
+      listing: { ticker: "2330", venue: "TWSE" },
+      page: { recordCount: 1 },
+    });
+    expect(price.result.content[0]?.text).toContain("Research price series for TWSE:2330");
+
     const missingResponse = await callMcpTool(headers, sessionId, "get_research_identity", {
       ...query,
       subject: { kind: "ticker_venue", ticker: "0000", listingVenue: "TWSE" },
@@ -767,6 +817,24 @@ describe("mcp routes", () => {
     }>(missingResponse.body);
     expect(missing.result.isError).toBe(true);
     expect(researchIdentityToolOutputSchema.parse(missing.result.structuredContent)).toMatchObject({
+      result: { code: "research_subject_not_found", statusCode: 422 },
+    });
+
+    const missingPriceResponse = await callMcpTool(headers, sessionId, "get_price_series", {
+      ...query,
+      subject: { kind: "ticker_venue", ticker: "0000", listingVenue: "TWSE" },
+      scope: { kind: "latest" },
+      basis: "raw",
+      order: "desc",
+      page: { limit: 10 },
+      metrics: [],
+    });
+    expect(missingPriceResponse.statusCode).toBe(200);
+    const missingPrice = parseMcpJson<{
+      result: { structuredContent: Record<string, unknown>; isError?: boolean };
+    }>(missingPriceResponse.body);
+    expect(missingPrice.result.isError).toBe(true);
+    expect(researchPriceSeriesToolOutputSchema.parse(missingPrice.result.structuredContent)).toMatchObject({
       result: { code: "research_subject_not_found", statusCode: 422 },
     });
 

@@ -33,6 +33,13 @@ import {
   type ResearchIdentityRecord,
   type ResearchIdentityRecordQuery,
 } from "../services/research/identity.js";
+import {
+  researchPriceRecordKey,
+  researchPriceRecordSortOrder,
+  validateResearchPriceRecord,
+  type ResearchPriceRecord,
+  type ResearchPriceRecordQuery,
+} from "../services/research/price.js";
 import { buildRedisSocketOptions } from "../lib/redisClientOptions.js";
 import { loadMigrationManifest } from "./migrationManifest.js";
 import {
@@ -1436,6 +1443,96 @@ export class PostgresPersistence implements Persistence {
           [query.subject.listingId, query.effectiveAt, query.knowledgeAt, query.limit],
         );
     return result.rows.map(({ record }) => record);
+  }
+
+  async appendResearchPriceRecords(records: ResearchPriceRecord[]): Promise<void> {
+    if (records.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of records) {
+        validateResearchPriceRecord(record);
+        await client.query(
+          `INSERT INTO research.price_records (
+             record_key, listing_id, ticker, venue, session_date, state, retrieved_at, record
+           ) VALUES ($1, $2, $3, $4, $5::date, $6, $7::timestamptz, $8::jsonb)
+           ON CONFLICT (record_key) DO NOTHING`,
+          [
+            researchPriceRecordKey(record),
+            record.listingId,
+            record.ticker,
+            record.venue,
+            record.sessionDate,
+            record.state,
+            record.provenance.retrievedAt,
+            JSON.stringify(record),
+          ],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listResearchPriceRecords(query: ResearchPriceRecordQuery): Promise<ResearchPriceRecord[]> {
+    const selectorSql = query.subject.kind === "listing_id" ? "listing_id = $1" : "venue = $1";
+    const selectorValue = query.subject.kind === "listing_id" ? query.subject.listingId : query.subject.venue;
+    const result = await this.pool.query<{ record: ResearchPriceRecord }>(
+      `SELECT record
+         FROM research.price_records
+        WHERE ${selectorSql}
+          AND session_date >= $2::date
+          AND session_date <= $3::date
+          AND retrieved_at <= $4::timestamptz
+        ORDER BY session_date ASC, retrieved_at ASC, record_key ASC`,
+      [selectorValue, query.startDate, query.endDate, query.knowledgeAt],
+    );
+    return result.rows.map(({ record }) => record);
+  }
+
+  async listLatestResearchPriceRecords(query: {
+    subject: { kind: "listing_id"; listingId: string };
+    startDate: string;
+    endDate: string;
+    knowledgeAt: string;
+  }): Promise<ResearchPriceRecord[]> {
+    const result = await this.pool.query<{ record: ResearchPriceRecord }>(
+      `SELECT record
+         FROM (
+           SELECT DISTINCT ON (session_date)
+             record_key, session_date, retrieved_at, record
+           FROM research.price_records
+           WHERE listing_id = $1
+             AND session_date >= $2::date
+             AND session_date <= $3::date
+             AND retrieved_at <= $4::timestamptz
+           ORDER BY session_date ASC, retrieved_at DESC, record_key DESC
+         ) latest
+        ORDER BY session_date ASC`,
+      [query.subject.listingId, query.startDate, query.endDate, query.knowledgeAt],
+    );
+    return result.rows.map(({ record }) => record).sort(researchPriceRecordSortOrder);
+  }
+
+  async getDistinctResearchPriceSessionDates(
+    venue: import("../services/research/identity.js").ResearchListingVenue,
+    fromDate: string,
+    knowledgeAt: string,
+  ): Promise<string[]> {
+    const result = await this.pool.query<{ session_date: string }>(
+      `SELECT DISTINCT session_date::text AS session_date
+         FROM research.price_records
+        WHERE venue = $1
+          AND session_date >= $2::date
+          AND retrieved_at <= $3::timestamptz
+        ORDER BY session_date ASC`,
+      [venue, fromDate, knowledgeAt],
+    );
+    return result.rows.map((row) => row.session_date);
   }
 
   private async getLatestQuoteFallbackSnapshotsForPolicyIds(
@@ -8189,6 +8286,83 @@ export class PostgresPersistence implements Persistence {
       quality: row.quality,
       source: row.source,
       ingestedAt: row.ingested_at,
+    }));
+  }
+
+  async listDividendEventsForTickerMarket(
+    ticker: string,
+    marketCode: MarketCode,
+    startDate: string,
+    endDate: string,
+  ): Promise<DividendEvent[]> {
+    const result = await this.pool.query<{
+      id: string;
+      ticker: string;
+      market_code: MarketCode | null;
+      event_type: DividendEvent["eventType"];
+      ex_dividend_date: string;
+      payment_date: string | null;
+      cash_dividend_per_share: string;
+      cash_dividend_currency: string;
+      stock_dividend_per_share: string;
+      stock_distribution_amount_raw: string | null;
+      stock_provider_value: string | null;
+      stock_provider_value_unit: DividendEvent["stockProviderValueUnit"] | null;
+      stock_provider_source: string | null;
+      stock_provider_dataset: string | null;
+      stock_provider_authoritative_ratio: string | null;
+      stock_distribution_ratio: string | null;
+      stock_distribution_ratio_state: DividendEvent["stockDistributionRatioState"] | null;
+      stock_par_value_amount: string | null;
+      stock_par_value_currency: string | null;
+      source: string;
+      source_reference: string | null;
+      ingested_at: string | null;
+      fiscal_year_period: string | null;
+      announcement_date: string | null;
+      total_distribution_shares: string | null;
+    }>(
+      `SELECT id, ticker, market_code, event_type, ex_dividend_date::text, payment_date::text,
+              cash_dividend_per_share, cash_dividend_currency, stock_dividend_per_share,
+              stock_distribution_amount_raw::text, stock_provider_value, stock_provider_value_unit,
+              stock_provider_source, stock_provider_dataset, stock_provider_authoritative_ratio::text,
+              stock_distribution_ratio::text, stock_distribution_ratio_state,
+              stock_par_value_amount::text, stock_par_value_currency, source, source_reference,
+              ingested_at::text, fiscal_year_period, announcement_date::text, total_distribution_shares::text
+         FROM market_data.dividend_events
+        WHERE ticker = $1
+          AND market_code = $2
+          AND ex_dividend_date >= $3::date
+          AND ex_dividend_date <= $4::date
+        ORDER BY ex_dividend_date ASC, id ASC`,
+      [ticker, marketCode, startDate, endDate],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      ticker: row.ticker,
+      marketCode: row.market_code ?? undefined,
+      eventType: row.event_type,
+      exDividendDate: row.ex_dividend_date,
+      paymentDate: row.payment_date,
+      cashDividendPerShare: Number(row.cash_dividend_per_share),
+      cashDividendCurrency: row.cash_dividend_currency,
+      stockDividendPerShare: Number(row.stock_dividend_per_share),
+      stockDistributionAmountRaw: row.stock_distribution_amount_raw == null ? null : Number(row.stock_distribution_amount_raw),
+      stockProviderValue: row.stock_provider_value,
+      stockProviderValueUnit: row.stock_provider_value_unit,
+      stockProviderSource: row.stock_provider_source,
+      stockProviderDataset: row.stock_provider_dataset,
+      stockProviderAuthoritativeRatio: row.stock_provider_authoritative_ratio,
+      stockDistributionRatio: row.stock_distribution_ratio == null ? null : Number(row.stock_distribution_ratio),
+      stockDistributionRatioState: row.stock_distribution_ratio_state ?? undefined,
+      stockParValueAmount: row.stock_par_value_amount == null ? null : Number(row.stock_par_value_amount),
+      stockParValueCurrency: row.stock_par_value_currency,
+      source: row.source,
+      sourceReference: row.source_reference ?? undefined,
+      createdAt: row.ingested_at ?? undefined,
+      fiscalYearPeriod: row.fiscal_year_period ?? undefined,
+      announcementDate: row.announcement_date ?? undefined,
+      totalDistributionShares: row.total_distribution_shares == null ? undefined : Number(row.total_distribution_shares),
     }));
   }
 
