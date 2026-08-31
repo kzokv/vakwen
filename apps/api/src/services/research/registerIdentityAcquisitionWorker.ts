@@ -7,6 +7,13 @@ import { runOfficialIdentityAcquisition, runOfficialMonthlyRevenueAcquisition } 
 export const RESEARCH_IDENTITY_ACQUISITION_QUEUE = "research-identity-acquisition";
 // 18:15 UTC Sunday-Thursday is 02:15 Monday-Friday in Taiwan.
 export const RESEARCH_IDENTITY_ACQUISITION_CRON = "15 18 * * 0-4";
+export const RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE = "research-monthly-revenue-acquisition";
+// 16:15 UTC Monday-Friday is 00:15 Tuesday-Saturday in Taiwan, after each filing day closes.
+export const RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON = "15 16 * * 1-5";
+
+interface ResearchIdentityAcquisitionJobData {
+  bootstrapMonthlyRevenue?: boolean;
+}
 
 interface ResearchIdentityAcquisitionWorkerDeps {
   persistence: Persistence;
@@ -16,30 +23,31 @@ interface ResearchIdentityAcquisitionWorkerDeps {
 export function createResearchIdentityAcquisitionHandler(
   deps: ResearchIdentityAcquisitionWorkerDeps,
 ) {
-  return async (jobs: JobWithMetadata<Record<string, never>>[]): Promise<void> => {
+  return async (jobs: JobWithMetadata<ResearchIdentityAcquisitionJobData>[]): Promise<void> => {
     const job = jobs[0];
     const identity = await runOfficialIdentityAcquisition(deps.persistence, {
       acquisitionRunId: job ? `pg-boss:${job.id}:identity` : undefined,
     });
-    const monthlyRevenue = await runOfficialMonthlyRevenueAcquisition(deps.persistence, {
-      acquisitionRunId: job ? `pg-boss:${job.id}:monthly-revenue` : undefined,
-    });
-    deps.log.info({ identity, monthlyRevenue }, "research_identity_acquisition_completed");
+    if (job?.data.bootstrapMonthlyRevenue === true) {
+      const monthlyRevenue = await runOfficialMonthlyRevenueAcquisition(deps.persistence, {
+        acquisitionRunId: `pg-boss:${job.id}:monthly-revenue`,
+      });
+      deps.log.info({ identity, monthlyRevenue }, "research_acquisition_bootstrap_completed");
+      return;
+    }
+    deps.log.info({ identity }, "research_identity_acquisition_completed");
   };
 }
 
-export function createResearchAcquisitionHandler(
+export function createResearchMonthlyRevenueAcquisitionHandler(
   deps: ResearchIdentityAcquisitionWorkerDeps,
 ) {
   return async (jobs: JobWithMetadata<Record<string, never>>[]): Promise<void> => {
     const job = jobs[0];
-    const identity = await runOfficialIdentityAcquisition(deps.persistence, {
-      acquisitionRunId: job ? `pg-boss:${job.id}` : undefined,
-    });
     const monthlyRevenue = await runOfficialMonthlyRevenueAcquisition(deps.persistence, {
-      acquisitionRunId: job ? `pg-boss:${job.id}` : undefined,
+      acquisitionRunId: job ? `pg-boss:${job.id}:monthly-revenue` : undefined,
     });
-    deps.log.info({ identity, monthlyRevenue }, "research_acquisition_completed");
+    deps.log.info({ monthlyRevenue }, "research_monthly_revenue_acquisition_completed");
   };
 }
 
@@ -51,13 +59,27 @@ export async function registerResearchIdentityAcquisitionWorker(
     ...DEFAULT_MARKET_DATA_QUEUE_OPTIONS,
     policy: "singleton",
   });
+  await boss.createQueue(RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE, {
+    ...DEFAULT_MARKET_DATA_QUEUE_OPTIONS,
+    policy: "singleton",
+  });
   await boss.work(
     RESEARCH_IDENTITY_ACQUISITION_QUEUE,
     { batchSize: 1, includeMetadata: true },
-    createResearchAcquisitionHandler(deps),
+    createResearchIdentityAcquisitionHandler(deps),
+  );
+  await boss.work(
+    RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE,
+    { batchSize: 1, includeMetadata: true },
+    createResearchMonthlyRevenueAcquisitionHandler(deps),
   );
   await boss.schedule(RESEARCH_IDENTITY_ACQUISITION_QUEUE, RESEARCH_IDENTITY_ACQUISITION_CRON, {});
-  await boss.send(RESEARCH_IDENTITY_ACQUISITION_QUEUE, {}, {
+  await boss.schedule(
+    RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE,
+    RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON,
+    {},
+  );
+  await boss.send(RESEARCH_IDENTITY_ACQUISITION_QUEUE, { bootstrapMonthlyRevenue: true }, {
     singletonKey: RESEARCH_IDENTITY_ACQUISITION_QUEUE,
   });
 }

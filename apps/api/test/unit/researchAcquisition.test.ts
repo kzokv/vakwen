@@ -14,7 +14,13 @@ import {
   canonicalizeOfficialIdentityRow,
   officialFundProductIdentityKey,
 } from "../../src/services/research/identity.js";
-import { RESEARCH_IDENTITY_ACQUISITION_CRON } from "../../src/services/research/registerIdentityAcquisitionWorker.js";
+import {
+  RESEARCH_IDENTITY_ACQUISITION_CRON,
+  RESEARCH_IDENTITY_ACQUISITION_QUEUE,
+  RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON,
+  RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE,
+  registerResearchIdentityAcquisitionWorker,
+} from "../../src/services/research/registerIdentityAcquisitionWorker.js";
 import { getResearchIdentity } from "../../src/services/research/service.js";
 
 function stubActiveTaiwanCalendar(
@@ -37,8 +43,43 @@ function stubActiveTaiwanCalendar(
 describe("official Taiwan identity acquisition", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
 
-  it("scheduled acquisition: UTC cron → runs Monday through Friday in Taiwan", () => {
+  it("scheduled acquisition: UTC crons → run identity on Taiwan weekdays and revenue after each filing day closes", () => {
     expect(RESEARCH_IDENTITY_ACQUISITION_CRON).toBe("15 18 * * 0-4");
+    expect(RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON).toBe("15 16 * * 1-5");
+  });
+
+  it("worker registration: split identity and revenue schedules → keep startup bootstrap ordered", async () => {
+    const boss = {
+      createQueue: vi.fn().mockResolvedValue(undefined),
+      work: vi.fn().mockResolvedValue(undefined),
+      schedule: vi.fn().mockResolvedValue(undefined),
+      send: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await registerResearchIdentityAcquisitionWorker(boss as never, {
+      persistence: new MemoryPersistence(),
+      log: { info: vi.fn() } as never,
+    });
+
+    expect(boss.createQueue.mock.calls.map(([queue]) => queue)).toEqual([
+      RESEARCH_IDENTITY_ACQUISITION_QUEUE,
+      RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE,
+    ]);
+    expect(boss.schedule).toHaveBeenCalledWith(
+      RESEARCH_IDENTITY_ACQUISITION_QUEUE,
+      RESEARCH_IDENTITY_ACQUISITION_CRON,
+      {},
+    );
+    expect(boss.schedule).toHaveBeenCalledWith(
+      RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE,
+      RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON,
+      {},
+    );
+    expect(boss.send).toHaveBeenCalledWith(
+      RESEARCH_IDENTITY_ACQUISITION_QUEUE,
+      { bootstrapMonthlyRevenue: true },
+      { singletonKey: RESEARCH_IDENTITY_ACQUISITION_QUEUE },
+    );
   });
 
   it("enabled acquisition: fetch both venues' official identity and status snapshots → append canonical records", async () => {
