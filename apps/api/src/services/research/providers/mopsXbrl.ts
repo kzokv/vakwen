@@ -289,7 +289,18 @@ function statementRoleForConcept(
   if (knownRole) return knownRole;
   if (namespaceUri && /^https?:\/\/xbrl\.ifrs\.org\/taxonomy\/.+\/ifrs-full\/?$/i.test(namespaceUri)) {
     if (context?.periodType === "instant") return "balance_sheet";
-    if (context?.periodType === "duration") return "income_statement";
+    if (context?.periodType === "duration") {
+      if (
+        /CashFlows?|ClassifiedAs(?:Operating|Investing|Financing)Activities|ProceedsFrom|Payments(?:To|For)|PurchaseOf|AcquisitionOf|DisposalOf/i
+          .test(localName)
+      ) {
+        return "cash_flow_statement";
+      }
+      if (/Equity|ShareCapital|TreasuryShares|DistributionsToOwners|TransactionsWithOwners/i.test(localName)) {
+        return "equity_statement";
+      }
+      return "income_statement";
+    }
   }
   return "unknown";
 }
@@ -306,6 +317,9 @@ function buildFactRecord(
   const contextRef = attributes.contextRef;
   if (!contextRef) return null;
   const context = contextsById.get(contextRef);
+  if (!context) {
+    throw new Error(`MOPS XBRL fact ${qname} references unknown context ${contextRef}`);
+  }
   const rawValue = stripMarkup(innerValue);
   return {
     id: `fact_${createHash("sha256").update([qname, contextRef, attributes.unitRef ?? "", rawValue].join("\u001f")).digest("hex").slice(0, 24)}`,
@@ -323,10 +337,37 @@ function buildFactRecord(
     sign: attributes.sign ?? null,
     rawValue,
     normalizedValue: normalizeFactValue(rawValue, attributes.sign ?? null, attributes.scale ?? null),
-    periodEnd: context?.endDate ?? context?.instant ?? null,
-    periodStart: context?.startDate ?? null,
-    contextDimensions: context?.dimensions ?? [],
+    periodEnd: context.endDate ?? context.instant ?? null,
+    periodStart: context.startDate,
+    contextDimensions: context.dimensions,
   };
+}
+
+function withoutInlineExcludedContent(value: string): string {
+  return value.replace(/<ix:exclude\b[^>]*>[\s\S]*?<\/ix:exclude>/gi, " ");
+}
+
+function inlineFactValue(
+  innerValue: string,
+  continuedAt: string | undefined,
+  continuationsById: ReadonlyMap<string, { body: string; continuedAt?: string }>,
+): string {
+  const parts = [withoutInlineExcludedContent(innerValue)];
+  const visited = new Set<string>();
+  let continuationId = continuedAt;
+  while (continuationId) {
+    if (visited.has(continuationId)) {
+      throw new Error(`MOPS iXBRL continuation cycle at ${continuationId}`);
+    }
+    visited.add(continuationId);
+    const continuation = continuationsById.get(continuationId);
+    if (!continuation) {
+      throw new Error(`MOPS iXBRL continuation ${continuationId} was not found`);
+    }
+    parts.push(withoutInlineExcludedContent(continuation.body));
+    continuationId = continuation.continuedAt;
+  }
+  return parts.join(" ");
 }
 
 function extractInlineFacts(
@@ -335,18 +376,29 @@ function extractInlineFacts(
   contextsById: ReadonlyMap<string, MopsContextRecord>,
 ): MopsFactRecord[] {
   const facts: MopsFactRecord[] = [];
+  const continuationsById = new Map<string, { body: string; continuedAt?: string }>();
+  for (const match of content.matchAll(/<ix:continuation\b([^>]*)>([\s\S]*?)<\/ix:continuation>/gi)) {
+    const attributes = parseAttributes(match[1] ?? "");
+    if (!attributes.id) continue;
+    continuationsById.set(attributes.id, {
+      body: match[2] ?? "",
+      ...(attributes.continuedAt ? { continuedAt: attributes.continuedAt } : {}),
+    });
+  }
   for (const match of content.matchAll(/<ix:(?:nonFraction|nonNumeric)\b([^>]*?)(?<!\/)>([\s\S]*?)<\/ix:(?:nonFraction|nonNumeric)>/gi)) {
     const attributes = parseAttributes(match[1] ?? "");
     const qname = attributes.name;
     if (!qname) continue;
-    const fact = buildFactRecord(qname, attributes, match[2] ?? "", namespaceMap, contextsById);
+    const value = inlineFactValue(match[2] ?? "", attributes.continuedAt, continuationsById);
+    const fact = buildFactRecord(qname, attributes, value, namespaceMap, contextsById);
     if (fact) facts.push(fact);
   }
   for (const match of content.matchAll(/<ix:(?:nonFraction|nonNumeric)\b([^>]*)\/>/gi)) {
     const attributes = parseAttributes(match[1] ?? "");
     const qname = attributes.name;
     if (!qname) continue;
-    const fact = buildFactRecord(qname, attributes, "", namespaceMap, contextsById);
+    const value = inlineFactValue("", attributes.continuedAt, continuationsById);
+    const fact = buildFactRecord(qname, attributes, value, namespaceMap, contextsById);
     if (fact) facts.push(fact);
   }
   return facts;

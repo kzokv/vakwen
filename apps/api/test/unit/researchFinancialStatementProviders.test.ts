@@ -147,6 +147,7 @@ describe("MOPS XBRL provider parser", () => {
         xmlns:xbrli="http://www.xbrl.org/2003/instance"
         xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
         xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full"
+        xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom"
         xmlns:tifrs-bsci-ci="https://mops.twse.com.tw/taxonomy/2026/tifrs-bsci-ci">
         <body>
           <xbrli:context id="ctx_q2">
@@ -161,6 +162,10 @@ describe("MOPS XBRL provider parser", () => {
           <ix:nonFraction name="ifrs-full:ProfitLoss" contextRef="ctx_q2" unitRef="twd">88</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:CashFlowsFromUsedInOperatingActivities" contextRef="ctx_q2" unitRef="twd">66</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:PurchaseOfPropertyPlantAndEquipment" contextRef="ctx_q2" unitRef="twd" sign="-">25</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:DividendsPaidClassifiedAsFinancingActivities" contextRef="ctx_q2" unitRef="twd">10</ix:nonFraction>
+          <ix:nonNumeric name="custom:NarrativeDisclosure" contextRef="ctx_q2" continuedAt="continuation-1">Alpha <ix:exclude>remove me</ix:exclude></ix:nonNumeric>
+          <ix:continuation id="continuation-1" continuedAt="continuation-2">Beta</ix:continuation>
+          <ix:continuation id="continuation-2">Gamma</ix:continuation>
           <ix:nonFraction name="ifrs-full:Assets" contextRef="ctx_q2" unitRef="twd">999</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:CurrentAssets" contextRef="ctx_q2" unitRef="twd">700</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:CurrentLiabilities" contextRef="ctx_q2" unitRef="twd">350</ix:nonFraction>
@@ -190,9 +195,27 @@ describe("MOPS XBRL provider parser", () => {
       .every((fact) => fact.statementRole === "balance_sheet")).toBe(true);
     expect(artifact.facts.find((fact) => fact.concept.localName === "PurchaseOfPropertyPlantAndEquipment")?.statementRole)
       .toBe("cash_flow_statement");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "DividendsPaidClassifiedAsFinancingActivities")?.statementRole)
+      .toBe("cash_flow_statement");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "NarrativeDisclosure")?.rawValue)
+      .toBe("Alpha Beta Gamma");
     expect(artifact.facts.find((fact) => fact.concept.localName === "EquityAtBeginningOfPeriod")?.statementRole)
       .toBe("equity_statement");
     expect(artifact.issues.missingStatementRoles).toEqual([]);
     expect(artifact.issues.taxonomyAmbiguity).toBe(false);
+  });
+
+  it("rejects facts whose context reference cannot be resolved", () => {
+    expect(() => parseMopsFinancialStatementArtifact(
+      `<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+        xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
+        <ifrs-full:Revenue contextRef="missing-context">10</ifrs-full:Revenue>
+      </xbrli:xbrl>`,
+      xbrlDescriptor,
+      {
+        retrievedAt: "2026-08-15T00:00:00.000Z",
+        acquisitionRunId: "financial-statements-test",
+      },
+    )).toThrow("references unknown context missing-context");
   });
 });
