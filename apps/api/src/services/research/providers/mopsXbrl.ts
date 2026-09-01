@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { applyResearchFinancialStatementTransform } from "../financialStatements.js";
+import {
+  applyResearchFinancialStatementInlineFormat,
+  applyResearchFinancialStatementTransform,
+} from "../financialStatements.js";
 
 export type MopsStatementVenue = "TWSE" | "TPEX";
 export type MopsStatementSector = "operating_company" | "financial_institution" | "unknown";
@@ -73,6 +76,7 @@ export interface MopsFactRecord {
   decimals: string | null;
   scale: string | null;
   sign: string | null;
+  format: string | null;
   rawValue: string;
   normalizedValue: string;
   periodEnd: string | null;
@@ -159,22 +163,6 @@ function stripMarkup(value: string): string {
     .trim();
 }
 
-function applyInlineFormatTransformation(rawValue: string, format: string | null): string {
-  const stripped = stripMarkup(rawValue);
-  if (!format) return stripped;
-  const localName = (format.includes(":") ? format.slice(format.indexOf(":") + 1) : format)
-    .replaceAll(/[-_]/g, "")
-    .toLowerCase();
-  if (localName === "zerodash" && /^[-‐‑‒–—−]$/.test(stripped)) return "0";
-  if (["numcommadecimal", "numdotcomma", "numspacecomma"].includes(localName)) {
-    return stripped.replaceAll(/[.\s\u00a0]/g, "").replace(",", ".");
-  }
-  if (["numdotdecimal", "numcommadot", "numspacedot"].includes(localName)) {
-    return stripped.replaceAll(/[,\s\u00a0]/g, "");
-  }
-  return stripped;
-}
-
 function normalizeFactValue(
   rawValue: string,
   sign: string | null,
@@ -182,7 +170,7 @@ function normalizeFactValue(
   format: string | null,
 ): string {
   return applyResearchFinancialStatementTransform(
-    applyInlineFormatTransformation(rawValue, format),
+    applyResearchFinancialStatementInlineFormat(stripMarkup(rawValue), format),
     scale,
     sign,
   );
@@ -360,6 +348,7 @@ function buildFactRecord(
     decimals: attributes.decimals ?? null,
     scale: attributes.scale ?? null,
     sign: attributes.sign ?? null,
+    format: attributes.format ?? null,
     rawValue,
     normalizedValue: normalizeFactValue(
       rawValue,

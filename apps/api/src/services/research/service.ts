@@ -1789,13 +1789,13 @@ export async function getFinancialStatements(
     return unknown;
   })();
   const selectedRecordsWithinRange = basisSelection.records;
-  const selectedRecordsWithRequestedStatements = selectedRecordsWithinRange.filter((record) => (
-    record.statements.some((section) => query.statements.includes(section.kind))
+  const selectedRecordsForOutput = selectedRecordsWithinRange.filter((record) => (
+    query.derivedMetrics.length > 0 || record.statements.some((section) => query.statements.includes(section.kind))
   ));
-  const orderedSelected = [...selectedRecordsWithRequestedStatements]
+  const orderedSelected = [...selectedRecordsForOutput]
     .sort((left, right) => query.page.order === "desc" ? financialStatementSortOrder(left, right) : financialStatementSortOrder(right, left));
   const outputRange = query.range.kind === "latest_periods"
-    ? [...selectedRecordsWithRequestedStatements]
+    ? [...selectedRecordsForOutput]
         .sort(financialStatementSortOrder)
         .slice(0, financialStatementsRangeRequestedCount(query))
         .sort((left, right) => query.page.order === "desc" ? financialStatementSortOrder(left, right) : financialStatementSortOrder(right, left))
@@ -1897,8 +1897,8 @@ export async function getFinancialStatements(
   ), 0);
   const missingMetricCount = derivedOutcomes.filter((metric) => metric.status !== "returned").length;
   const readinessReasonCodes = dedupeByKey([
-    ...(selectedRecordsWithRequestedStatements.length === 0 ? ["no_authoritative_filing"] : []),
-    ...(selectedRecordsWithRequestedStatements.length > 0 && basisSelection.selected === "policy_selected" ? ["ambiguous_basis"] : []),
+    ...(selectedRecordsForOutput.length === 0 ? ["no_authoritative_filing"] : []),
+    ...(selectedRecordsForOutput.length > 0 && basisSelection.selected === "policy_selected" ? ["ambiguous_basis"] : []),
     ...gaps.map((gap) => gap.code),
     ...conflicts.map((conflict) => conflict.code),
   ], (value) => value);

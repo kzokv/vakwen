@@ -5,6 +5,7 @@ import {
   normalizeResearchFinancialStatementFact,
   resolveLatestResearchFinancialStatementRecords,
   type ResearchFinancialStatementRecord,
+  validateResearchFinancialStatementRecord,
 } from "../../src/services/research/financialStatements.js";
 
 function makeRecord(overrides: Partial<ResearchFinancialStatementRecord> = {}): ResearchFinancialStatementRecord {
@@ -134,6 +135,34 @@ describe("research financial statements", () => {
     expect(applyResearchFinancialStatementTransform("0.001", "3", null)).toBe("1");
     expect(applyResearchFinancialStatementTransform("1.23", "-1", "-")).toBe("-0.123");
     expect(applyResearchFinancialStatementTransform("-25", null, "-")).toBe("-25");
+  });
+
+  it("iXBRL format metadata preserves transformed values through record validation", () => {
+    const record = makeRecord();
+    const transformedFact = normalizeResearchFinancialStatementFact({
+      listingId: record.listingId,
+      issuerId: record.issuerId,
+      filingId: record.publicationContext.filingId,
+      revisionId: record.publicationContext.revisionId,
+      statementKind: "income",
+      concept: { qname: "ifrs-full:BasicEarningsLossPerShare", label: "Basic earnings per share" },
+      metric: { state: "unmapped", reason: "no_core_metric_mapping" },
+      contextId: "ctx-formatted",
+      period: {
+        kind: "duration",
+        startAt: "2026-04-01T00:00:00.000Z",
+        endAt: "2026-06-30T23:59:59.999Z",
+      },
+      valueKind: "cumulative",
+      rawValue: "1.234,5",
+      normalizedValue: "1234.5",
+      unit: { state: "known", unitId: "TWD" },
+      declaredFormat: "ixt:num-comma-decimal",
+    });
+    record.statements[0]!.facts.push(transformedFact);
+
+    expect(() => validateResearchFinancialStatementRecord(record)).not.toThrow();
+    expect(transformedFact.declaredFormat).toBe("ixt:num-comma-decimal");
   });
 
   it("blank sentinels stay missing while explicit zero remains numeric zero", () => {

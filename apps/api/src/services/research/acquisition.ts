@@ -308,6 +308,7 @@ async function canonicalizeFinancialStatementArtifact(
       declaredScale: fact.scale,
       declaredPrecision: fact.decimals,
       declaredSign: fact.sign,
+      declaredFormat: fact.format,
       ambiguityFlags: [
         ...(duplicateContextIds.has(fact.contextRef) ? ["duplicate_context" as const] : []),
         ...(artifact.issues.basisAmbiguity ? ["filing_basis_ambiguous" as const] : []),

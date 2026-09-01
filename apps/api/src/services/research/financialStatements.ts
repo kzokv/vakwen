@@ -88,6 +88,7 @@ export interface ResearchFinancialStatementFact {
   declaredScale: string | null;
   declaredPrecision: string | null;
   declaredSign?: string | null;
+  declaredFormat?: string | null;
   ambiguityFlags: ResearchFinancialStatementAmbiguityFlag[];
 }
 
@@ -231,6 +232,24 @@ export function applyResearchFinancialStatementTransform(
   const normalizedFraction = transformedFraction?.replace(/0+$/, "");
   const normalized = normalizedFraction ? `${normalizedWhole}.${normalizedFraction}` : normalizedWhole;
   return negative && normalized !== "0" ? `-${normalized}` : normalized;
+}
+
+export function applyResearchFinancialStatementInlineFormat(
+  rawValue: string,
+  format: string | null,
+): string {
+  if (!format) return rawValue;
+  const localName = (format.includes(":") ? format.slice(format.indexOf(":") + 1) : format)
+    .replaceAll(/[-_]/g, "")
+    .toLowerCase();
+  if (localName === "zerodash" && /^[-‐‑‒–—−]$/.test(rawValue)) return "0";
+  if (["numcommadecimal", "numdotcomma", "numspacecomma"].includes(localName)) {
+    return rawValue.replaceAll(/[.\s\u00a0]/g, "").replace(",", ".");
+  }
+  if (["numdotdecimal", "numcommadot", "numspacedot"].includes(localName)) {
+    return rawValue.replaceAll(/[,\s\u00a0]/g, "");
+  }
+  return rawValue;
 }
 
 function financialStatementPublishedAtTimestamp(value: string): string {
@@ -646,6 +665,7 @@ export function normalizeResearchFinancialStatementFact(input: {
   declaredScale?: string | null;
   declaredPrecision?: string | null;
   declaredSign?: string | null;
+  declaredFormat?: string | null;
   ambiguityFlags?: ResearchFinancialStatementAmbiguityFlag[];
 }): ResearchFinancialStatementFact {
   const normalized = normalizeRawNumber(input.normalizedValue ?? input.rawValue);
@@ -669,6 +689,7 @@ export function normalizeResearchFinancialStatementFact(input: {
       input.declaredScale ?? "",
       input.declaredPrecision ?? "",
       input.declaredSign ?? "",
+      input.declaredFormat ?? "",
     ),
     kind: "source_fact",
     listingId: input.listingId,
@@ -691,6 +712,7 @@ export function normalizeResearchFinancialStatementFact(input: {
     declaredScale: input.declaredScale ?? null,
     declaredPrecision: input.declaredPrecision ?? null,
     declaredSign: input.declaredSign ?? null,
+    declaredFormat: input.declaredFormat ?? null,
     ambiguityFlags: [...ambiguityFlags].sort((left, right) => left.localeCompare(right)),
   };
 }
@@ -785,10 +807,14 @@ export function validateResearchFinancialStatementRecord(
           throw invalidResearchFinancialStatementRecord(`fact ${fact.id} duration periods cannot be instant valueKind`);
         }
       }
+      const formattedRaw = applyResearchFinancialStatementInlineFormat(
+        fact.raw.value,
+        fact.declaredFormat ?? null,
+      );
       const normalizedFromRaw = normalizeRawNumber(
         fact.declaredScale !== null || fact.declaredSign
-          ? applyResearchFinancialStatementTransform(fact.raw.value, fact.declaredScale, fact.declaredSign ?? null)
-          : fact.raw.value,
+          ? applyResearchFinancialStatementTransform(formattedRaw, fact.declaredScale, fact.declaredSign ?? null)
+          : formattedRaw,
       );
       const normalizedMatches = normalizedFromRaw.state === "present"
         ? fact.normalized.state === "present" && normalizedFromRaw.value === fact.normalized.value
