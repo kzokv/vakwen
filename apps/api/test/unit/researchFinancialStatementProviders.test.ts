@@ -30,6 +30,8 @@ describe("MOPS XBRL provider parser", () => {
       `<?xml version="1.0" encoding="utf-8"?>
       <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
         xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+        xmlns:iso4217="http://www.xbrl.org/2003/iso4217"
+        xmlns:currency="http://www.xbrl.org/2003/iso4217"
         xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full"
         xmlns:tifrs-bsci-ci="https://mops.twse.com.tw/taxonomy/2026/tifrs-bsci-ci"
         xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
@@ -64,6 +66,7 @@ describe("MOPS XBRL provider parser", () => {
           <xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period>
         </xbrli:context>
         <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
+        <xbrli:unit id="twd_alias"><xbrli:measure>currency:TWD</xbrli:measure></xbrli:unit>
         <ifrs-full:Assets contextRef="ctx_consolidated" unitRef="twd">3450000</ifrs-full:Assets>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_consolidated" unitRef="twd">1234000</ifrs-full:RevenueFromContractsWithCustomers>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_individual" unitRef="twd">1111000</ifrs-full:RevenueFromContractsWithCustomers>
@@ -97,7 +100,11 @@ describe("MOPS XBRL provider parser", () => {
     expect(artifact.facts.find((fact) => fact.contextRef === "ctx_typed_segment")?.contextDimensions).toEqual([
       { dimension: "custom:OperatingSegmentAxis", member: "custom:SegmentName:Foundry" },
     ]);
-    expect(artifact.units).toHaveLength(1);
+    expect(artifact.units).toHaveLength(2);
+    expect(artifact.units.map((unit) => unit.measures)).toEqual([
+      ["{http://www.xbrl.org/2003/iso4217}TWD"],
+      ["{http://www.xbrl.org/2003/iso4217}TWD"],
+    ]);
   });
 
   it("ixbrl parser: preserve inline facts, scale, and taxonomy lineage → no quarter synthesis during parsing", () => {

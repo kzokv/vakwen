@@ -247,21 +247,29 @@ function extractContexts(content: string): MopsContextRecord[] {
   return contexts;
 }
 
-function extractUnits(content: string): MopsUnitRecord[] {
+function canonicalMeasureQName(measure: string, namespaceMap: Readonly<Record<string, string>>): string {
+  const separator = measure.indexOf(":");
+  const prefix = separator >= 0 ? measure.slice(0, separator) : "";
+  const localName = separator >= 0 ? measure.slice(separator + 1) : measure;
+  const namespaceUri = namespaceMap[prefix];
+  return namespaceUri ? `{${namespaceUri}}${localName}` : measure;
+}
+
+function extractUnits(content: string, namespaceMap: Readonly<Record<string, string>>): MopsUnitRecord[] {
   const units: MopsUnitRecord[] = [];
   for (const match of content.matchAll(/<(?:\w+:)?unit\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?unit>/g)) {
     const attributes = parseAttributes(match[1] ?? "");
     const body = match[2] ?? "";
     const numerator = /<(?:\w+:)?divide\b/i.test(body)
       ? [...body.matchAll(/<(?:\w+:)?unitNumerator\b[\s\S]*?<(?:\w+:)?measure\b[^>]*>([^<]+)<\/(?:\w+:)?measure>[\s\S]*?<\/(?:\w+:)?unitNumerator>/g)]
-        .map((item) => stripMarkup(item[1] ?? ""))
+        .map((item) => canonicalMeasureQName(stripMarkup(item[1] ?? ""), namespaceMap))
       : [];
     const denominator = /<(?:\w+:)?divide\b/i.test(body)
       ? [...body.matchAll(/<(?:\w+:)?unitDenominator\b[\s\S]*?<(?:\w+:)?measure\b[^>]*>([^<]+)<\/(?:\w+:)?measure>[\s\S]*?<\/(?:\w+:)?unitDenominator>/g)]
-        .map((item) => stripMarkup(item[1] ?? ""))
+        .map((item) => canonicalMeasureQName(stripMarkup(item[1] ?? ""), namespaceMap))
       : [];
     const measures = [...body.matchAll(/<(?:\w+:)?measure\b[^>]*>([^<]+)<\/(?:\w+:)?measure>/g)]
-      .map((item) => stripMarkup(item[1] ?? ""));
+      .map((item) => canonicalMeasureQName(stripMarkup(item[1] ?? ""), namespaceMap));
     units.push({
       id: attributes.id ?? `unit_${units.length + 1}`,
       measures,
@@ -409,7 +417,7 @@ export function parseMopsFinancialStatementArtifact(
   const artifactKind = detectArtifactKind(content, descriptor.artifactKind);
   const namespaceMap = extractNamespaceMap(content);
   const contexts = extractContexts(content);
-  const units = extractUnits(content);
+  const units = extractUnits(content, namespaceMap);
   const contextsById = new Map(contexts.map((context) => [context.id, context] as const));
   const facts = artifactKind === "ixbrl"
     ? extractInlineFacts(content, namespaceMap, contextsById)

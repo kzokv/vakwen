@@ -300,6 +300,12 @@ describe("research financial-statement service", () => {
 
     expect(manifest.datasets.find((dataset) => dataset.id === "financial_statements")).toMatchObject({
       status: "available",
+      capabilities: {
+        pageLimits: {
+          annual: { default: 3, max: 10 },
+          quarterly: { default: 8, max: 20 },
+        },
+      },
     });
   });
 
@@ -891,6 +897,31 @@ describe("research financial-statement service", () => {
 
     expect(result.derivedOutcomes).toEqual([
       expect.objectContaining({ status: "withheld", metricId: "trailing_twelve_month", reasonCode: "incomparable_inputs" }),
+    ]);
+  });
+
+  it("reconstructed discrete quarter: withholds instant balance-sheet metrics", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 2, { assets: "210" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "reconstructed_discrete_quarter", parameters: { baseMetricId: "assets" } }],
+    });
+
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "withheld", metricId: "reconstructed_discrete_quarter", reasonCode: "incomparable_inputs" }),
     ]);
   });
 

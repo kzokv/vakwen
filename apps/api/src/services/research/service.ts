@@ -1463,6 +1463,7 @@ function deriveMetricForRecord(
   if (metricId === "reconstructed_discrete_quarter") {
     const baseMetricId = metricParameterMetricId(parameters);
     if (!baseMetricId) return withholding("missing_inputs", []);
+    if (!isDurationMetric(baseMetricId)) return withholding("incomparable_inputs", []);
     const value = discreteMetricValueForRecord(baseMetricId, record, recordFacts, recordsByToken, factsByPeriodId);
     if ("reason" in value) return withholding(value.reason, []);
     return returned(value.value, value.unit, value.facts.map((fact) => fact.id), "reconstructed_discrete_quarter");
@@ -1688,8 +1689,16 @@ export async function getResearchManifest(
                   "current_ratio",
                   "free_cash_flow",
                 ],
-                pageDefault: financialStatementsDefaultLimit("annual"),
-                pageMax: financialStatementsMaxLimit("quarterly"),
+                pageLimits: {
+                  annual: {
+                    default: financialStatementsDefaultLimit("annual"),
+                    max: financialStatementsMaxLimit("annual"),
+                  },
+                  quarterly: {
+                    default: financialStatementsDefaultLimit("quarterly"),
+                    max: financialStatementsMaxLimit("quarterly"),
+                  },
+                },
                 maxSpanYears: 10,
                 maxExplicitMetricIds: 100,
               },

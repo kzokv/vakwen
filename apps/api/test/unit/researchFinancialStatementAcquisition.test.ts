@@ -40,7 +40,7 @@ function acquisitionDescriptor(index: number): MopsFinancialStatementDescriptor 
 }
 
 const validAcquisitionXbrl = `<?xml version="1.0" encoding="utf-8"?>
-  <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full" xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
+  <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full" xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
     <xbrli:context id="duration"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
     <xbrli:context id="instant"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>
     <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
@@ -146,7 +146,7 @@ describe("research financial statement acquisition", () => {
     const q3Revision1Url = `${OFFICIAL_FINANCIAL_STATEMENT_BASE_URL}?co_id=2330&year=2026&season=3&rev=1`;
     const payloads = new Map<string, string>([
       [q2Revision1Url, `<?xml version="1.0" encoding="utf-8"?>
-        <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full" xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
+        <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full" xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
           <xbrli:context id="q2"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
           <xbrli:context id="q2i"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>
           <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
@@ -156,7 +156,7 @@ describe("research financial statement acquisition", () => {
           <ifrs-full:Assets contextRef="q2i" unitRef="twd">50</ifrs-full:Assets>
         </xbrli:xbrl>`],
       [q2Revision2Url, `<?xml version="1.0" encoding="utf-8"?>
-        <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full" xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
+        <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full" xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
           <xbrli:context id="q2"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
           <xbrli:context id="q2i"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>
           <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
@@ -168,7 +168,7 @@ describe("research financial statement acquisition", () => {
           <custom:Revenue contextRef="q2" unitRef="twd">999</custom:Revenue>
         </xbrli:xbrl>`],
       [q3Revision1Url, `<?xml version="1.0" encoding="utf-8"?>
-        <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
+        <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
           <xbrli:context id="q3"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-07-01</xbrli:startDate><xbrli:endDate>2026-09-30</xbrli:endDate></xbrli:period></xbrli:context>
           <xbrli:context id="q3i"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period></xbrli:context>
           <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
@@ -292,7 +292,10 @@ describe("research financial statement acquisition", () => {
     });
     const earningsPerShare = q2Latest?.statements.flatMap((section) => section.facts)
       .find((fact) => fact.concept.qname === "custom:EarningsPerShare");
-    expect(earningsPerShare?.unit).toEqual({ state: "known", unitId: "iso4217:TWD/xbrli:shares" });
+    expect(earningsPerShare?.unit).toEqual({
+      state: "known",
+      unitId: "{http://www.xbrl.org/2003/iso4217}TWD/{http://www.xbrl.org/2003/instance}shares",
+    });
     const extensionRevenue = q2Latest?.statements.flatMap((section) => section.facts)
       .find((fact) => fact.concept.qname === "custom:Revenue");
     expect(extensionRevenue?.metric).toEqual({ state: "unmapped", reason: "no_core_metric_mapping" });

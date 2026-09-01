@@ -261,6 +261,16 @@ export const researchManifestOutputSchema = z.object({
       metrics: z.array(researchMetricSchema.shape.id).min(1).optional(),
       pageDefault: z.number().int().min(1).max(260).optional(),
       pageMax: z.number().int().min(1).max(260).optional(),
+      pageLimits: z.object({
+        annual: z.object({
+          default: z.number().int().min(1).max(260),
+          max: z.number().int().min(1).max(260),
+        }).strict(),
+        quarterly: z.object({
+          default: z.number().int().min(1).max(260),
+          max: z.number().int().min(1).max(260),
+        }).strict(),
+      }).strict().optional(),
       maxWindowSessions: z.number().int().min(1).max(1260).optional(),
       maxSpanYears: z.number().int().min(1).max(10).optional(),
       periodicity: z.array(z.enum(["annual", "quarterly"])).min(1).optional(),
