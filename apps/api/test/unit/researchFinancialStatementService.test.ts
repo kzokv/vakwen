@@ -881,6 +881,45 @@ describe("research financial-statement service", () => {
     expect(explicitIndividual.readiness).toEqual({ status: "withheld", reasonCodes: ["no_authoritative_filing"] });
   });
 
+  it("latest-period basis policy: selects coverage within the requested newest window", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2023, 1, { revenue: "10" }, { filingBasis: "individual" }),
+      makeQuarterRecord(identity, 2023, 2, { revenue: "20" }, { filingBasis: "individual" }),
+      makeQuarterRecord(identity, 2023, 3, { revenue: "30" }, { filingBasis: "individual" }),
+      makeQuarterRecord(identity, 2023, 4, { revenue: "40" }, { filingBasis: "individual" }),
+      makeQuarterRecord(identity, 2024, 1, { revenue: "50" }, { filingBasis: "individual" }),
+      makeQuarterRecord(identity, 2024, 2, { revenue: "60" }, { filingBasis: "individual" }),
+      makeQuarterRecord(identity, 2024, 3, { revenue: "70" }, { filingBasis: "individual" }),
+      makeQuarterRecord(identity, 2024, 4, { revenue: "80" }, { filingBasis: "individual" }),
+      makeQuarterRecord(identity, 2025, 1, { revenue: "90" }, { filingBasis: "consolidated" }),
+      makeQuarterRecord(identity, 2025, 2, { revenue: "100" }, { filingBasis: "consolidated" }),
+      makeQuarterRecord(identity, 2025, 3, { revenue: "110" }, { filingBasis: "consolidated" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 3 },
+      filingBasis: "policy_selected",
+      derivedMetrics: [],
+    });
+
+    expect(result.basisPolicy.selected).toBe("consolidated");
+    expect(result.periods.map((period) => [period.fiscalYear, period.fiscalQuarter, period.filingBasis])).toEqual([
+      [2025, 3, "consolidated"],
+      [2025, 2, "consolidated"],
+      [2025, 1, "consolidated"],
+    ]);
+  });
+
   it("period-end range: does not widen dates inside a fiscal period", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

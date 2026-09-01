@@ -1663,10 +1663,28 @@ export async function getFinancialStatements(
       && record.fiscalPeriod.periodEnd <= endDate
     ));
   };
+  const consolidatedWithinRange = recordsWithinRange(consolidated);
+  const individualWithinRange = recordsWithinRange(individual);
+  const unknownWithinRange = recordsWithinRange(unknown);
+  const latestRequestedPeriodKeys = (() => {
+    if (query.range.kind !== "latest_periods") return null;
+    const keys: string[] = [];
+    for (const record of [...consolidatedWithinRange, ...individualWithinRange, ...unknownWithinRange].sort(financialStatementSortOrder)) {
+      const key = researchFinancialStatementPeriodKey(record);
+      if (!keys.includes(key)) keys.push(key);
+      if (keys.length === financialStatementsRangeRequestedCount(query)) break;
+    }
+    return new Set(keys);
+  })();
+  const recordsWithinBasisSelectionWindow = (records: readonly ResearchFinancialStatementRecord[]) => (
+    latestRequestedPeriodKeys === null
+      ? [...records]
+      : records.filter((record) => latestRequestedPeriodKeys.has(researchFinancialStatementPeriodKey(record)))
+  );
   const basisSelection = selectFinancialStatementBasis(
-    recordsWithinRange(consolidated),
-    recordsWithinRange(individual),
-    recordsWithinRange(unknown),
+    recordsWithinBasisSelectionWindow(consolidatedWithinRange),
+    recordsWithinBasisSelectionWindow(individualWithinRange),
+    recordsWithinBasisSelectionWindow(unknownWithinRange),
     query.filingBasis,
   );
   const calculationRecords = (() => {
