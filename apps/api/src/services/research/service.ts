@@ -1171,6 +1171,9 @@ function deriveComparableMetricValue(
   metricId: ResearchFinancialStatementMetricId,
   record: ResearchFinancialStatementRecord,
 ): FinancialMetricValue | { reason: FinancialMetricFailureReason } {
+  if (record.filingBasis === "unknown" || record.ambiguityFlags.includes("filing_basis_ambiguous")) {
+    return { reason: "ambiguous_inputs" };
+  }
   const matches = facts.filter((fact) => {
     if (fact.metric.state !== "mapped" || fact.metric.metricId !== metricId) return false;
     const periodMatches = fact.context.period.kind === "instant"
@@ -1186,6 +1189,9 @@ function deriveComparableMetricValue(
     });
   });
   if (matches.length === 0) return { reason: "missing_inputs" };
+  if (matches.some((fact) => fact.ambiguityFlags.includes("filing_basis_ambiguous"))) {
+    return { reason: "ambiguous_inputs" };
+  }
   const contextPreferred = record.periodicity === "quarterly" && matches.some((fact) => fact.context.valueKind === "discrete")
     ? matches.filter((fact) => fact.context.valueKind === "discrete")
     : matches;

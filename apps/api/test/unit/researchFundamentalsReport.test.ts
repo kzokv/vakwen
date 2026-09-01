@@ -301,6 +301,28 @@ describe("financial statement fundamentals report", () => {
     );
 
     expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.statement).toContain("changed 25%");
+
+    const alternateRevenue = makeFact("2025-12-31", 2025, null, "revenue", "999", "income");
+    alternateRevenue.observationId = "obs_revenue_2025_annual_alternate_concept";
+    alternateRevenue.concept.raw = "ifrs-full:RevenueFromContractsWithCustomers";
+    alternateRevenue.dimensions = { StatementBasisAxis: "ConsolidatedEntitiesMember" };
+    latestAnnual.sourceFacts.push(alternateRevenue);
+    const ambiguousReport = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      {
+        subject: { kind: "listing_id", listingId: identity.listing.id },
+        context: availableFinancialStatementManifest(identity).context,
+      },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", [makePeriod(2023, null, "140"), priorAnnual, latestAnnual])
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+    expect(ambiguousReport.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.status).toBe("withheld");
   });
 
   it("stale annual history: withholds the latest-due YoY conclusion", async () => {

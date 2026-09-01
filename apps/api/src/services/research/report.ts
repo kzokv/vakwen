@@ -273,28 +273,37 @@ function periodLabel(period: ResearchFinancialStatementsOutput["periods"][number
 function factMatchesSelectedBasis(
   fact: ResearchFinancialStatementsOutput["periods"][number]["sourceFacts"][number],
 ): boolean {
+  if (fact.filingBasis.normalized.state !== "present") return false;
+  const filingBasis = fact.filingBasis.normalized.value;
   return Object.entries(fact.dimensions).every(([dimension, member]) => {
     if (!/statementbasis|consolidated|separate|individual/i.test(`${dimension}:${member}`)) return false;
-    if (fact.filingBasis.normalized.state !== "present") return false;
-    return fact.filingBasis.normalized.value === "consolidated"
+    return filingBasis === "consolidated"
       ? /consolidated/i.test(member) && !/separate|individual/i.test(member)
       : /separate|individual/i.test(member) && !/consolidated/i.test(member);
   });
+}
+
+function matchingFacts(
+  period: ResearchFinancialStatementsOutput["periods"][number],
+  metricId: string,
+): ResearchFinancialStatementsOutput["periods"][number]["sourceFacts"] {
+  const expectedStartDate = period.fiscalQuarter === null
+    ? `${period.fiscalYear}-01-01`
+    : `${period.fiscalYear}-${String(((period.fiscalQuarter - 1) * 3) + 1).padStart(2, "0")}-01`;
+  return period.sourceFacts.filter((fact) => (
+    fact.metricId === metricId
+    && factMatchesSelectedBasis(fact)
+    && fact.period.endDate === period.periodEndDate
+    && (fact.period.startDate === null || fact.period.startDate === expectedStartDate)
+  ));
 }
 
 function findFact(
   period: ResearchFinancialStatementsOutput["periods"][number],
   metricId: string,
 ): ResearchFinancialStatementsOutput["periods"][number]["sourceFacts"][number] | undefined {
-  const expectedStartDate = period.fiscalQuarter === null
-    ? `${period.fiscalYear}-01-01`
-    : `${period.fiscalYear}-${String(((period.fiscalQuarter - 1) * 3) + 1).padStart(2, "0")}-01`;
-  return period.sourceFacts.find((fact) => (
-    fact.metricId === metricId
-    && factMatchesSelectedBasis(fact)
-    && fact.period.endDate === period.periodEndDate
-    && (fact.period.startDate === null || fact.period.startDate === expectedStartDate)
-  ));
+  const candidates = matchingFacts(period, metricId);
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 function numericFact(period: ResearchFinancialStatementsOutput["periods"][number], metricId: string): number | null {
@@ -309,7 +318,9 @@ function quarterlyRevenueObservation(
   period: ResearchFinancialStatementsOutput["periods"][number],
   periods: readonly ResearchFinancialStatementsOutput["periods"][number][],
 ): { value: number; unit: string } | null {
-  const direct = findFact(period, "revenue");
+  const directCandidates = matchingFacts(period, "revenue");
+  if (directCandidates.length > 1) return null;
+  const direct = directCandidates[0];
   if (direct?.value.state === "present" && direct.unit.normalized.state === "present") {
     const value = Number(direct.value.value);
     return Number.isFinite(value) ? { value, unit: direct.unit.normalized.value } : null;

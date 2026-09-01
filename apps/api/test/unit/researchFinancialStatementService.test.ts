@@ -318,13 +318,17 @@ describe("research financial-statement service", () => {
       periodicity: "quarterly",
       range: { kind: "latest_periods", count: 2 },
       filingBasis: "policy_selected",
-      derivedMetrics: [],
+      derivedMetrics: [{ metricId: "period_over_period_change", parameters: { baseMetricId: "revenue" } }],
     });
 
     expect(manifest.datasets.find((dataset) => dataset.id === "financial_statements")).toMatchObject({ status: "available" });
     expect(statements.periods).toHaveLength(2);
     expect(statements.periods.map((period) => period.filingBasis)).toEqual(["unknown", "consolidated"]);
     expect(statements.readiness).toMatchObject({ status: "usable_with_gaps", reasonCodes: expect.arrayContaining(["ambiguous_basis"]) });
+    expect(statements.derivedOutcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "withheld", metricId: "period_over_period_change", reasonCode: "ambiguous_inputs" }),
+    ]));
+    expect(statements.derivedOutcomes.every((outcome) => outcome.status === "withheld")).toBe(true);
   });
 
   it("comparative filing contexts: derived metrics select facts for the target filing period", async () => {

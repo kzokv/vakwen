@@ -196,14 +196,27 @@ function extractContexts(content: string): MopsContextRecord[] {
     const instant = /<(?:\w+:)?instant\b[^>]*>([^<]+)<\/(?:\w+:)?instant>/.exec(body)?.[1] ?? null;
     const startDate = /<(?:\w+:)?startDate\b[^>]*>([^<]+)<\/(?:\w+:)?startDate>/.exec(body)?.[1] ?? null;
     const endDate = /<(?:\w+:)?endDate\b[^>]*>([^<]+)<\/(?:\w+:)?endDate>/.exec(body)?.[1] ?? null;
-    const dimensions = [...body.matchAll(/<(?:\w+:)?explicitMember\b([^>]*)>([^<]+)<\/(?:\w+:)?explicitMember>/g)]
+    const explicitDimensions = [...body.matchAll(/<(?:\w+:)?explicitMember\b([^>]*)>([^<]+)<\/(?:\w+:)?explicitMember>/g)]
       .map((item) => {
         const explicitAttributes = parseAttributes(item[1] ?? "");
         return {
           dimension: explicitAttributes.dimension ?? "unknown",
           member: stripMarkup(item[2] ?? ""),
         };
-      })
+      });
+    const typedDimensions = [...body.matchAll(/<(?:\w+:)?typedMember\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?typedMember>/g)]
+      .map((item) => {
+        const typedAttributes = parseAttributes(item[1] ?? "");
+        const typedBody = item[2] ?? "";
+        const typedValue = /^\s*<([A-Za-z_][\w:.-]*)\b[^>]*>([\s\S]*?)<\/\1>\s*$/.exec(typedBody);
+        return {
+          dimension: typedAttributes.dimension ?? "unknown",
+          member: typedValue
+            ? `${typedValue[1]}:${stripMarkup(typedValue[2] ?? "")}`
+            : stripMarkup(typedBody) || "unknown",
+        };
+      });
+    const dimensions = [...explicitDimensions, ...typedDimensions]
       .sort((left, right) => `${left.dimension}:${left.member}`.localeCompare(`${right.dimension}:${right.member}`));
     const periodType = instant
       ? "instant"

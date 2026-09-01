@@ -54,10 +54,20 @@ describe("MOPS XBRL provider parser", () => {
             <xbrldi:explicitMember dimension="tifrs-bsci-ci:StatementBasisAxis">tifrs-bsci-ci:SeparateFinancialStatementsMember</xbrldi:explicitMember>
           </xbrli:scenario>
         </xbrli:context>
+        <xbrli:context id="ctx_typed_segment">
+          <xbrli:entity>
+            <xbrli:identifier scheme="TWSE">22099131</xbrli:identifier>
+            <xbrli:segment>
+              <xbrldi:typedMember dimension="custom:OperatingSegmentAxis"><custom:SegmentName>Foundry</custom:SegmentName></xbrldi:typedMember>
+            </xbrli:segment>
+          </xbrli:entity>
+          <xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period>
+        </xbrli:context>
         <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
         <ifrs-full:Assets contextRef="ctx_consolidated" unitRef="twd">3450000</ifrs-full:Assets>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_consolidated" unitRef="twd">1234000</ifrs-full:RevenueFromContractsWithCustomers>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_individual" unitRef="twd">1111000</ifrs-full:RevenueFromContractsWithCustomers>
+        <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_typed_segment" unitRef="twd">222000</ifrs-full:RevenueFromContractsWithCustomers>
         <ifrs-full:GrossProfit contextRef="ctx_consolidated" unitRef="twd" xsi:nil="true" />
         <ifrs-full:CashFlowsFromUsedInOperatingActivities contextRef="ctx_consolidated" unitRef="unknown_unit">88000</ifrs-full:CashFlowsFromUsedInOperatingActivities>
         <custom:UnmappedMetric contextRef="ctx_consolidated" unitRef="twd">42</custom:UnmappedMetric>
@@ -80,7 +90,13 @@ describe("MOPS XBRL provider parser", () => {
     expect(artifact.issues.taxonomyAmbiguity).toBe(false);
     expect(artifact.facts.map((fact) => fact.concept.localName)).toContain("RevenueFromContractsWithCustomers");
     expect(artifact.facts.find((fact) => fact.concept.localName === "GrossProfit")?.normalizedValue).toBe("");
-    expect(artifact.contexts).toHaveLength(3);
+    expect(artifact.contexts).toHaveLength(4);
+    expect(artifact.contexts.find((context) => context.id === "ctx_typed_segment")?.dimensions).toEqual([
+      { dimension: "custom:OperatingSegmentAxis", member: "custom:SegmentName:Foundry" },
+    ]);
+    expect(artifact.facts.find((fact) => fact.contextRef === "ctx_typed_segment")?.contextDimensions).toEqual([
+      { dimension: "custom:OperatingSegmentAxis", member: "custom:SegmentName:Foundry" },
+    ]);
     expect(artifact.units).toHaveLength(1);
   });
 
