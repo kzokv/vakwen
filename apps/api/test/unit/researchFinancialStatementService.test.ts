@@ -7,7 +7,7 @@ import {
   type ResearchFinancialStatementMetricId,
   type ResearchFinancialStatementRecord,
 } from "../../src/services/research/financialStatements.js";
-import { getFinancialStatements, ResearchServiceError } from "../../src/services/research/service.js";
+import { getFinancialStatements, getResearchManifest, ResearchServiceError } from "../../src/services/research/service.js";
 
 type Identity = ReturnType<typeof makeIdentity>;
 
@@ -246,6 +246,175 @@ function makeAnnualRecord(
 }
 
 describe("research financial-statement service", () => {
+  it("quarterly-only store: manifest reports financial statements available", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60" }),
+    ]);
+
+    const manifest = await getResearchManifest(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+    });
+
+    expect(manifest.datasets.find((dataset) => dataset.id === "financial_statements")).toMatchObject({
+      status: "available",
+    });
+  });
+
+  it("comparative filing contexts: derived metrics select facts for the target filing period", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const record = makeQuarterRecord(identity, 2026, 2, { revenue: "60", gross_profit: "24" }, {
+      valueKinds: {
+        revenue: { valueKind: "discrete" },
+        gross_profit: { valueKind: "discrete" },
+      },
+    });
+    const comparativeRevenue = metricFact(record, "revenue", "50", { valueKind: "discrete" });
+    const comparativeGrossProfit = metricFact(record, "gross_profit", "20", { valueKind: "discrete" });
+    const segmentRevenue = metricFact(record, "revenue", "15", { valueKind: "discrete" });
+    const segmentGrossProfit = metricFact(record, "gross_profit", "6", { valueKind: "discrete" });
+    comparativeRevenue.context = {
+      ...comparativeRevenue.context,
+      contextId: "2025-Q2:revenue",
+      period: { kind: "duration", startAt: "2025-04-01T00:00:00.000Z", endAt: "2025-06-30T23:59:59.999Z" },
+    };
+    comparativeGrossProfit.context = {
+      ...comparativeGrossProfit.context,
+      contextId: "2025-Q2:gross-profit",
+      period: { kind: "duration", startAt: "2025-04-01T00:00:00.000Z", endAt: "2025-06-30T23:59:59.999Z" },
+    };
+    segmentRevenue.context = {
+      ...segmentRevenue.context,
+      contextId: "2026-Q2:segment-revenue",
+      dimensions: { OperatingSegmentsAxis: "FoundryMember" },
+    };
+    segmentGrossProfit.context = {
+      ...segmentGrossProfit.context,
+      contextId: "2026-Q2:segment-gross-profit",
+      dimensions: { OperatingSegmentsAxis: "FoundryMember" },
+    };
+    record.statements[0]!.facts.push(comparativeRevenue, comparativeGrossProfit, segmentRevenue, segmentGrossProfit);
+    await persistence.appendResearchFinancialStatementRecords([record]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "gross_margin", parameters: {} }],
+    });
+
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),
+    ]);
+  });
+
+  it("signed capital expenditure: free cash flow adds the negative outflow", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 2, { operating_cash_flow: "66", capital_expenditure: "-25" }, {
+        valueKinds: {
+          operating_cash_flow: { valueKind: "discrete" },
+          capital_expenditure: { valueKind: "discrete" },
+        },
+      }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "free_cash_flow", parameters: {} }],
+    });
+
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "free_cash_flow", value: "41" }),
+    ]);
+  });
+
+  it("first-quarter change: compares Q1 with the prior-year Q4", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2025, 4, { revenue: "40" }, { valueKinds: { revenue: { valueKind: "discrete" } } }),
+      makeQuarterRecord(identity, 2026, 1, { revenue: "50" }, { valueKinds: { revenue: { valueKind: "discrete" } } }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "period_over_period_change", parameters: { baseMetricId: "revenue" } }],
+    });
+
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "period_over_period_change", value: "0.25" }),
+    ]);
+  });
+
+  it("ascending pagination: freshness remains anchored to the latest selected filing", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 1, { revenue: "28" }),
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60" }),
+    ]);
+    const query = {
+      subject: { kind: "listing_id" as const, listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective" as const,
+      },
+      periodicity: "quarterly" as const,
+      range: { kind: "latest_periods" as const, count: 2 },
+      derivedMetrics: [],
+    };
+    const firstPage = await getFinancialStatements(persistence, {
+      ...query,
+      page: { limit: 1, order: "asc" },
+    });
+    const secondPage = await getFinancialStatements(persistence, {
+      ...query,
+      page: { limit: 1, order: "asc", cursor: firstPage.page.nextCursor ?? undefined },
+    });
+
+    expect(firstPage.periods[0]).toMatchObject({ fiscalYear: 2026, fiscalQuarter: 1 });
+    expect(firstPage.freshness).toEqual({
+      state: "current",
+      authoritativeAsOf: "2026-08-15",
+      latestAcceptedAt: "2026-08-15T10:00:00.000Z",
+    });
+    expect(secondPage.freshness).toEqual(firstPage.freshness);
+  });
+
   it("maps canonical records to paged periods and derives ratios from source facts only", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

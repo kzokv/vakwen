@@ -1101,8 +1101,22 @@ function periodIdForRecord(record: ResearchFinancialStatementRecord): string {
 function deriveComparableMetricValue(
   facts: readonly ResearchFinancialStatementFact[],
   metricId: ResearchFinancialStatementMetricId,
+  record: ResearchFinancialStatementRecord,
 ): FinancialMetricValue | { reason: FinancialMetricFailureReason } {
-  const matches = facts.filter((fact) => fact.metric.state === "mapped" && fact.metric.metricId === metricId);
+  const matches = facts.filter((fact) => {
+    if (fact.metric.state !== "mapped" || fact.metric.metricId !== metricId) return false;
+    const periodMatches = fact.context.period.kind === "instant"
+      ? fact.context.period.instantAt.slice(0, 10) === record.fiscalPeriod.periodEnd
+      : fact.context.period.endAt.slice(0, 10) === record.fiscalPeriod.periodEnd;
+    if (!periodMatches) return false;
+    return Object.entries(fact.context.dimensions).every(([dimension, member]) => {
+      const basisDimension = /consolidated|separate|individual/i.test(`${dimension}:${member}`);
+      if (!basisDimension) return false;
+      if (record.filingBasis === "consolidated") return !/separate|individual/i.test(member);
+      if (record.filingBasis === "individual") return !/consolidated/i.test(member);
+      return true;
+    });
+  });
   if (matches.length === 0) return { reason: "missing_inputs" };
   if (matches.some((fact) => fact.unit.state === "unknown")) return { reason: "unknown_unit" };
   const present = matches.filter((fact) => fact.normalized.state === "present");
@@ -1118,7 +1132,7 @@ function quarterKeyFor(year: number, quarter: 1 | 2 | 3 | 4): string {
 
 function priorQuarterKey(record: ResearchFinancialStatementRecord): string | null {
   if (record.fiscalPeriod.fiscalQuarter === null) return null;
-  if (record.fiscalPeriod.fiscalQuarter === 1) return null;
+  if (record.fiscalPeriod.fiscalQuarter === 1) return quarterKeyFor(record.fiscalPeriod.fiscalYear - 1, 4);
   return quarterKeyFor(record.fiscalPeriod.fiscalYear, (record.fiscalPeriod.fiscalQuarter - 1) as 1 | 2 | 3 | 4);
 }
 
@@ -1189,7 +1203,7 @@ function discreteMetricValueForRecord(
   recordsByToken: ReadonlyMap<string, ResearchFinancialStatementRecord>,
   factsByPeriodId: ReadonlyMap<string, ResearchFinancialStatementFact[]>,
 ): FinancialMetricValue | { reason: FinancialMetricFailureReason | "zero_denominator" } {
-  const current = deriveComparableMetricValue(recordFacts, metricId);
+  const current = deriveComparableMetricValue(recordFacts, metricId, record);
   if ("reason" in current) return current;
   if (record.periodicity === "annual") return current;
   const currentFact = current.facts[0]!;
@@ -1204,7 +1218,7 @@ function discreteMetricValueForRecord(
     return { reason: "incomparable_inputs" };
   }
   const priorFacts = factsByPeriodId.get(periodIdForRecord(priorRecord)) ?? [];
-  const prior = deriveComparableMetricValue(priorFacts, metricId);
+  const prior = deriveComparableMetricValue(priorFacts, metricId, priorRecord);
   if ("reason" in prior) return prior;
   if (prior.unit !== current.unit) return { reason: "incomparable_inputs" };
   return { facts: [...current.facts, ...prior.facts], value: current.value - prior.value, unit: current.unit };
@@ -1217,7 +1231,7 @@ function averageBalanceMetricForRecord(
   recordsInOrder: readonly ResearchFinancialStatementRecord[],
   factsByPeriodId: ReadonlyMap<string, ResearchFinancialStatementFact[]>,
 ): FinancialMetricValue | { reason: FinancialMetricFailureReason | "zero_denominator" } {
-  const ending = deriveComparableMetricValue(recordFacts, metricId);
+  const ending = deriveComparableMetricValue(recordFacts, metricId, record);
   if ("reason" in ending) return ending;
   const previous = previousChronologicalRecord(record, recordsInOrder);
   if (!previous) return { reason: "missing_inputs" };
@@ -1225,7 +1239,7 @@ function averageBalanceMetricForRecord(
     return { reason: "incomparable_inputs" };
   }
   const previousFacts = factsByPeriodId.get(periodIdForRecord(previous)) ?? [];
-  const beginning = deriveComparableMetricValue(previousFacts, metricId);
+  const beginning = deriveComparableMetricValue(previousFacts, metricId, previous);
   if ("reason" in beginning) return beginning;
   if (beginning.unit !== ending.unit) return { reason: "incomparable_inputs" };
   const average = (beginning.value + ending.value) / 2;
@@ -1282,8 +1296,8 @@ function deriveMetricForRecord(
   if (metricId === "debt_to_equity" || metricId === "current_ratio") {
     const leftMetric = metricId === "debt_to_equity" ? "interest_bearing_debt" : "current_assets";
     const rightMetric = metricId === "debt_to_equity" ? "equity" : "current_liabilities";
-    const left = deriveComparableMetricValue(recordFacts, leftMetric);
-    const right = deriveComparableMetricValue(recordFacts, rightMetric);
+    const left = deriveComparableMetricValue(recordFacts, leftMetric, record);
+    const right = deriveComparableMetricValue(recordFacts, rightMetric, record);
     if ("reason" in left) return withholding(left.reason, []);
     if ("reason" in right) return withholding(right.reason, []);
     if (left.unit !== right.unit) return withholding("incomparable_inputs", [...left.facts, ...right.facts].map((fact) => fact.id));
@@ -1296,7 +1310,7 @@ function deriveMetricForRecord(
     if ("reason" in ocf) return withholding(ocf.reason, []);
     if ("reason" in capex) return withholding(capex.reason, []);
     if (ocf.unit !== capex.unit) return withholding("incomparable_inputs", [...ocf.facts, ...capex.facts].map((fact) => fact.id));
-    return returned(ocf.value - capex.value, ocf.unit, [...ocf.facts, ...capex.facts].map((fact) => fact.id), metricId);
+    return returned(ocf.value - Math.abs(capex.value), ocf.unit, [...ocf.facts, ...capex.facts].map((fact) => fact.id), metricId);
   }
   if (metricId === "reconstructed_discrete_quarter") {
     const baseMetricId = metricParameterMetricId(parameters);
@@ -1342,7 +1356,7 @@ function deriveMetricForRecord(
     if (!baseMetricId) return withholding("missing_inputs", []);
     const current = record.periodicity === "quarterly"
       ? discreteMetricValueForRecord(baseMetricId, record, recordFacts, recordsByToken, factsByPeriodId)
-      : deriveComparableMetricValue(recordFacts, baseMetricId);
+      : deriveComparableMetricValue(recordFacts, baseMetricId, record);
     if ("reason" in current) return withholding(current.reason, []);
     const priorToken = record.periodicity === "annual" ? previousAnnualToken(record) : priorQuarterKey(record);
     if (!priorToken) return withholding("missing_inputs", []);
@@ -1351,7 +1365,7 @@ function deriveMetricForRecord(
     const priorFacts = factsByPeriodId.get(periodIdForRecord(priorRecord)) ?? [];
     const prior = record.periodicity === "quarterly"
       ? discreteMetricValueForRecord(baseMetricId, priorRecord, priorFacts, recordsByToken, factsByPeriodId)
-      : deriveComparableMetricValue(priorFacts, baseMetricId);
+      : deriveComparableMetricValue(priorFacts, baseMetricId, priorRecord);
     if ("reason" in prior) return withholding(prior.reason, []);
     if (current.unit !== prior.unit) return withholding("incomparable_inputs", [...current.facts, ...prior.facts].map((fact) => fact.id));
     if (prior.value === 0) return withholding("zero_denominator", [...current.facts, ...prior.facts].map((fact) => fact.id));
@@ -1366,8 +1380,8 @@ function deriveMetricForRecord(
     const startRecord = recordsByToken.get(startToken);
     if (!startRecord) return withholding("missing_inputs", []);
     const startFacts = factsByPeriodId.get(periodIdForRecord(startRecord)) ?? [];
-    const start = deriveComparableMetricValue(startFacts, baseMetricId);
-    const end = deriveComparableMetricValue(recordFacts, baseMetricId);
+    const start = deriveComparableMetricValue(startFacts, baseMetricId, startRecord);
+    const end = deriveComparableMetricValue(recordFacts, baseMetricId, record);
     if ("reason" in start) return withholding(start.reason, []);
     if ("reason" in end) return withholding(end.reason, []);
     if (start.unit !== end.unit) return withholding("incomparable_inputs", [...start.facts, ...end.facts].map((fact) => fact.id));
@@ -1378,7 +1392,7 @@ function deriveMetricForRecord(
   if (metricId === "return_on_equity" || metricId === "return_on_assets") {
     const numerator = record.periodicity === "quarterly"
       ? discreteMetricValueForRecord("net_income", record, recordFacts, recordsByToken, factsByPeriodId)
-      : deriveComparableMetricValue(recordFacts, "net_income");
+      : deriveComparableMetricValue(recordFacts, "net_income", record);
     if ("reason" in numerator) return withholding(numerator.reason, []);
     const denominator = averageBalanceMetricForRecord(metricId === "return_on_equity" ? "equity" : "assets", record, recordFacts, recordsInOrder, factsByPeriodId);
     if ("reason" in denominator) return withholding(denominator.reason, []);
@@ -1421,14 +1435,13 @@ export async function getResearchManifest(
     && identity.identity.eligibility.profile !== "identity_only"
     && listingSessions.length > 0;
   const financialStatementsAvailable = financialStatementsAvailabilityForIdentity(identity).status === "eligible"
-    ? await hasFinancialStatementsAvailable(
-        persistence,
-        identity.selector.listingId,
-        researchFinancialStatementsQuerySchema.parse({
-          ...query,
-          periodicity: "annual",
-        }),
-      )
+    ? (await Promise.all((["annual", "quarterly"] as const).map(async (periodicity) => (
+        await hasFinancialStatementsAvailable(
+          persistence,
+          identity.selector.listingId,
+          researchFinancialStatementsQuerySchema.parse({ ...query, periodicity }),
+        )
+      )))).some(Boolean)
     : false;
   return {
     contractVersion: "research-manifest/1.0.0" as const,
@@ -1558,8 +1571,12 @@ export async function getFinancialStatements(
   const orderedSelected = [...basisSelection.records]
     .sort((left, right) => query.page.order === "desc" ? financialStatementSortOrder(left, right) : financialStatementSortOrder(right, left));
   const outputRange = query.range.kind === "latest_periods"
-    ? orderedSelected.slice(0, financialStatementsRangeRequestedCount(query))
+    ? [...basisSelection.records]
+        .sort(financialStatementSortOrder)
+        .slice(0, financialStatementsRangeRequestedCount(query))
+        .sort((left, right) => query.page.order === "desc" ? financialStatementSortOrder(left, right) : financialStatementSortOrder(right, left))
     : orderedSelected;
+  const latestSelected = [...outputRange].sort(financialStatementSortOrder)[0] ?? null;
   const cursor = decodeFinancialStatementsCursor(identity.selector.listingId, query, query.page.cursor);
   const remainingRecords = cursor === null
     ? outputRange
@@ -1673,8 +1690,10 @@ export async function getFinancialStatements(
     },
     freshness: {
       state: periods.length === 0 ? "unknown" : "current",
-      authoritativeAsOf: periods[0]?.filingDate ?? null,
-      latestAcceptedAt: periods[0]?.acceptedAt ?? null,
+      authoritativeAsOf: latestSelected?.publicationContext.publishedAt.slice(0, 10) ?? null,
+      latestAcceptedAt: latestSelected
+        ? latestSelected.publicationContext.revisionPublishedAt ?? latestSelected.publicationContext.publishedAt
+        : null,
     },
     completeness: {
       status: periods.length === 0 ? "withheld" : missingFactCount > 0 || missingMetricCount > 0 ? "partial" : "complete",
