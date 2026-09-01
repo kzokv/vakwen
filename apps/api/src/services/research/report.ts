@@ -274,7 +274,14 @@ function findFact(
   period: ResearchFinancialStatementsOutput["periods"][number],
   metricId: string,
 ): ResearchFinancialStatementsOutput["periods"][number]["sourceFacts"][number] | undefined {
-  return period.sourceFacts.find((fact) => fact.metricId === metricId);
+  const expectedStartDate = period.fiscalQuarter === null
+    ? `${period.fiscalYear}-01-01`
+    : `${period.fiscalYear}-${String(((period.fiscalQuarter - 1) * 3) + 1).padStart(2, "0")}-01`;
+  return period.sourceFacts.find((fact) => (
+    fact.metricId === metricId
+    && fact.period.endDate === period.periodEndDate
+    && (fact.period.startDate === null || fact.period.startDate === expectedStartDate)
+  ));
 }
 
 function numericFact(period: ResearchFinancialStatementsOutput["periods"][number], metricId: string): number | null {
@@ -382,7 +389,22 @@ function buildSupportedOrWithheldConclusions(
         statement: "Multi-year financial statement trend is withheld.",
         reasonCodes: ["insufficient_multi_year_window"],
       };
+  const quartersAreConsecutive = orderedQuarters.every((period, index) => {
+    if (index === 0) return true;
+    const prior = orderedQuarters[index - 1]!;
+    return ((period.fiscalYear * 4) + period.fiscalQuarter!) === ((prior.fiscalYear * 4) + prior.fiscalQuarter! + 1);
+  });
+  const quarterlyRevenueUnits = orderedQuarters.map((period) => {
+    const fact = findFact(period, "revenue");
+    return numericFact(period, "revenue") !== null && fact?.unit.normalized.state === "present"
+      ? fact.unit.normalized.value
+      : null;
+  });
+  const quarterlyRevenueIsComparable = quarterlyRevenueUnits.every((unit): unit is string => unit !== null)
+    && new Set(quarterlyRevenueUnits).size === 1;
   const quarterlyConclusion = orderedQuarters.length >= FUNDAMENTALS_MINIMUM_WINDOWS.quarterlyTrendDiscreteQuarters
+    && quartersAreConsecutive
+    && quarterlyRevenueIsComparable
     ? {
         id: "quarterly_revenue_trend" as const,
         status: "supported" as const,

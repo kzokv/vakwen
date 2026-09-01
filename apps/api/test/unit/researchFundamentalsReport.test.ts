@@ -244,6 +244,77 @@ describe("financial statement fundamentals report", () => {
     expect(markdown).toContain("- latest_revenue_yoy: supported");
   });
 
+  it("comparative filing facts: report calculations select the current filing context", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const latestAnnual = makePeriod(2025, null, "200");
+    const comparativeRevenue = makeFact("2024-12-31", 2024, null, "revenue", "999", "income");
+    latestAnnual.sourceFacts.unshift(comparativeRevenue);
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      {
+        subject: { kind: "listing_id", listingId: identity.listing.id },
+        context: availableFinancialStatementManifest(identity).context,
+      },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", [
+                makePeriod(2023, null, "140"),
+                makePeriod(2024, null, "160"),
+                latestAnnual,
+              ])
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.statement).toContain("changed 25%");
+  });
+
+  it("quarterly trend: withholds nonconsecutive or cumulative-only quarter windows", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const nonconsecutive = Array.from({ length: 8 }, (_, index) => makePeriod(2018 + index, 1, String(100 + index)));
+    const cumulativeOnly = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+    for (const period of cumulativeOnly.filter((item) => item.fiscalQuarter !== 1)) {
+      const revenue = period.sourceFacts.find((fact) => fact.metricId === "revenue")!;
+      revenue.period.startDate = `${period.fiscalYear}-01-01`;
+    }
+
+    for (const quarters of [nonconsecutive, cumulativeOnly]) {
+      const report = await buildFinancialStatementFundamentalsResearchReport(
+        persistence,
+        { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+        {
+          getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+          getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+            query.periodicity === "annual"
+              ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+              : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+          ),
+        },
+      );
+
+      expect(report.conclusions.find((conclusion) => conclusion.id === "quarterly_revenue_trend")).toMatchObject({
+        status: "withheld",
+        reasonCodes: ["insufficient_quarterly_window"],
+      });
+    }
+  });
+
   it("annual trend: withholds nonconsecutive years and periods without usable revenue", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

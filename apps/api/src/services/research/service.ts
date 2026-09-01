@@ -123,6 +123,22 @@ function taiwanLocalDateParts(isoDateTime: string) {
   };
 }
 
+function latestDueFinancialStatementPeriodEnd(
+  effectiveAt: string,
+  periodicity: "annual" | "quarterly",
+): string {
+  const { year, month, day } = taiwanLocalDateParts(effectiveAt);
+  const monthDay = `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  if (periodicity === "annual") {
+    const fiscalYear = monthDay >= "03-31" ? year - 1 : year - 2;
+    return `${fiscalYear}-12-31`;
+  }
+  if (monthDay >= "11-14") return `${year}-09-30`;
+  if (monthDay >= "08-14") return `${year}-06-30`;
+  if (monthDay >= "05-15") return `${year}-03-31`;
+  return `${year - 1}-09-30`;
+}
+
 function formatMonth(year: number, month: number): string {
   return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`;
 }
@@ -1718,7 +1734,11 @@ export async function getFinancialStatements(
       returnedPeriodCount: periods.length,
     },
     freshness: {
-      state: periods.length === 0 ? "unknown" : "current",
+      state: periods.length === 0
+        ? "unknown"
+        : latestSelected!.fiscalPeriod.periodEnd < latestDueFinancialStatementPeriodEnd(identity.context.effectiveAt, query.periodicity)
+          ? "stale"
+          : "current",
       authoritativeAsOf: latestSelected?.publicationContext.publishedAt.slice(0, 10) ?? null,
       latestAcceptedAt: latestSelected
         ? latestSelected.publicationContext.revisionPublishedAt ?? latestSelected.publicationContext.publishedAt
