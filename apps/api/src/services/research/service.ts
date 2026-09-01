@@ -1125,7 +1125,9 @@ function mapFinancialFact(
       supersededByObservationIds: [],
     },
     revision: {
-      filingId: record.publicationContext.filingId,
+      filingId: /^[0-9A-Za-z_-]+$/.test(record.publicationContext.filingId)
+        ? record.publicationContext.filingId
+        : `filing_${createHash("sha256").update(record.publicationContext.filingId).digest("hex").slice(0, 32)}`,
       accessionNumber: null,
       amended: record.publicationContext.amendment,
       restated: record.publicationContext.restatement,
@@ -1303,7 +1305,11 @@ function discreteMetricValueForRecord(
     return { reason: "incomparable_inputs" };
   }
   const priorFacts = factsByPeriodId.get(periodIdForRecord(priorRecord)) ?? [];
-  const prior = deriveComparableMetricValue(priorFacts, metricId, priorRecord);
+  const prior = deriveComparableMetricValue(
+    priorFacts.filter((fact) => fact.context.valueKind === "cumulative"),
+    metricId,
+    priorRecord,
+  );
   if ("reason" in prior) return prior;
   if (prior.unit !== current.unit) return { reason: "incomparable_inputs" };
   return { facts: [...current.facts, ...prior.facts], value: current.value - prior.value, unit: current.unit };

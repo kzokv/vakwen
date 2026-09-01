@@ -386,6 +386,63 @@ describe("research financial-statement service", () => {
     expect(result.periods[0]?.sourceFacts.find((fact) => fact.observationId === cumulativeRevenue.id)?.period.durationMonths).toBe(6);
   });
 
+  it("cumulative reconstruction: subtracts prior YTD when the prior filing also has a discrete fact", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const q2 = makeQuarterRecord(identity, 2026, 2, { revenue: "60" });
+    q2.statements[0]!.facts.push(metricFact(q2, "revenue", "32", { valueKind: "discrete" }));
+    const q3 = makeQuarterRecord(identity, 2026, 3, { revenue: "100" });
+    await persistence.appendResearchFinancialStatementRecords([q2, q3]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-11-20T00:00:00.000Z",
+        effectiveAt: "2026-11-20T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "reconstructed_discrete_quarter", parameters: { baseMetricId: "revenue" } }],
+    });
+
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "reconstructed_discrete_quarter", value: "40" }),
+    ]);
+  });
+
+  it("worker filing IDs: maps colon-delimited source identifiers to canonical output IDs", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const workerRecord = makeQuarterRecord(identity, 2026, 2, { revenue: "60" }, {
+      publicationContext: {
+        filingId: "mops:2330:2026:q2",
+        revisionId: "mops:2330:2026:q2:r0",
+      },
+    });
+    workerRecord.provenance = { ...workerRecord.provenance, id: "prv_worker_filing" };
+    await persistence.appendResearchFinancialStatementRecords([workerRecord]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [],
+    });
+
+    expect(result.periods[0]?.sourceFacts[0]?.revision).toMatchObject({
+      filingId: expect.stringMatching(/^filing_[0-9a-f]{32}$/),
+      revisionTag: "mops:2330:2026:q2:r0",
+    });
+  });
+
   it("average-balance ratios: withhold when the immediately preceding annual period is missing", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
