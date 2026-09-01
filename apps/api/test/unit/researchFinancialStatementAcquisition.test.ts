@@ -469,6 +469,25 @@ describe("research financial statement acquisition", () => {
     expect(afterMidnightTaiwan.every((descriptor) => descriptor.filing.publishedAt === "2026-08-31T17:30:00.000Z"))
       .toBe(true);
 
+    const latestTarget = (instant: string) => {
+      const targets = buildCurrentMopsFinancialStatementDescriptors([identity], new Date(instant));
+      const latestQuarter = targets
+        .filter((descriptor) => descriptor.filing.fiscalPeriod !== "annual")
+        .sort((left, right) => right.filing.periodEnd.localeCompare(left.filing.periodEnd))[0];
+      const latestAnnualYear = Math.max(...targets
+        .filter((descriptor) => descriptor.filing.fiscalPeriod === "annual")
+        .map((descriptor) => descriptor.filing.fiscalYear));
+      return { latestQuarter: latestQuarter?.filing.fiscalPeriod, latestAnnualYear };
+    };
+    expect(latestTarget("2026-03-30T17:30:00.000Z")).toEqual({ latestQuarter: "q3", latestAnnualYear: 2024 });
+    expect(latestTarget("2026-03-31T17:30:00.000Z")).toEqual({ latestQuarter: "q4", latestAnnualYear: 2025 });
+    expect(latestTarget("2026-05-14T17:30:00.000Z").latestQuarter).toBe("q4");
+    expect(latestTarget("2026-05-15T17:30:00.000Z").latestQuarter).toBe("q1");
+    expect(latestTarget("2026-08-13T17:30:00.000Z").latestQuarter).toBe("q1");
+    expect(latestTarget("2026-08-14T17:30:00.000Z").latestQuarter).toBe("q2");
+    expect(latestTarget("2026-11-13T17:30:00.000Z").latestQuarter).toBe("q2");
+    expect(latestTarget("2026-11-14T17:30:00.000Z").latestQuarter).toBe("q3");
+
     const postAnnualDue = buildCurrentMopsFinancialStatementDescriptors(
       [identity],
       new Date("2026-04-15T00:00:00.000Z"),

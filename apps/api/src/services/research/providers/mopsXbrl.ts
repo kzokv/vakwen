@@ -159,8 +159,33 @@ function stripMarkup(value: string): string {
     .trim();
 }
 
-function normalizeFactValue(rawValue: string, sign: string | null, scale: string | null): string {
-  return applyResearchFinancialStatementTransform(stripMarkup(rawValue), scale, sign);
+function applyInlineFormatTransformation(rawValue: string, format: string | null): string {
+  const stripped = stripMarkup(rawValue);
+  if (!format) return stripped;
+  const localName = (format.includes(":") ? format.slice(format.indexOf(":") + 1) : format)
+    .replaceAll(/[-_]/g, "")
+    .toLowerCase();
+  if (localName === "zerodash" && /^[-‐‑‒–—−]$/.test(stripped)) return "0";
+  if (["numcommadecimal", "numdotcomma", "numspacecomma"].includes(localName)) {
+    return stripped.replaceAll(/[.\s\u00a0]/g, "").replace(",", ".");
+  }
+  if (["numdotdecimal", "numcommadot", "numspacedot"].includes(localName)) {
+    return stripped.replaceAll(/[,\s\u00a0]/g, "");
+  }
+  return stripped;
+}
+
+function normalizeFactValue(
+  rawValue: string,
+  sign: string | null,
+  scale: string | null,
+  format: string | null,
+): string {
+  return applyResearchFinancialStatementTransform(
+    applyInlineFormatTransformation(rawValue, format),
+    scale,
+    sign,
+  );
 }
 
 function detectArtifactKind(content: string, declaredKind: MopsArtifactKind | undefined): MopsArtifactKind {
@@ -336,7 +361,12 @@ function buildFactRecord(
     scale: attributes.scale ?? null,
     sign: attributes.sign ?? null,
     rawValue,
-    normalizedValue: normalizeFactValue(rawValue, attributes.sign ?? null, attributes.scale ?? null),
+    normalizedValue: normalizeFactValue(
+      rawValue,
+      attributes.sign ?? null,
+      attributes.scale ?? null,
+      attributes.format ?? null,
+    ),
     periodEnd: context.endDate ?? context.instant ?? null,
     periodStart: context.startDate,
     contextDimensions: context.dimensions,

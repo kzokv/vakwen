@@ -146,6 +146,7 @@ describe("MOPS XBRL provider parser", () => {
       <html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
         xmlns:xbrli="http://www.xbrl.org/2003/instance"
         xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+        xmlns:ixt="http://www.xbrl.org/inlineXBRL/transformation/2020-02-12"
         xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full"
         xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom"
         xmlns:tifrs-bsci-ci="https://mops.twse.com.tw/taxonomy/2026/tifrs-bsci-ci">
@@ -157,6 +158,8 @@ describe("MOPS XBRL provider parser", () => {
           <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
           <ix:nonFraction name="ifrs-full:RevenueFromContractsWithCustomers" contextRef="ctx_q2" unitRef="twd" scale="3">1,234</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:GrossProfit" contextRef="ctx_q2" unitRef="twd">400</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:BasicEarningsLossPerShare" contextRef="ctx_q2" unitRef="twd" format="ixt:num-comma-decimal">1.234,5</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:FinanceCosts" contextRef="ctx_q2" unitRef="twd" format="ixt:zero-dash">-</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:Liabilities" contextRef="ctx_q2" unitRef="twd" xsi:nil="true" />
           <ix:nonFraction name="ifrs-full:OperatingIncomeLoss" contextRef="ctx_q2" unitRef="twd">300</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:ProfitLoss" contextRef="ctx_q2" unitRef="twd">88</ix:nonFraction>
@@ -189,6 +192,10 @@ describe("MOPS XBRL provider parser", () => {
       .toBe("1234000");
     expect(artifact.facts.find((fact) => fact.concept.localName === "PurchaseOfPropertyPlantAndEquipment")?.normalizedValue)
       .toBe("-25");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "BasicEarningsLossPerShare")?.normalizedValue)
+      .toBe("1234.5");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "FinanceCosts")?.normalizedValue)
+      .toBe("0");
     expect(artifact.facts.find((fact) => fact.concept.localName === "Liabilities")?.normalizedValue).toBe("");
     expect(artifact.facts.filter((fact) => ["GrossProfit", "OperatingIncomeLoss"].includes(fact.concept.localName))
       .every((fact) => fact.statementRole === "income_statement")).toBe(true);
