@@ -245,4 +245,36 @@ describe("MOPS XBRL provider parser", () => {
       expect.objectContaining({ contextRef: "single-context", rawValue: "10" }),
     ]);
   });
+
+  it("parses unprefixed facts from the default taxonomy namespace", () => {
+    const artifact = parseMopsFinancialStatementArtifact(
+      `<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+        xmlns="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
+        <xbrli:context id="duration">
+          <xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity>
+          <xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period>
+        </xbrli:context>
+        <xbrli:context id="instant">
+          <xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity>
+          <xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period>
+        </xbrli:context>
+        <Revenue contextRef="duration">10</Revenue>
+        <CashFlowsFromUsedInOperatingActivities contextRef="duration">5</CashFlowsFromUsedInOperatingActivities>
+        <Assets contextRef="instant">20</Assets>
+      </xbrli:xbrl>`,
+      xbrlDescriptor,
+      {
+        retrievedAt: "2026-08-15T00:00:00.000Z",
+        acquisitionRunId: "financial-statements-test",
+      },
+    );
+
+    expect(artifact.facts.map((fact) => [fact.concept.qname, fact.statementRole])).toEqual([
+      ["Revenue", "income_statement"],
+      ["CashFlowsFromUsedInOperatingActivities", "cash_flow_statement"],
+      ["Assets", "balance_sheet"],
+    ]);
+    expect(artifact.facts.every((fact) => fact.concept.namespaceUri === "http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full"))
+      .toBe(true);
+  });
 });

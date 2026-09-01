@@ -410,13 +410,13 @@ function extractXbrlFacts(
   contextsById: ReadonlyMap<string, MopsContextRecord>,
 ): MopsFactRecord[] {
   const facts: MopsFactRecord[] = [];
-  for (const match of content.matchAll(/<([A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*)\b([^>]*)>([^<]*)<\/\1>/g)) {
+  for (const match of content.matchAll(/<([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)\b([^>]*)>([^<]*)<\/\1>/g)) {
     const attributes = parseAttributes(match[2] ?? "");
     if (!attributes.contextRef) continue;
     const fact = buildFactRecord(match[1] ?? "", attributes, match[3] ?? "", namespaceMap, contextsById);
     if (fact) facts.push(fact);
   }
-  for (const match of content.matchAll(/<([A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*)\b([^>]*)\/>/g)) {
+  for (const match of content.matchAll(/<([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)\b([^>]*)\/>/g)) {
     const attributes = parseAttributes(match[2] ?? "");
     if (!attributes.contextRef) continue;
     const fact = buildFactRecord(match[1] ?? "", attributes, "", namespaceMap, contextsById);
