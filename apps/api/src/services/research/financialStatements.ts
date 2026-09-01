@@ -83,6 +83,7 @@ export interface ResearchFinancialStatementFact {
   unit: ResearchFinancialStatementUnitRef;
   declaredScale: string | null;
   declaredPrecision: string | null;
+  declaredSign?: string | null;
   ambiguityFlags: ResearchFinancialStatementAmbiguityFlag[];
 }
 
@@ -198,6 +199,36 @@ function normalizeRawNumber(value: string): ResearchFinancialStatementNormalized
   return { state: "present", value: /^-?0(?:\.0+)?$/.test(normalized) ? "0" : normalized };
 }
 
+export function applyResearchFinancialStatementTransform(
+  rawValue: string,
+  scale: string | null,
+  sign: string | null,
+): string {
+  const compact = rawValue.trim().replaceAll(",", "");
+  if (!/^-?\d+(?:\.\d+)?$/.test(compact)) return compact;
+  const scaleValue = scale === null ? 0 : Number(scale);
+  if (!Number.isSafeInteger(scaleValue)) return compact;
+  const sourceNegative = compact.startsWith("-");
+  const negative = sign === "-" || sourceNegative;
+  const unsigned = sourceNegative ? compact.slice(1) : compact;
+  const [whole = "0", fraction = ""] = unsigned.split(".");
+  const digits = `${whole}${fraction}`;
+  const decimalPosition = whole.length + scaleValue;
+  let transformed: string;
+  if (decimalPosition <= 0) {
+    transformed = `0.${"0".repeat(-decimalPosition)}${digits}`;
+  } else if (decimalPosition >= digits.length) {
+    transformed = `${digits}${"0".repeat(decimalPosition - digits.length)}`;
+  } else {
+    transformed = `${digits.slice(0, decimalPosition)}.${digits.slice(decimalPosition)}`;
+  }
+  const [transformedWhole = "0", transformedFraction] = transformed.split(".");
+  const normalizedWhole = transformedWhole.replace(/^0+(?=\d)/, "") || "0";
+  const normalizedFraction = transformedFraction?.replace(/0+$/, "");
+  const normalized = normalizedFraction ? `${normalizedWhole}.${normalizedFraction}` : normalizedWhole;
+  return negative && normalized !== "0" ? `-${normalized}` : normalized;
+}
+
 function taiwanPublishedAtTimestamp(date: string): string {
   if (!isIsoDate(date)) {
     throw invalidResearchFinancialStatementRecord(`invalid published date ${date}`);
@@ -291,11 +322,19 @@ function durationPeriodForFact(fact: MopsFactRecord, periodEndFallback: string):
   };
 }
 
-function valueKindForFact(fact: MopsFactRecord): ResearchFinancialStatementValueKind {
-  return fact.periodStart ? "cumulative" : "instant";
+export function valueKindForMopsFact(
+  fact: MopsFactRecord,
+  filing: MopsFinancialStatementArtifact["filing"],
+): ResearchFinancialStatementValueKind {
+  if (!fact.periodStart) return "instant";
+  if (filing.fiscalPeriod === "annual" || filing.fiscalPeriod === "q1") return "cumulative";
+  return fact.periodStart === `${filing.fiscalYear}-01-01` ? "cumulative" : "discrete";
 }
 
-function resolveArtifactFilingBasis(artifact: MopsFinancialStatementArtifact): ResearchFinancialStatementFilingBasis {
+export function resolveMopsArtifactFilingBasis(
+  artifact: MopsFinancialStatementArtifact,
+): ResearchFinancialStatementFilingBasis {
+  if (artifact.filing.filingBasis !== "unknown") return artifact.filing.filingBasis;
   if (artifact.issues.basisAmbiguity) return "unknown";
   const members = new Set(
     artifact.contexts.flatMap((context) => context.dimensions.map((dimension) => dimension.member.toLowerCase())),
@@ -328,7 +367,7 @@ export function materializeResearchFinancialStatementRecord(
           : fiscalQuarter === 3
             ? `${input.filing.fiscalYear}-07-01`
             : `${input.filing.fiscalYear}-10-01`);
-  const filingBasis = resolveArtifactFilingBasis(input);
+  const filingBasis = resolveMopsArtifactFilingBasis(input);
   const publishedAt = taiwanPublishedAtTimestamp(input.filing.publishedAt);
   const issuesByContextSignature = new Set(
     input.issues.duplicateContextGroups.flatMap((group) => group.contextIds),
@@ -358,13 +397,15 @@ export function materializeResearchFinancialStatementRecord(
       contextId: fact.contextRef,
       dimensions: Object.fromEntries(fact.contextDimensions.map((dimension) => [dimension.dimension, dimension.member] as const)),
       period: durationPeriodForFact(fact, periodEnd),
-      valueKind: valueKindForFact(fact),
+      valueKind: valueKindForMopsFact(fact, input.filing),
       rawValue: fact.rawValue,
+      normalizedValue: fact.normalizedValue,
       unit: unitRecord
         ? { state: "known", unitId: unitRecord.measures[0] ?? fact.unitRef ?? "unknown" }
         : { state: "unknown", rawUnitId: fact.unitRef },
       declaredScale: fact.scale,
       declaredPrecision: fact.decimals,
+      declaredSign: fact.sign,
       ambiguityFlags: [
         ...(issuesByContextSignature.has(fact.contextRef) ? ["duplicate_context" as const] : []),
         ...(input.issues.basisAmbiguity ? ["filing_basis_ambiguous" as const] : []),
@@ -572,12 +613,14 @@ export function normalizeResearchFinancialStatementFact(input: {
   period: ResearchFinancialStatementPeriodRef;
   valueKind: ResearchFinancialStatementValueKind;
   rawValue: string;
+  normalizedValue?: string;
   unit: ResearchFinancialStatementUnitRef;
   declaredScale?: string | null;
   declaredPrecision?: string | null;
+  declaredSign?: string | null;
   ambiguityFlags?: ResearchFinancialStatementAmbiguityFlag[];
 }): ResearchFinancialStatementFact {
-  const normalized = normalizeRawNumber(input.rawValue);
+  const normalized = normalizeRawNumber(input.normalizedValue ?? input.rawValue);
   const ambiguityFlags = new Set(input.ambiguityFlags ?? []);
   if (input.metric.state === "unmapped") ambiguityFlags.add("unmapped_concept");
   if (input.unit.state === "unknown") ambiguityFlags.add("unknown_unit");
@@ -611,6 +654,7 @@ export function normalizeResearchFinancialStatementFact(input: {
     unit: input.unit,
     declaredScale: input.declaredScale ?? null,
     declaredPrecision: input.declaredPrecision ?? null,
+    declaredSign: input.declaredSign ?? null,
     ambiguityFlags: [...ambiguityFlags].sort((left, right) => left.localeCompare(right)),
   };
 }
@@ -705,7 +749,11 @@ export function validateResearchFinancialStatementRecord(
           throw invalidResearchFinancialStatementRecord(`fact ${fact.id} duration periods cannot be instant valueKind`);
         }
       }
-      const normalizedFromRaw = normalizeRawNumber(fact.raw.value);
+      const normalizedFromRaw = normalizeRawNumber(
+        fact.declaredScale !== null || fact.declaredSign
+          ? applyResearchFinancialStatementTransform(fact.raw.value, fact.declaredScale, fact.declaredSign ?? null)
+          : fact.raw.value,
+      );
       const normalizedMatches = normalizedFromRaw.state === "present"
         ? fact.normalized.state === "present" && normalizedFromRaw.value === fact.normalized.value
         : fact.normalized.state === "missing" && normalizedFromRaw.reason === fact.normalized.reason;

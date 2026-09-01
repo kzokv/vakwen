@@ -96,9 +96,15 @@ describe("MOPS XBRL provider parser", () => {
           </xbrli:context>
           <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
           <ix:nonFraction name="ifrs-full:RevenueFromContractsWithCustomers" contextRef="ctx_q2" unitRef="twd" scale="3">1,234</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:GrossProfit" contextRef="ctx_q2" unitRef="twd">400</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:OperatingIncomeLoss" contextRef="ctx_q2" unitRef="twd">300</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:ProfitLoss" contextRef="ctx_q2" unitRef="twd">88</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:CashFlowsFromUsedInOperatingActivities" contextRef="ctx_q2" unitRef="twd">66</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:PurchaseOfPropertyPlantAndEquipment" contextRef="ctx_q2" unitRef="twd" sign="-">25</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:Assets" contextRef="ctx_q2" unitRef="twd">999</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:CurrentAssets" contextRef="ctx_q2" unitRef="twd">700</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:CurrentLiabilities" contextRef="ctx_q2" unitRef="twd">350</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:InterestBearingBorrowings" contextRef="ctx_q2" unitRef="twd">120</ix:nonFraction>
         </body>
       </html>`,
       {
@@ -114,7 +120,15 @@ describe("MOPS XBRL provider parser", () => {
     expect(artifact.artifact.artifactKind).toBe("ixbrl");
     expect(artifact.facts.find((fact) => fact.concept.localName === "RevenueFromContractsWithCustomers")?.normalizedValue)
       .toBe("1234000");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "PurchaseOfPropertyPlantAndEquipment")?.normalizedValue)
+      .toBe("-25");
+    expect(artifact.facts.filter((fact) => ["GrossProfit", "OperatingIncomeLoss"].includes(fact.concept.localName))
+      .every((fact) => fact.statementRole === "income_statement")).toBe(true);
+    expect(artifact.facts.filter((fact) => ["CurrentAssets", "CurrentLiabilities", "InterestBearingBorrowings"].includes(fact.concept.localName))
+      .every((fact) => fact.statementRole === "balance_sheet")).toBe(true);
+    expect(artifact.facts.find((fact) => fact.concept.localName === "PurchaseOfPropertyPlantAndEquipment")?.statementRole)
+      .toBe("cash_flow_statement");
     expect(artifact.issues.missingStatementRoles).toEqual([]);
-    expect(artifact.issues.taxonomyAmbiguity).toBe(true);
+    expect(artifact.issues.taxonomyAmbiguity).toBe(false);
   });
 });

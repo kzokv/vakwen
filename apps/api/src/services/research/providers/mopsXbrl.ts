@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { applyResearchFinancialStatementTransform } from "../financialStatements.js";
 
 export type MopsStatementVenue = "TWSE" | "TPEX";
 export type MopsStatementSector = "operating_company" | "financial_institution" | "unknown";
@@ -115,14 +116,24 @@ const CORE_PREFIXES = new Set(["xbrli", "xbrldi", "link", "xlink", "ix", "html"]
 const KNOWN_STATEMENT_ROLE_BY_CONCEPT = new Map<string, MopsStatementRole>([
   ["Assets", "balance_sheet"],
   ["CashAndCashEquivalents", "balance_sheet"],
+  ["CurrentAssets", "balance_sheet"],
+  ["CurrentLiabilities", "balance_sheet"],
+  ["Equity", "balance_sheet"],
   ["EquityAttributableToOwnersOfParent", "balance_sheet"],
+  ["InterestBearingBorrowings", "balance_sheet"],
   ["Liabilities", "balance_sheet"],
+  ["GrossProfit", "income_statement"],
+  ["OperatingIncomeLoss", "income_statement"],
   ["ProfitLoss", "income_statement"],
+  ["Revenue", "income_statement"],
   ["RevenueFromContractsWithCustomers", "income_statement"],
+  ["AcquisitionOfPropertyPlantAndEquipment", "cash_flow_statement"],
   ["CashFlowsFromUsedInOperatingActivities", "cash_flow_statement"],
   ["NetCashFlowsFromUsedInOperatingActivities", "cash_flow_statement"],
   ["CashFlowsFromUsedInInvestingActivities", "cash_flow_statement"],
+  ["NetCashFlowsFromUsedInInvestingActivities", "cash_flow_statement"],
   ["CashFlowsFromUsedInFinancingActivities", "cash_flow_statement"],
+  ["PurchaseOfPropertyPlantAndEquipment", "cash_flow_statement"],
 ]);
 
 function parseAttributes(fragment: string): Record<string, string> {
@@ -145,13 +156,7 @@ function stripMarkup(value: string): string {
 }
 
 function normalizeFactValue(rawValue: string, sign: string | null, scale: string | null): string {
-  const compact = stripMarkup(rawValue).replaceAll(",", "");
-  if (compact === "") return "";
-  const signed = sign === "-" && !compact.startsWith("-") ? `-${compact}` : compact;
-  if (!/^-?\d+(?:\.\d+)?$/.test(signed)) return signed;
-  const scaleValue = scale === null ? 0 : Number(scale);
-  if (!Number.isFinite(scaleValue) || scaleValue === 0) return signed;
-  return `${Number(signed) * (10 ** scaleValue)}`;
+  return applyResearchFinancialStatementTransform(stripMarkup(rawValue), scale, sign);
 }
 
 function detectArtifactKind(content: string, declaredKind: MopsArtifactKind | undefined): MopsArtifactKind {
@@ -322,13 +327,8 @@ function extractXbrlFacts(
 
 function taxonomyVersionsForFacts(
   facts: readonly MopsFactRecord[],
-  namespaceMap: Record<string, string>,
 ): string[] {
   const candidates = new Set<string>();
-  for (const uri of Object.values(namespaceMap)) {
-    const versionMatch = /\b(20\d{2}(?:[-/](?:Q?[1-4]|0[1-9]|1[0-2]))?)\b/.exec(uri);
-    candidates.add(versionMatch?.[1] ?? uri);
-  }
   for (const fact of facts) {
     if (fact.concept.namespaceUri) {
       const versionMatch = /\b(20\d{2}(?:[-/](?:Q?[1-4]|0[1-9]|1[0-2]))?)\b/.exec(fact.concept.namespaceUri);
@@ -384,7 +384,7 @@ export function parseMopsFinancialStatementArtifact(
   const statementRoles = new Set(facts.map((fact) => fact.statementRole));
   const missingStatementRoles = (["balance_sheet", "income_statement", "cash_flow_statement"] as const)
     .filter((role) => !statementRoles.has(role));
-  const taxonomyVersions = taxonomyVersionsForFacts(facts, namespaceMap);
+  const taxonomyVersions = taxonomyVersionsForFacts(facts);
   const primaryNamespace = facts[0]?.concept.namespaceUri ?? null;
   const contentHash = metadata.contentHash
     ?? `sha256:${createHash("sha256").update(content).digest("hex")}`;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import {
+  applyResearchFinancialStatementTransform,
   normalizeResearchFinancialStatementFact,
   resolveLatestResearchFinancialStatementRecords,
   type ResearchFinancialStatementRecord,
@@ -128,6 +129,13 @@ function makeRecord(overrides: Partial<ResearchFinancialStatementRecord> = {}): 
 }
 
 describe("research financial statements", () => {
+  it("iXBRL transforms preserve decimal precision while applying scale and sign", () => {
+    expect(applyResearchFinancialStatementTransform("1,234", "3", null)).toBe("1234000");
+    expect(applyResearchFinancialStatementTransform("0.001", "3", null)).toBe("1");
+    expect(applyResearchFinancialStatementTransform("1.23", "-1", "-")).toBe("-0.123");
+    expect(applyResearchFinancialStatementTransform("-25", null, "-")).toBe("-25");
+  });
+
   it("blank sentinels stay missing while explicit zero remains numeric zero", () => {
     const missing = normalizeResearchFinancialStatementFact({
       listingId: "lst_2330",

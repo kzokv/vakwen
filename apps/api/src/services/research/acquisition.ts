@@ -57,11 +57,13 @@ import {
 import type { ResearchMonthlyRevenueRecord } from "./monthlyRevenue.js";
 import {
   normalizeResearchFinancialStatementFact,
+  resolveMopsArtifactFilingBasis,
   type ResearchFinancialStatementAmbiguityFlag,
   type ResearchFinancialStatementFact,
   type ResearchFinancialStatementKind,
   type ResearchFinancialStatementRecord,
   researchFinancialStatementRecordKey,
+  valueKindForMopsFact,
 } from "./financialStatements.js";
 
 export const OFFICIAL_IDENTITY_SOURCES = {
@@ -225,13 +227,6 @@ function timestampAtStartOfDay(date: string): string {
   return `${date}T00:00:00.000Z`;
 }
 
-function valueKindForArtifactFact(
-  fact: MopsFinancialStatementArtifact["facts"][number],
-): ResearchFinancialStatementFact["context"]["valueKind"] {
-  if (!fact.periodStart) return "instant";
-  return "cumulative";
-}
-
 function artifactAmbiguityFlags(
   artifact: MopsFinancialStatementArtifact,
 ): ResearchFinancialStatementAmbiguityFlag[] {
@@ -285,13 +280,15 @@ async function canonicalizeFinancialStatementArtifact(
             kind: "instant",
             instantAt: timestampAtEndOfDay(fact.periodEnd ?? artifact.filing.periodEnd),
           },
-      valueKind: valueKindForArtifactFact(fact),
+      valueKind: valueKindForMopsFact(fact, artifact.filing),
       rawValue: fact.rawValue,
+      normalizedValue: fact.normalizedValue,
       unit: unit
         ? { state: "known", unitId: unit.measures[0] ?? fact.unitRef ?? "unknown" }
         : { state: "unknown", rawUnitId: fact.unitRef },
       declaredScale: fact.scale,
       declaredPrecision: fact.decimals,
+      declaredSign: fact.sign,
       ambiguityFlags: [
         ...(duplicateContextIds.has(fact.contextRef) ? ["duplicate_context" as const] : []),
         ...(artifact.issues.basisAmbiguity ? ["filing_basis_ambiguous" as const] : []),
@@ -312,13 +309,14 @@ async function canonicalizeFinancialStatementArtifact(
   const periodToken = artifact.filing.fiscalPeriod === "annual"
     ? String(artifact.filing.fiscalYear).padStart(4, "0")
     : `${String(artifact.filing.fiscalYear).padStart(4, "0")}-Q${artifact.filing.fiscalPeriod.slice(1)}`;
+  const filingBasis = resolveMopsArtifactFilingBasis(artifact);
   const predecessorCandidates = artifact.filing.revision > 0
     ? await persistence.listLatestResearchFinancialStatementRecords({
         subject: { kind: "listing_id", listingId: artifact.listingId },
         effectiveAt: timestampAtEndOfDay(artifact.filing.publishedAt),
         knowledgeAt: artifact.artifact.retrievedAt,
         periodicity: artifact.filing.fiscalPeriod === "annual" ? "annual" : "quarterly",
-        filingBasis: artifact.filing.filingBasis,
+        filingBasis,
         startPeriod: periodToken,
         endPeriod: periodToken,
       })
@@ -344,7 +342,7 @@ async function canonicalizeFinancialStatementArtifact(
       periodStart: artifact.filing.periodStart,
       periodEnd: artifact.filing.periodEnd,
     },
-    filingBasis: artifact.filing.filingBasis,
+    filingBasis,
     publicationContext: {
       filingId: artifact.filing.filingId,
       revisionId,

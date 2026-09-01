@@ -7,14 +7,16 @@ import {
   OFFICIAL_FINANCIAL_STATEMENT_BASE_URL,
 } from "../../src/services/research/acquisition.js";
 import {
+  buildCurrentMopsFinancialStatementDescriptors,
   createResearchFinancialStatementAcquisitionHandler,
   registerResearchFinancialStatementAcquisitionWorker,
   RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_CRON,
   RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_QUEUE,
 } from "../../src/services/research/registerFinancialStatementAcquisitionWorker.js";
+import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
 
 describe("research financial statement acquisition", () => {
-  it("official MOPS acquisition: duration facts remain cumulative and emitted supersedes keys resolve to stored predecessors", async () => {
+  it("official MOPS acquisition: discrete quarter contexts stay discrete and emitted supersedes keys resolve to stored predecessors", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const q2Revision1Url = `${OFFICIAL_FINANCIAL_STATEMENT_BASE_URL}?co_id=2330&year=2026&season=2&rev=1`;
     const q2Revision2Url = `${OFFICIAL_FINANCIAL_STATEMENT_BASE_URL}?co_id=2330&year=2026&season=2&rev=2`;
@@ -34,7 +36,7 @@ describe("research financial statement acquisition", () => {
           <xbrli:context id="q2"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
           <xbrli:context id="q2i"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>
           <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
-          <ifrs-full:RevenueFromContractsWithCustomers contextRef="q2" unitRef="twd">32</ifrs-full:RevenueFromContractsWithCustomers>
+          <ifrs-full:RevenueFromContractsWithCustomers contextRef="q2" unitRef="twd" scale="3">32</ifrs-full:RevenueFromContractsWithCustomers>
           <ifrs-full:CashFlowsFromUsedInOperatingActivities contextRef="q2" unitRef="twd">11</ifrs-full:CashFlowsFromUsedInOperatingActivities>
           <ifrs-full:Assets contextRef="q2i" unitRef="twd">52</ifrs-full:Assets>
         </xbrli:xbrl>`],
@@ -149,10 +151,14 @@ describe("research financial statement acquisition", () => {
     expect(q3Latest).toBeDefined();
     expect(q2Latest?.statements.flatMap((section) => section.facts)
       .filter((fact) => fact.context.period.kind === "duration")
-      .every((fact) => fact.context.valueKind === "cumulative")).toBe(true);
+      .every((fact) => fact.context.valueKind === "discrete")).toBe(true);
     expect(q3Latest?.statements.flatMap((section) => section.facts)
       .filter((fact) => fact.context.period.kind === "duration")
-      .every((fact) => fact.context.valueKind === "cumulative")).toBe(true);
+      .every((fact) => fact.context.valueKind === "discrete")).toBe(true);
+    const transformedRevenue = q2Latest?.statements.flatMap((section) => section.facts)
+      .find((fact) => fact.metric.state === "mapped" && fact.metric.metricId === "revenue");
+    expect(transformedRevenue?.raw).toEqual({ state: "present", value: "32" });
+    expect(transformedRevenue?.normalized).toEqual({ state: "present", value: "32000" });
 
     const predecessor = q2Records.find((record) => record.publicationContext.revisionSequence === 1);
     expect(predecessor).toBeDefined();
@@ -194,7 +200,49 @@ describe("research financial statement acquisition", () => {
       log: { info: vi.fn() } as never,
       resolveDescriptors,
     });
-    await expect(handler([{ id: "job-1" } as never])).rejects.toThrow("requires at least one descriptor");
+    await expect(handler([{ id: "job-1" } as never])).resolves.toBeUndefined();
     expect(resolveDescriptors).toHaveBeenCalled();
+  });
+
+  it("scheduled descriptor resolution: active operating companies map to the latest due MOPS filing", () => {
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-09-01",
+      retrievedAt: "2026-09-01T00:00:00.000Z",
+      artifact: { contentHash: "sha256:identity", sourceUrl: "https://openapi.twse.com.tw/company" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+
+    const descriptors = buildCurrentMopsFinancialStatementDescriptors(
+      [identity],
+      new Date("2026-09-01T00:00:00.000Z"),
+    );
+
+    expect(descriptors).toEqual([
+      expect.objectContaining({
+        listingId: identity.listing.id,
+        issuerId: identity.issuer.id,
+        ticker: "2330",
+        venue: "TWSE",
+        sector: "operating_company",
+        sourceUrl: expect.stringContaining("co_id=2330"),
+        filing: expect.objectContaining({
+          fiscalYear: 2026,
+          fiscalPeriod: "q2",
+          periodStart: "2026-01-01",
+          periodEnd: "2026-06-30",
+          filingBasis: "unknown",
+          publishedAt: "2026-09-01",
+        }),
+      }),
+    ]);
   });
 });
