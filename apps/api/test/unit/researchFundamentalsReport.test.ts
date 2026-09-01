@@ -279,6 +279,34 @@ describe("financial statement fundamentals report", () => {
     expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.statement).toContain("changed 25%");
   });
 
+  it("stale annual history: withholds the latest-due YoY conclusion", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annualOutput = buildStatementsOutput(identity.listing.id, "annual", [
+      makePeriod(2020, null, "100"), makePeriod(2021, null, "120"), makePeriod(2022, null, "140"),
+    ]);
+    annualOutput.freshness.state = "stale";
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? annualOutput
+            : buildStatementsOutput(identity.listing.id, "quarterly", [])
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["stale_financial_statements"],
+    });
+  });
+
   it("quarterly trend: withholds nonconsecutive or cumulative-only quarter windows", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

@@ -67,9 +67,11 @@ export function buildCurrentMopsFinancialStatementDescriptors(
     ))
     .map((identity) => {
       const sourceUrl = new URL(OFFICIAL_FINANCIAL_STATEMENT_BASE_URL);
-      sourceUrl.searchParams.set("co_id", identity.listing.ticker);
-      sourceUrl.searchParams.set("year", String(due.fiscalYear));
-      sourceUrl.searchParams.set("season", String(due.season));
+      sourceUrl.searchParams.set("step", "1");
+      sourceUrl.searchParams.set("CO_ID", identity.listing.ticker);
+      sourceUrl.searchParams.set("SYEAR", String(due.fiscalYear));
+      sourceUrl.searchParams.set("SSEASON", String(due.season));
+      sourceUrl.searchParams.set("REPORT_ID", "C");
       return {
         listingId: identity.listing.id,
         issuerId: identity.issuer.id,

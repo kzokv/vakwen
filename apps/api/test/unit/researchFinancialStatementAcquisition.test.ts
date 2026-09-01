@@ -313,7 +313,7 @@ describe("research financial statement acquisition", () => {
         ticker: "2330",
         venue: "TWSE",
         sector: "operating_company",
-        sourceUrl: expect.stringContaining("co_id=2330"),
+        sourceUrl: expect.stringMatching(/step=1&CO_ID=2330&SYEAR=2026&SSEASON=2&REPORT_ID=C/),
         filing: expect.objectContaining({
           fiscalYear: 2026,
           fiscalPeriod: "q2",

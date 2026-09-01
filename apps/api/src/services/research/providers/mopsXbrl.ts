@@ -300,11 +300,18 @@ function extractInlineFacts(
   contextsById: ReadonlyMap<string, MopsContextRecord>,
 ): MopsFactRecord[] {
   const facts: MopsFactRecord[] = [];
-  for (const match of content.matchAll(/<ix:(?:nonFraction|nonNumeric)\b([^>]*)>([\s\S]*?)<\/ix:(?:nonFraction|nonNumeric)>/gi)) {
+  for (const match of content.matchAll(/<ix:(?:nonFraction|nonNumeric)\b([^>]*?)(?<!\/)>([\s\S]*?)<\/ix:(?:nonFraction|nonNumeric)>/gi)) {
     const attributes = parseAttributes(match[1] ?? "");
     const qname = attributes.name;
     if (!qname) continue;
     const fact = buildFactRecord(qname, attributes, match[2] ?? "", namespaceMap, contextsById);
+    if (fact) facts.push(fact);
+  }
+  for (const match of content.matchAll(/<ix:(?:nonFraction|nonNumeric)\b([^>]*)\/>/gi)) {
+    const attributes = parseAttributes(match[1] ?? "");
+    const qname = attributes.name;
+    if (!qname) continue;
+    const fact = buildFactRecord(qname, attributes, "", namespaceMap, contextsById);
     if (fact) facts.push(fact);
   }
   return facts;
@@ -320,6 +327,12 @@ function extractXbrlFacts(
     const attributes = parseAttributes(match[2] ?? "");
     if (!attributes.contextRef) continue;
     const fact = buildFactRecord(match[1] ?? "", attributes, match[3] ?? "", namespaceMap, contextsById);
+    if (fact) facts.push(fact);
+  }
+  for (const match of content.matchAll(/<([A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*)\b([^>]*)\/>/g)) {
+    const attributes = parseAttributes(match[2] ?? "");
+    if (!attributes.contextRef) continue;
+    const fact = buildFactRecord(match[1] ?? "", attributes, "", namespaceMap, contextsById);
     if (fact) facts.push(fact);
   }
   return facts;

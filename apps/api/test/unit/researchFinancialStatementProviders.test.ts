@@ -58,6 +58,7 @@ describe("MOPS XBRL provider parser", () => {
         <ifrs-full:Assets contextRef="ctx_consolidated" unitRef="twd">3450000</ifrs-full:Assets>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_consolidated" unitRef="twd">1234000</ifrs-full:RevenueFromContractsWithCustomers>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_individual" unitRef="twd">1111000</ifrs-full:RevenueFromContractsWithCustomers>
+        <ifrs-full:GrossProfit contextRef="ctx_consolidated" unitRef="twd" xsi:nil="true" />
         <ifrs-full:CashFlowsFromUsedInOperatingActivities contextRef="ctx_consolidated" unitRef="unknown_unit">88000</ifrs-full:CashFlowsFromUsedInOperatingActivities>
         <custom:UnmappedMetric contextRef="ctx_consolidated" unitRef="twd">42</custom:UnmappedMetric>
       </xbrli:xbrl>`,
@@ -77,6 +78,7 @@ describe("MOPS XBRL provider parser", () => {
     expect(artifact.issues.basisAmbiguity).toBe(true);
     expect(artifact.issues.contextAmbiguity).toBe(true);
     expect(artifact.facts.map((fact) => fact.concept.localName)).toContain("RevenueFromContractsWithCustomers");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "GrossProfit")?.normalizedValue).toBe("");
     expect(artifact.contexts).toHaveLength(3);
     expect(artifact.units).toHaveLength(1);
   });
@@ -97,6 +99,7 @@ describe("MOPS XBRL provider parser", () => {
           <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
           <ix:nonFraction name="ifrs-full:RevenueFromContractsWithCustomers" contextRef="ctx_q2" unitRef="twd" scale="3">1,234</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:GrossProfit" contextRef="ctx_q2" unitRef="twd">400</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:Liabilities" contextRef="ctx_q2" unitRef="twd" xsi:nil="true" />
           <ix:nonFraction name="ifrs-full:OperatingIncomeLoss" contextRef="ctx_q2" unitRef="twd">300</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:ProfitLoss" contextRef="ctx_q2" unitRef="twd">88</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:CashFlowsFromUsedInOperatingActivities" contextRef="ctx_q2" unitRef="twd">66</ix:nonFraction>
@@ -122,6 +125,7 @@ describe("MOPS XBRL provider parser", () => {
       .toBe("1234000");
     expect(artifact.facts.find((fact) => fact.concept.localName === "PurchaseOfPropertyPlantAndEquipment")?.normalizedValue)
       .toBe("-25");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "Liabilities")?.normalizedValue).toBe("");
     expect(artifact.facts.filter((fact) => ["GrossProfit", "OperatingIncomeLoss"].includes(fact.concept.localName))
       .every((fact) => fact.statementRole === "income_statement")).toBe(true);
     expect(artifact.facts.filter((fact) => ["CurrentAssets", "CurrentLiabilities", "InterestBearingBorrowings"].includes(fact.concept.localName))

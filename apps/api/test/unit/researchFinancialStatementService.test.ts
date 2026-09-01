@@ -792,6 +792,30 @@ describe("research financial-statement service", () => {
     expect(explicitIndividual.readiness).toEqual({ status: "withheld", reasonCodes: ["no_authoritative_filing"] });
   });
 
+  it("period-end range: does not widen dates inside a fiscal period", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 1, { revenue: "28" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "period_end_range", startDate: "2026-02-01", endDate: "2026-02-28" },
+      derivedMetrics: [],
+    });
+
+    expect(result.periods).toEqual([]);
+    expect(result.readiness).toEqual({ status: "withheld", reasonCodes: ["no_authoritative_filing"] });
+  });
+
   it("filters output facts by metric selection, preserves quality flags, and withholds missing derived inputs without zero fill", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

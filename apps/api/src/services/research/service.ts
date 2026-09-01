@@ -1613,10 +1613,18 @@ export async function getFinancialStatements(
     ? await persistence.listLatestResearchFinancialStatementRecords({ ...baseQuery, filingBasis: "unknown" })
     : [];
   const basisSelection = selectFinancialStatementBasis(consolidated, individual, unknown, query.filingBasis);
-  const orderedSelected = [...basisSelection.records]
+  const selectedRecordsWithinRange = (() => {
+    if (query.range.kind !== "period_end_range") return basisSelection.records;
+    const { startDate, endDate } = query.range;
+    return basisSelection.records.filter((record) => (
+      record.fiscalPeriod.periodEnd >= startDate
+      && record.fiscalPeriod.periodEnd <= endDate
+    ));
+  })();
+  const orderedSelected = [...selectedRecordsWithinRange]
     .sort((left, right) => query.page.order === "desc" ? financialStatementSortOrder(left, right) : financialStatementSortOrder(right, left));
   const outputRange = query.range.kind === "latest_periods"
-    ? [...basisSelection.records]
+    ? [...selectedRecordsWithinRange]
         .sort(financialStatementSortOrder)
         .slice(0, financialStatementsRangeRequestedCount(query))
         .sort((left, right) => query.page.order === "desc" ? financialStatementSortOrder(left, right) : financialStatementSortOrder(right, left))
@@ -1700,7 +1708,7 @@ export async function getFinancialStatements(
   const missingFactCount = periods.reduce((count, period) => count + period.sourceFacts.filter((fact) => fact.value.state === "missing").length, 0);
   const missingMetricCount = derivedOutcomes.filter((metric) => metric.status !== "returned").length;
   const readinessReasonCodes = dedupeByKey([
-    ...(basisSelection.records.length === 0 ? ["no_authoritative_filing"] : []),
+    ...(selectedRecordsWithinRange.length === 0 ? ["no_authoritative_filing"] : []),
     ...(basisSelection.selected === "policy_selected" ? ["ambiguous_basis"] : []),
     ...gaps.map((gap) => gap.code),
     ...conflicts.map((conflict) => conflict.code),

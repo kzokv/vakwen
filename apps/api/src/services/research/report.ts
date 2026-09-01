@@ -318,6 +318,7 @@ function firstAmbiguityReason(periods: readonly ResearchFinancialStatementsOutpu
 function buildSupportedOrWithheldConclusions(
   annuals: readonly ResearchFinancialStatementsOutput["periods"][number][],
   quarters: readonly ResearchFinancialStatementsOutput["periods"][number][],
+  annualFreshness: ResearchFinancialStatementsOutput["freshness"]["state"],
 ) {
   const orderedAnnuals = [...annuals].sort((left, right) => left.fiscalYear - right.fiscalYear);
   const orderedQuarters = [...quarters].sort((left, right) => quarterSortValue(left) - quarterSortValue(right));
@@ -350,7 +351,7 @@ function buildSupportedOrWithheldConclusions(
     : undefined;
   const latestAnnualRevenue = latestAnnual ? numericFact(latestAnnual, "revenue") : null;
   const priorAnnualRevenue = priorAnnual ? numericFact(priorAnnual, "revenue") : null;
-  const yoyConclusion = latestAnnual && priorAnnual && latestAnnualRevenue !== null && priorAnnualRevenue !== null && priorAnnualRevenue !== 0
+  const yoyConclusion = annualFreshness !== "stale" && latestAnnual && priorAnnual && latestAnnualRevenue !== null && priorAnnualRevenue !== null && priorAnnualRevenue !== 0
     ? {
         id: "latest_revenue_yoy" as const,
         status: "supported" as const,
@@ -361,7 +362,7 @@ function buildSupportedOrWithheldConclusions(
         id: "latest_revenue_yoy" as const,
         status: "withheld" as const,
         statement: "Latest due year-over-year financial statement conclusion is withheld.",
-        reasonCodes: ["insufficient_yoy_window"],
+        reasonCodes: [annualFreshness === "stale" ? "stale_financial_statements" : "insufficient_yoy_window"],
       };
   const annualYearsAreConsecutive = orderedAnnuals.every((period, index) => (
     index === 0 || period.fiscalYear === orderedAnnuals[index - 1]!.fiscalYear + 1
@@ -487,7 +488,7 @@ export async function buildFinancialStatementFundamentalsResearchReport(
           reasonCodes: ["unsupported_sector"],
         },
       ]
-    : buildSupportedOrWithheldConclusions(annualStatements.periods, quarterlyStatements.periods);
+    : buildSupportedOrWithheldConclusions(annualStatements.periods, quarterlyStatements.periods, annualStatements.freshness.state);
   const evidenceProvenanceIds = [...new Set([
     ...annualStatements.provenanceIndex.map((item) => item.provenanceId),
     ...quarterlyStatements.provenanceIndex.map((item) => item.provenanceId),
