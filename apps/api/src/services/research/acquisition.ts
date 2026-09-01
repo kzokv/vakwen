@@ -58,6 +58,7 @@ import type { ResearchMonthlyRevenueRecord } from "./monthlyRevenue.js";
 import {
   normalizeResearchFinancialStatementFact,
   researchFinancialStatementTaxonomyVersion,
+  researchFinancialStatementUnitId,
   resolveMopsArtifactFilingBasis,
   type ResearchFinancialStatementAmbiguityFlag,
   type ResearchFinancialStatementFact,
@@ -326,7 +327,7 @@ async function canonicalizeFinancialStatementArtifact(
       rawValue: fact.rawValue,
       normalizedValue: fact.normalizedValue,
       unit: unit
-        ? { state: "known", unitId: unit.measures[0] ?? fact.unitRef ?? "unknown" }
+        ? { state: "known", unitId: researchFinancialStatementUnitId(unit, fact.unitRef ?? "unknown") }
         : { state: "unknown", rawUnitId: fact.unitRef },
       declaredScale: fact.scale,
       declaredPrecision: fact.decimals,

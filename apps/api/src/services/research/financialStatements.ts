@@ -355,6 +355,18 @@ export function researchFinancialStatementTaxonomyVersion(namespaceUri: string |
   return /\b(20\d{2}(?:[-/](?:Q?[1-4]|0[1-9]|1[0-2]))?)\b/.exec(namespaceUri)?.[1] ?? namespaceUri;
 }
 
+export function researchFinancialStatementUnitId(
+  unit: { measures: string[]; numeratorMeasures: string[]; denominatorMeasures: string[] },
+  fallback: string,
+): string {
+  if (unit.numeratorMeasures.length > 0 || unit.denominatorMeasures.length > 0) {
+    const numerator = unit.numeratorMeasures.length > 0 ? unit.numeratorMeasures.join("*") : "1";
+    const denominator = unit.denominatorMeasures.length > 0 ? unit.denominatorMeasures.join("*") : "1";
+    return `${numerator}/${denominator}`;
+  }
+  return unit.measures.length > 0 ? unit.measures.join("*") : fallback;
+}
+
 export function materializeResearchFinancialStatementRecord(
   input: ResearchFinancialStatementAppendInput,
 ): ResearchFinancialStatementRecord {
@@ -414,7 +426,7 @@ export function materializeResearchFinancialStatementRecord(
       rawValue: fact.rawValue,
       normalizedValue: fact.normalizedValue,
       unit: unitRecord
-        ? { state: "known", unitId: unitRecord.measures[0] ?? fact.unitRef ?? "unknown" }
+        ? { state: "known", unitId: researchFinancialStatementUnitId(unitRecord, fact.unitRef ?? "unknown") }
         : { state: "unknown", rawUnitId: fact.unitRef },
       declaredScale: fact.scale,
       declaredPrecision: fact.decimals,

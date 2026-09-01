@@ -40,13 +40,15 @@ function acquisitionDescriptor(index: number): MopsFinancialStatementDescriptor 
 }
 
 const validAcquisitionXbrl = `<?xml version="1.0" encoding="utf-8"?>
-  <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
+  <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full" xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
     <xbrli:context id="duration"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
     <xbrli:context id="instant"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>
     <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
+    <xbrli:unit id="twd_per_share"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>
     <ifrs-full:Revenue contextRef="duration" unitRef="twd">60</ifrs-full:Revenue>
     <ifrs-full:CashFlowsFromUsedInOperatingActivities contextRef="duration" unitRef="twd">15</ifrs-full:CashFlowsFromUsedInOperatingActivities>
     <ifrs-full:Assets contextRef="instant" unitRef="twd">210</ifrs-full:Assets>
+    <custom:EarningsPerShare contextRef="duration" unitRef="twd_per_share">8.5</custom:EarningsPerShare>
   </xbrli:xbrl>`;
 
 describe("research financial statement acquisition", () => {
@@ -134,22 +136,25 @@ describe("research financial statement acquisition", () => {
     const q3Revision1Url = `${OFFICIAL_FINANCIAL_STATEMENT_BASE_URL}?co_id=2330&year=2026&season=3&rev=1`;
     const payloads = new Map<string, string>([
       [q2Revision1Url, `<?xml version="1.0" encoding="utf-8"?>
-        <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
+        <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full" xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
           <xbrli:context id="q2"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
           <xbrli:context id="q2i"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>
           <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
+          <xbrli:unit id="twd_per_share"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>
           <ifrs-full:RevenueFromContractsWithCustomers contextRef="q2" unitRef="twd">30</ifrs-full:RevenueFromContractsWithCustomers>
           <ifrs-full:CashFlowsFromUsedInOperatingActivities contextRef="q2" unitRef="twd">10</ifrs-full:CashFlowsFromUsedInOperatingActivities>
           <ifrs-full:Assets contextRef="q2i" unitRef="twd">50</ifrs-full:Assets>
         </xbrli:xbrl>`],
       [q2Revision2Url, `<?xml version="1.0" encoding="utf-8"?>
-        <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
+        <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full" xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
           <xbrli:context id="q2"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
           <xbrli:context id="q2i"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>
           <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
+          <xbrli:unit id="twd_per_share"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>
           <ifrs-full:RevenueFromContractsWithCustomers contextRef="q2" unitRef="twd" scale="3">32</ifrs-full:RevenueFromContractsWithCustomers>
           <ifrs-full:CashFlowsFromUsedInOperatingActivities contextRef="q2" unitRef="twd">11</ifrs-full:CashFlowsFromUsedInOperatingActivities>
           <ifrs-full:Assets contextRef="q2i" unitRef="twd">52</ifrs-full:Assets>
+          <custom:EarningsPerShare contextRef="q2" unitRef="twd_per_share">8.5</custom:EarningsPerShare>
         </xbrli:xbrl>`],
       [q3Revision1Url, `<?xml version="1.0" encoding="utf-8"?>
         <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
@@ -274,6 +279,9 @@ describe("research financial statement acquisition", () => {
       namespaceUri: "http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full",
       version: "2026-03",
     });
+    const earningsPerShare = q2Latest?.statements.flatMap((section) => section.facts)
+      .find((fact) => fact.concept.qname === "custom:EarningsPerShare");
+    expect(earningsPerShare?.unit).toEqual({ state: "known", unitId: "iso4217:TWD/xbrli:shares" });
 
     const predecessor = q2Records.find((record) => record.publicationContext.revisionSequence === 1);
     expect(predecessor).toBeDefined();

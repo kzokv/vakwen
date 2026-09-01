@@ -406,6 +406,8 @@ function buildSupportedOrWithheldConclusions(
   const priorAnnual = latestAnnual
     ? orderedAnnuals.find((period) => period.fiscalYear === latestAnnual.fiscalYear - 1)
     : undefined;
+  const yoyReason = firstAmbiguityReason([priorAnnual, latestAnnual]
+    .filter((period): period is NonNullable<typeof period> => period !== undefined));
   const latestAnnualRevenue = latestAnnual ? numericFact(latestAnnual, "revenue") : null;
   const priorAnnualRevenue = priorAnnual ? numericFact(priorAnnual, "revenue") : null;
   const latestAnnualRevenueFact = latestAnnual ? findFact(latestAnnual, "revenue") : undefined;
@@ -413,7 +415,7 @@ function buildSupportedOrWithheldConclusions(
   const annualRevenueUnitsMatch = latestAnnualRevenueFact?.unit.normalized.state === "present"
     && priorAnnualRevenueFact?.unit.normalized.state === "present"
     && latestAnnualRevenueFact.unit.normalized.value === priorAnnualRevenueFact.unit.normalized.value;
-  const yoyConclusion = !annualReason && annualFreshness !== "stale" && annualRevenueUnitsMatch && latestAnnual && priorAnnual && latestAnnualRevenue !== null && priorAnnualRevenue !== null && priorAnnualRevenue !== 0
+  const yoyConclusion = !yoyReason && annualFreshness !== "stale" && annualRevenueUnitsMatch && latestAnnual && priorAnnual && latestAnnualRevenue !== null && priorAnnualRevenue !== null && priorAnnualRevenue !== 0
     ? {
         id: "latest_revenue_yoy" as const,
         status: "supported" as const,
@@ -424,7 +426,7 @@ function buildSupportedOrWithheldConclusions(
         id: "latest_revenue_yoy" as const,
         status: "withheld" as const,
         statement: "Latest due year-over-year financial statement conclusion is withheld.",
-        reasonCodes: [annualReason ?? (annualFreshness === "stale" ? "stale_financial_statements" : "insufficient_yoy_window")],
+        reasonCodes: [yoyReason ?? (annualFreshness === "stale" ? "stale_financial_statements" : "insufficient_yoy_window")],
       };
   const annualYearsAreConsecutive = orderedAnnuals.every((period, index) => (
     index === 0 || period.fiscalYear === orderedAnnuals[index - 1]!.fiscalYear + 1

@@ -464,6 +464,22 @@ describe("financial statement fundamentals report", () => {
       ["multi_year_revenue_trend", "supported"],
       ["quarterly_revenue_trend", "withheld"],
     ]);
+
+    annuals[0]!.quality.ambiguousBasis = { status: "present", reasonCodes: ["ambiguousBasis"], observationIds: [] };
+    const oldestAnnualAmbiguousReport = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+    expect(oldestAnnualAmbiguousReport.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.status).toBe("supported");
+    expect(oldestAnnualAmbiguousReport.conclusions.find((conclusion) => conclusion.id === "multi_year_revenue_trend")?.status).toBe("withheld");
   });
 
   it("unrelated unknown units: does not suppress clean revenue conclusions", async () => {
