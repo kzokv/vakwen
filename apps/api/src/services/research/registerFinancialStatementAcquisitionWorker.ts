@@ -10,9 +10,10 @@ import type { ResearchIdentityRecord } from "./identity.js";
 import type { MopsFinancialStatementDescriptor } from "./providers/mopsXbrl.js";
 
 export const RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_QUEUE = "research-financial-statement-acquisition";
-// One singleton run may cover roughly 1,000 listings x 11 filings at four-way concurrency.
-// Six hours leaves about eight seconds per remote artifact, including parse and persistence work.
-export const RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_EXPIRE_SECONDS = 6 * 60 * 60;
+// One singleton run may cover roughly 1,000 listings x 11 filings x two filing bases
+// at four-way concurrency. Twelve hours leaves about eight seconds per remote artifact,
+// including parse and persistence work.
+export const RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_EXPIRE_SECONDS = 12 * 60 * 60;
 // 17:30 UTC daily is 01:30 in Taiwan, after the usual nightly MOPS refresh window.
 export const RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_CRON = "30 17 * * *";
 

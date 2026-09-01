@@ -1384,7 +1384,10 @@ function deriveMetricForRecord(
     const denominator = discreteMetricValueForRecord("revenue", record, recordFacts, recordsByToken, factsByPeriodId);
     if ("reason" in numerator) return withholding(numerator.reason, []);
     if ("reason" in denominator) return withholding(denominator.reason, []);
-    if (numerator.unit !== denominator.unit) return withholding("incomparable_inputs", [...numerator.facts, ...denominator.facts].map((fact) => fact.id));
+    const formulaFacts = [...numerator.facts, ...denominator.facts];
+    if (numerator.unit !== denominator.unit || !factsHaveComparableTaxonomy(formulaFacts)) {
+      return withholding("incomparable_inputs", formulaFacts.map((fact) => fact.id));
+    }
     if (denominator.value === 0) return withholding("zero_denominator", [...numerator.facts, ...denominator.facts].map((fact) => fact.id));
     return returned(numerator.value / denominator.value, "ratio", [...numerator.facts, ...denominator.facts].map((fact) => fact.id), metricId);
   }
@@ -1395,7 +1398,10 @@ function deriveMetricForRecord(
     const right = deriveComparableMetricValue(recordFacts, rightMetric, record);
     if ("reason" in left) return withholding(left.reason, []);
     if ("reason" in right) return withholding(right.reason, []);
-    if (left.unit !== right.unit) return withholding("incomparable_inputs", [...left.facts, ...right.facts].map((fact) => fact.id));
+    const formulaFacts = [...left.facts, ...right.facts];
+    if (left.unit !== right.unit || !factsHaveComparableTaxonomy(formulaFacts)) {
+      return withholding("incomparable_inputs", formulaFacts.map((fact) => fact.id));
+    }
     if (right.value === 0) return withholding("zero_denominator", [...left.facts, ...right.facts].map((fact) => fact.id));
     return returned(left.value / right.value, "ratio", [...left.facts, ...right.facts].map((fact) => fact.id), metricId);
   }
@@ -1404,7 +1410,10 @@ function deriveMetricForRecord(
     const capex = discreteMetricValueForRecord("capital_expenditure", record, recordFacts, recordsByToken, factsByPeriodId);
     if ("reason" in ocf) return withholding(ocf.reason, []);
     if ("reason" in capex) return withholding(capex.reason, []);
-    if (ocf.unit !== capex.unit) return withholding("incomparable_inputs", [...ocf.facts, ...capex.facts].map((fact) => fact.id));
+    const formulaFacts = [...ocf.facts, ...capex.facts];
+    if (ocf.unit !== capex.unit || !factsHaveComparableTaxonomy(formulaFacts)) {
+      return withholding("incomparable_inputs", formulaFacts.map((fact) => fact.id));
+    }
     return returned(ocf.value - Math.abs(capex.value), ocf.unit, [...ocf.facts, ...capex.facts].map((fact) => fact.id), metricId);
   }
   if (metricId === "reconstructed_discrete_quarter") {

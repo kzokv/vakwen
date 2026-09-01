@@ -296,6 +296,7 @@ describe("research financial statement acquisition", () => {
   });
 
   it("worker registration: queue and cron stay explicit, and handler resolves descriptors at run time", async () => {
+    expect(RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_EXPIRE_SECONDS).toBe(12 * 60 * 60);
     const boss = {
       createQueue: vi.fn().mockResolvedValue(undefined),
       work: vi.fn().mockResolvedValue(undefined),

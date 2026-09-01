@@ -129,6 +129,7 @@ function metricFact(
   overrides?: {
     valueKind?: "cumulative" | "discrete" | "instant";
     unitId?: string;
+    taxonomyVersion?: string;
   },
 ) {
   const definition = metricDefinitions[metricId];
@@ -139,6 +140,9 @@ function metricFact(
     revisionId: record.publicationContext.revisionId,
     statementKind: definition.statementKind,
     concept: { qname: definition.qname, label: definition.label },
+    ...(overrides?.taxonomyVersion ? {
+      taxonomy: { namespaceUri: "https://xbrl.ifrs.org/taxonomy", version: overrides.taxonomyVersion },
+    } : {}),
     metric: { state: "mapped", metricId },
     contextId: `${researchFinancialStatementPeriodKey(record)}:${metricId}`,
     period: definition.period === "instant"
@@ -157,7 +161,11 @@ function metricFact(
 function assembleStatements(
   record: ResearchFinancialStatementRecord,
   values: Partial<Record<ResearchFinancialStatementMetricId, string>>,
-  overrides: Partial<Record<ResearchFinancialStatementMetricId, { valueKind?: "cumulative" | "discrete" | "instant"; unitId?: string }>> = {},
+  overrides: Partial<Record<ResearchFinancialStatementMetricId, {
+    valueKind?: "cumulative" | "discrete" | "instant";
+    unitId?: string;
+    taxonomyVersion?: string;
+  }>> = {},
 ) {
   const statements: Record<StatementKind, ReturnType<typeof metricFact>[]> = {
     income: [],
@@ -181,7 +189,11 @@ function makeQuarterRecord(
   values: Partial<Record<ResearchFinancialStatementMetricId, string>>,
   options: {
     filingBasis?: "consolidated" | "individual" | "unknown";
-    valueKinds?: Partial<Record<ResearchFinancialStatementMetricId, { valueKind?: "cumulative" | "discrete" | "instant"; unitId?: string }>>;
+    valueKinds?: Partial<Record<ResearchFinancialStatementMetricId, {
+      valueKind?: "cumulative" | "discrete" | "instant";
+      unitId?: string;
+      taxonomyVersion?: string;
+    }>>;
     publicationContext?: Partial<ResearchFinancialStatementRecord["publicationContext"]>;
     ambiguityFlags?: ResearchFinancialStatementRecord["ambiguityFlags"];
     extraFacts?: ResearchFinancialStatementRecord["statements"][number]["facts"];
@@ -557,6 +569,60 @@ describe("research financial-statement service", () => {
     expect(result.derivedOutcomes).toEqual([
       expect.objectContaining({ status: "withheld", metricId: "period_over_period_change", reasonCode: "incomparable_inputs" }),
     ]);
+  });
+
+  it("same-period formulas: withhold inputs from different taxonomy versions", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 2, {
+        revenue: "100",
+        gross_profit: "40",
+        interest_bearing_debt: "50",
+        equity: "100",
+        current_assets: "120",
+        current_liabilities: "60",
+        operating_cash_flow: "30",
+        capital_expenditure: "10",
+      }, {
+        ambiguityFlags: ["taxonomy_change"],
+        valueKinds: {
+          revenue: { valueKind: "discrete", taxonomyVersion: "2026" },
+          gross_profit: { valueKind: "discrete", taxonomyVersion: "2025" },
+          interest_bearing_debt: { taxonomyVersion: "2026" },
+          equity: { taxonomyVersion: "2025" },
+          current_assets: { taxonomyVersion: "2026" },
+          current_liabilities: { taxonomyVersion: "2025" },
+          operating_cash_flow: { valueKind: "discrete", taxonomyVersion: "2026" },
+          capital_expenditure: { valueKind: "discrete", taxonomyVersion: "2025" },
+        },
+      }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [
+        { metricId: "gross_margin", parameters: {} },
+        { metricId: "debt_to_equity", parameters: {} },
+        { metricId: "current_ratio", parameters: {} },
+        { metricId: "free_cash_flow", parameters: {} },
+      ],
+    });
+
+    expect(result.derivedOutcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "withheld", metricId: "gross_margin", reasonCode: "incomparable_inputs" }),
+      expect.objectContaining({ status: "withheld", metricId: "debt_to_equity", reasonCode: "incomparable_inputs" }),
+      expect.objectContaining({ status: "withheld", metricId: "current_ratio", reasonCode: "incomparable_inputs" }),
+      expect.objectContaining({ status: "withheld", metricId: "free_cash_flow", reasonCode: "incomparable_inputs" }),
+    ]));
   });
 
   it("negative CAGR endpoint: withholds instead of returning NaN", async () => {
