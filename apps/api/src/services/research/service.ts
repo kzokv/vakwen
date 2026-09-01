@@ -1027,6 +1027,7 @@ function selectedOutputFacts(
   const sectorExtensionSelected = query.metricSelection.groups.includes("sector_extension");
   return selectedStatementFacts(record, query.statements).filter((fact) => (
     (sectorExtensionSelected && fact.statementKind === "sector_extension")
+    || (query.metricSelection.base === "required_core" && fact.statementKind === "equity")
     || factMatchesMetricSelection(fact, query.metricSelection)
   ));
 }

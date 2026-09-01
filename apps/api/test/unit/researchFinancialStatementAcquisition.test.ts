@@ -99,7 +99,7 @@ describe("research financial statement acquisition", () => {
     expect(appendSpy).not.toHaveBeenCalled();
   });
 
-  it("changed scheduled artifact: promotes the content to an amendment revision with lineage", async () => {
+  it("changed scheduled artifact: promotes changes and restorations to new amendment revisions with lineage", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
     const descriptor = acquisitionDescriptor(0);
@@ -113,11 +113,16 @@ describe("research financial statement acquisition", () => {
       fetchImpl: async () => new Response(validAcquisitionXbrl.replace(">60<", ">61<"), { status: 200 }),
       retrievedAt: "2026-08-20T00:00:00.000Z",
     });
+    await runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors: [{ ...descriptor, filing: { ...descriptor.filing, publishedAt: "2026-08-25" } }],
+      fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
+      retrievedAt: "2026-08-25T00:00:00.000Z",
+    });
 
     const records = await persistence.listResearchFinancialStatementRecords({
       subject: { kind: "listing_id", listingId: descriptor.listingId },
-      effectiveAt: "2026-08-21T00:00:00.000Z",
-      knowledgeAt: "2026-08-21T00:00:00.000Z",
+      effectiveAt: "2026-08-26T00:00:00.000Z",
+      knowledgeAt: "2026-08-26T00:00:00.000Z",
       periodicity: "quarterly",
       filingBasis: "consolidated",
       startPeriod: "2026-Q2",
@@ -125,8 +130,13 @@ describe("research financial statement acquisition", () => {
     });
     const amendment = records.find((record) => record.publicationContext.revisionSequence === 1);
     const original = records.find((record) => record.publicationContext.revisionSequence === 0);
+    const restoration = records.find((record) => record.publicationContext.revisionSequence === 2);
     expect(amendment?.publicationContext).toMatchObject({ amendment: true, revisionSequence: 1 });
     expect(amendment?.relations).toEqual([{ kind: "supersedes", targetRecordKey: researchFinancialStatementRecordKey(original!) }]);
+    expect(restoration?.publicationContext).toMatchObject({ amendment: true, revisionSequence: 2 });
+    expect(restoration?.publicationContext.publishedAt.slice(0, 10)).toBe("2026-08-24");
+    expect(restoration?.provenance.contentHash).toBe(original?.provenance.contentHash);
+    expect(restoration?.relations).toEqual([{ kind: "supersedes", targetRecordKey: researchFinancialStatementRecordKey(amendment!) }]);
   });
 
   it("official MOPS acquisition: discrete quarter contexts stay discrete and emitted supersedes keys resolve to stored predecessors", async () => {

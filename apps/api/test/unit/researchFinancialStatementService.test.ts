@@ -1142,6 +1142,37 @@ describe("research financial-statement service", () => {
     expect(result.readiness).toEqual({ status: "withheld", reasonCodes: ["no_authoritative_filing"] });
   });
 
+  it("equity statement: required-core selection returns unmapped equity facts", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const record = makeQuarterRecord(identity, 2026, 2, { revenue: "60" });
+    const equityFact = metricFact(record, "equity", "90");
+    equityFact.statementKind = "equity";
+    equityFact.concept = { qname: "tifrs-bsci-ci:EquityAtBeginningOfPeriod", label: "Equity at beginning of period" };
+    equityFact.metric = { state: "unmapped", reason: "no_core_metric_mapping" };
+    record.statements.push({ kind: "equity", facts: [equityFact] });
+    await persistence.appendResearchFinancialStatementRecords([record]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      statements: ["equity"],
+      derivedMetrics: [],
+    });
+
+    expect(result.periods[0]?.statements).toEqual(["equity"]);
+    expect(result.periods[0]?.sourceFacts).toEqual([
+      expect.objectContaining({ statement: "equity", metricId: "unmapped" }),
+    ]);
+  });
+
   it("completeness: counts required requested facts that are absent from a returned period", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

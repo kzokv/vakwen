@@ -221,25 +221,30 @@ async function canonicalizeFinancialStatementArtifact(
     startPeriod: initialPeriodToken,
     endPeriod: initialPeriodToken,
   });
-  const identicalRevision = existingRevisions.find((record) => record.provenance.contentHash === artifact.artifact.contentHash);
   const latestRevisionSequence = existingRevisions.reduce(
     (latest, record) => Math.max(latest, record.publicationContext.revisionSequence),
     -1,
   );
+  const latestRevision = existingRevisions.find(
+    (record) => record.publicationContext.revisionSequence === latestRevisionSequence,
+  );
+  const matchesLatestRevision = latestRevision?.provenance.contentHash === artifact.artifact.contentHash;
   if (artifact.filing.revision === 0 && existingRevisions.length > 0) {
     artifact = {
       ...artifact,
       filing: {
         ...artifact.filing,
-        revision: identicalRevision?.publicationContext.revisionSequence ?? latestRevisionSequence + 1,
-        amendmentType: identicalRevision
-          ? identicalRevision.publicationContext.restatement
+        revision: matchesLatestRevision ? latestRevisionSequence : latestRevisionSequence + 1,
+        amendmentType: matchesLatestRevision
+          ? latestRevision!.publicationContext.restatement
             ? "restatement"
-            : identicalRevision.publicationContext.amendment
+            : latestRevision!.publicationContext.amendment
               ? "amendment"
               : "original"
           : "amendment",
-        publishedAt: identicalRevision?.publicationContext.publishedAt.slice(0, 10) ?? artifact.filing.publishedAt,
+        publishedAt: matchesLatestRevision
+          ? latestRevision!.publicationContext.publishedAt.slice(0, 10)
+          : artifact.filing.publishedAt,
       },
     };
   }
