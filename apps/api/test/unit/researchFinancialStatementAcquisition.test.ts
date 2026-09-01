@@ -155,6 +155,7 @@ describe("research financial statement acquisition", () => {
           <ifrs-full:CashFlowsFromUsedInOperatingActivities contextRef="q2" unitRef="twd">11</ifrs-full:CashFlowsFromUsedInOperatingActivities>
           <ifrs-full:Assets contextRef="q2i" unitRef="twd">52</ifrs-full:Assets>
           <custom:EarningsPerShare contextRef="q2" unitRef="twd_per_share">8.5</custom:EarningsPerShare>
+          <custom:Revenue contextRef="q2" unitRef="twd">999</custom:Revenue>
         </xbrli:xbrl>`],
       [q3Revision1Url, `<?xml version="1.0" encoding="utf-8"?>
         <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
@@ -282,6 +283,9 @@ describe("research financial statement acquisition", () => {
     const earningsPerShare = q2Latest?.statements.flatMap((section) => section.facts)
       .find((fact) => fact.concept.qname === "custom:EarningsPerShare");
     expect(earningsPerShare?.unit).toEqual({ state: "known", unitId: "iso4217:TWD/xbrli:shares" });
+    const extensionRevenue = q2Latest?.statements.flatMap((section) => section.facts)
+      .find((fact) => fact.concept.qname === "custom:Revenue");
+    expect(extensionRevenue?.metric).toEqual({ state: "unmapped", reason: "no_core_metric_mapping" });
 
     const predecessor = q2Records.find((record) => record.publicationContext.revisionSequence === 1);
     expect(predecessor).toBeDefined();

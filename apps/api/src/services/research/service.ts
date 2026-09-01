@@ -1044,11 +1044,27 @@ function factDateRange(fact: ResearchFinancialStatementFact) {
   };
 }
 
+function factFiscalPeriod(
+  fact: ResearchFinancialStatementFact,
+  periodicity: ResearchFinancialStatementRecord["periodicity"],
+): { fiscalYear: number; fiscalQuarter: 1 | 2 | 3 | 4 | null } {
+  const endDate = fact.context.period.kind === "duration"
+    ? fact.context.period.endAt.slice(0, 10)
+    : fact.context.period.instantAt.slice(0, 10);
+  return {
+    fiscalYear: Number(endDate.slice(0, 4)),
+    fiscalQuarter: periodicity === "annual"
+      ? null
+      : Math.ceil(Number(endDate.slice(5, 7)) / 3) as 1 | 2 | 3 | 4,
+  };
+}
+
 function mapFinancialFact(
   fact: ResearchFinancialStatementFact,
   record: ResearchFinancialStatementRecord,
 ): ResearchFinancialStatementPeriod["sourceFacts"][number] {
   const period = factDateRange(fact);
+  const fiscalPeriod = factFiscalPeriod(fact, record.periodicity);
   return {
     observationId: fact.id,
     statement: fact.statementKind,
@@ -1082,8 +1098,8 @@ function mapFinancialFact(
     period: {
       startDate: period.startDate,
       endDate: period.endDate,
-      fiscalYear: record.fiscalPeriod.fiscalYear,
-      fiscalQuarter: record.fiscalPeriod.fiscalQuarter,
+      fiscalYear: fiscalPeriod.fiscalYear,
+      fiscalQuarter: fiscalPeriod.fiscalQuarter,
       durationMonths: period.startDate === null
         ? 1
         : ((Number(period.endDate.slice(0, 4)) - Number(period.startDate.slice(0, 4))) * 12)

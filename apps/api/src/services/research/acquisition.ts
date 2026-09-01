@@ -57,6 +57,7 @@ import {
 import type { ResearchMonthlyRevenueRecord } from "./monthlyRevenue.js";
 import {
   normalizeResearchFinancialStatementFact,
+  researchFinancialStatementMetricForConcept,
   researchFinancialStatementTaxonomyVersion,
   researchFinancialStatementUnitId,
   resolveMopsArtifactFilingBasis,
@@ -183,46 +184,6 @@ function statementKindForMopsRole(role: MopsFinancialStatementArtifact["facts"][
   }
 }
 
-function metricIdForLocalName(localName: string): ResearchFinancialStatementFact["metric"] {
-  switch (localName) {
-    case "RevenueFromContractsWithCustomers":
-    case "Revenue":
-      return { state: "mapped", metricId: "revenue" };
-    case "GrossProfit":
-      return { state: "mapped", metricId: "gross_profit" };
-    case "OperatingIncomeLoss":
-      return { state: "mapped", metricId: "operating_income" };
-    case "ProfitLoss":
-      return { state: "mapped", metricId: "net_income" };
-    case "Assets":
-      return { state: "mapped", metricId: "assets" };
-    case "Liabilities":
-      return { state: "mapped", metricId: "liabilities" };
-    case "EquityAttributableToOwnersOfParent":
-    case "Equity":
-      return { state: "mapped", metricId: "equity" };
-    case "CurrentAssets":
-      return { state: "mapped", metricId: "current_assets" };
-    case "CurrentLiabilities":
-      return { state: "mapped", metricId: "current_liabilities" };
-    case "CashAndCashEquivalents":
-      return { state: "mapped", metricId: "cash_and_cash_equivalents" };
-    case "InterestBearingBorrowings":
-      return { state: "mapped", metricId: "interest_bearing_debt" };
-    case "CashFlowsFromUsedInOperatingActivities":
-    case "NetCashFlowsFromUsedInOperatingActivities":
-      return { state: "mapped", metricId: "operating_cash_flow" };
-    case "CashFlowsFromUsedInInvestingActivities":
-    case "NetCashFlowsFromUsedInInvestingActivities":
-      return { state: "mapped", metricId: "investing_cash_flow" };
-    case "PurchaseOfPropertyPlantAndEquipment":
-    case "AcquisitionOfPropertyPlantAndEquipment":
-      return { state: "mapped", metricId: "capital_expenditure" };
-    default:
-      return { state: "unmapped", reason: "no_core_metric_mapping" };
-  }
-}
-
 function timestampAtEndOfDay(date: string): string {
   return `${date}T23:59:59.999Z`;
 }
@@ -310,7 +271,7 @@ async function canonicalizeFinancialStatementArtifact(
         namespaceUri: fact.concept.namespaceUri,
         version: researchFinancialStatementTaxonomyVersion(fact.concept.namespaceUri),
       },
-      metric: metricIdForLocalName(fact.concept.localName),
+      metric: researchFinancialStatementMetricForConcept(fact.concept.localName, fact.concept.namespaceUri),
       contextId: fact.contextRef,
       dimensions: Object.fromEntries(fact.contextDimensions.map((dimension) => [dimension.dimension, dimension.member] as const)),
       period: fact.periodStart

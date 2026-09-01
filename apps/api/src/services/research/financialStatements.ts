@@ -272,7 +272,13 @@ function statementKindForRole(role: MopsStatementRole): ResearchFinancialStateme
   }
 }
 
-function metricForConcept(localName: string): ResearchFinancialStatementMetricRef {
+export function researchFinancialStatementMetricForConcept(
+  localName: string,
+  namespaceUri: string | null,
+): ResearchFinancialStatementMetricRef {
+  if (!namespaceUri || !/^https?:\/\/xbrl\.ifrs\.org\/taxonomy\/.+\/ifrs-full\/?$/i.test(namespaceUri)) {
+    return { state: "unmapped", reason: "no_core_metric_mapping" };
+  }
   switch (localName) {
     case "RevenueFromContractsWithCustomers":
     case "Revenue":
@@ -418,7 +424,7 @@ export function materializeResearchFinancialStatementRecord(
         namespaceUri: fact.concept.namespaceUri,
         version: researchFinancialStatementTaxonomyVersion(fact.concept.namespaceUri),
       },
-      metric: metricForConcept(fact.concept.localName),
+      metric: researchFinancialStatementMetricForConcept(fact.concept.localName, fact.concept.namespaceUri),
       contextId: fact.contextRef,
       dimensions: Object.fromEntries(fact.contextDimensions.map((dimension) => [dimension.dimension, dimension.member] as const)),
       period: durationPeriodForFact(fact, periodEnd),

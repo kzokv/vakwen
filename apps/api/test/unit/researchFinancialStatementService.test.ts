@@ -400,6 +400,10 @@ describe("research financial-statement service", () => {
       expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),
     ]);
     expect(result.periods[0]?.sourceFacts.find((fact) => fact.observationId === cumulativeRevenue.id)?.period.durationMonths).toBe(6);
+    expect(result.periods[0]?.sourceFacts.find((fact) => fact.observationId === comparativeRevenue.id)?.period).toMatchObject({
+      fiscalYear: 2025,
+      fiscalQuarter: 2,
+    });
   });
 
   it("cumulative reconstruction: subtracts prior YTD when the prior filing also has a discrete fact", async () => {
