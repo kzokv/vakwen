@@ -358,7 +358,9 @@ function periodHasRequiredStatements(period: ResearchFinancialStatementsOutput["
 }
 
 function firstAmbiguityReason(periods: readonly ResearchFinancialStatementsOutput["periods"][number][]): string | null {
-  const revenueFacts = periods.flatMap((period) => period.sourceFacts.filter((fact) => fact.metricId === "revenue"));
+  const revenueFacts = periods
+    .map((period) => findFact(period, "revenue"))
+    .filter((fact): fact is NonNullable<typeof fact> => fact !== undefined);
   if (revenueFacts.some((fact) => fact.unit.normalized.state === "missing")) return "unknown_unit";
   if (periods.some((period) => period.quality.ambiguousBasis.status === "present")) return "basis_ambiguity";
   if (periods.some((period) => period.quality.taxonomyChanges.status === "present")) return "taxonomy_ambiguity";

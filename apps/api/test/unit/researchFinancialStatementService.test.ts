@@ -959,21 +959,21 @@ describe("research financial-statement service", () => {
     const identity = makeIdentity();
     await persistence.appendResearchIdentityRecords([identity]);
     const record = makeQuarterRecord(identity, 2026, 2, { revenue: "60" });
-    const extensionFact = normalizeResearchFinancialStatementFact({
+    const extensionFacts = Array.from({ length: 105 }, (_, index) => normalizeResearchFinancialStatementFact({
       listingId: identity.listing.id,
       issuerId: identity.issuer.id,
       filingId: record.publicationContext.filingId,
       revisionId: record.publicationContext.revisionId,
       statementKind: "sector_extension",
-      concept: { qname: "tifrs:BankCapitalAdequacyRatio", label: "Capital adequacy ratio" },
+      concept: { qname: `tifrs:BankCapitalAdequacyRatio${index}`, label: `Capital adequacy ratio ${index}` },
       metric: { state: "unmapped", reason: "no_core_metric_mapping" },
-      contextId: "sector-extension",
+      contextId: `sector-extension-${index}`,
       period: { kind: "instant", instantAt: "2026-06-30T23:59:59.999Z" },
       valueKind: "instant",
-      rawValue: "13.4",
+      rawValue: String(13.4 + index),
       unit: { state: "known", unitId: "pure" },
-    });
-    record.statements.push({ kind: "sector_extension", facts: [extensionFact], metadata: { sector: "financial_institution" } });
+    }));
+    record.statements.push({ kind: "sector_extension", facts: extensionFacts, metadata: { sector: "financial_institution" } });
     await persistence.appendResearchFinancialStatementRecords([record]);
 
     const result = await getFinancialStatements(persistence, {
@@ -990,9 +990,12 @@ describe("research financial-statement service", () => {
       derivedMetrics: [],
     });
 
-    expect(result.periods[0]?.sourceFacts).toEqual([
-      expect.objectContaining({ statement: "sector_extension", concept: expect.objectContaining({ raw: "tifrs:BankCapitalAdequacyRatio" }) }),
-    ]);
+    expect(result.periods[0]?.sourceFacts).toHaveLength(100);
+    expect(result.periods[0]?.sourceFacts[0]).toEqual(
+      expect.objectContaining({ statement: "sector_extension", concept: expect.objectContaining({ raw: "tifrs:BankCapitalAdequacyRatio0" }) }),
+    );
+    expect(result.periods[0]?.quality.unmappedConcepts.observationIds).toHaveLength(100);
+    expect(result.page.truncatedByBudget).toBe(true);
   });
 
   it("filters output facts by metric selection, preserves quality flags, and withholds missing derived inputs without zero fill", async () => {

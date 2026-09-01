@@ -11,6 +11,7 @@ import {
   createResearchFinancialStatementAcquisitionHandler,
   registerResearchFinancialStatementAcquisitionWorker,
   RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_CRON,
+  RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_EXPIRE_SECONDS,
   RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_QUEUE,
 } from "../../src/services/research/registerFinancialStatementAcquisitionWorker.js";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
@@ -298,7 +299,10 @@ describe("research financial statement acquisition", () => {
 
     expect(boss.createQueue).toHaveBeenCalledWith(
       RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_QUEUE,
-      expect.objectContaining({ policy: "singleton" }),
+      expect.objectContaining({
+        expireInSeconds: RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_EXPIRE_SECONDS,
+        policy: "singleton",
+      }),
     );
     expect(boss.schedule).toHaveBeenCalledWith(
       RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_QUEUE,

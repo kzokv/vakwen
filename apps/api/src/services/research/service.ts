@@ -87,6 +87,8 @@ const RESEARCH_FINANCIAL_STATEMENTS_CONTRACT_VERSION = "research-financial-state
 const RESEARCH_FINANCIAL_STATEMENTS_DATASET_VERSION = "financial_statements/1.0.0";
 const RESEARCH_FINANCIAL_STATEMENTS_POLICY_VERSION = "mops-xbrl-canonical-store/1.0.0";
 const FINANCIAL_STATEMENT_DEFAULT_POLICY_ID = "mops-xbrl-basis-selection/1.0.0";
+const FINANCIAL_STATEMENT_MAX_FACTS_PER_PERIOD = 100;
+const FINANCIAL_STATEMENT_MAX_QUALITY_OBSERVATIONS = 100;
 
 type ResearchFinancialStatementPeriod = ResearchFinancialStatementsOutput["periods"][number];
 type ResearchFinancialStatementDerivedOutcome = ResearchFinancialStatementsOutput["derivedOutcomes"][number];
@@ -1160,7 +1162,7 @@ function qualityStateForRecord(
   return {
     status: matched.length > 0 ? "present" : "clear",
     reasonCodes: matched.length > 0 ? [kind] : [],
-    observationIds: matched.map((fact) => fact.id),
+    observationIds: matched.slice(0, FINANCIAL_STATEMENT_MAX_QUALITY_OBSERVATIONS).map((fact) => fact.id),
   };
 }
 
@@ -1696,7 +1698,12 @@ export async function getFinancialStatements(
           || (record.fiscalPeriod.periodEnd === cursor.periodEndDate && periodIdForRecord(record) > cursor.filingPeriodId)
     ));
   const pageRecords = remainingRecords.slice(0, query.page.limit);
-  const pageFacts = new Map(pageRecords.map((record) => [periodIdForRecord(record), selectedOutputFacts(record, query)] as const));
+  const selectedPageFacts = new Map(pageRecords.map((record) => [periodIdForRecord(record), selectedOutputFacts(record, query)] as const));
+  const truncatedByBudget = [...selectedPageFacts.values()].some((facts) => facts.length > FINANCIAL_STATEMENT_MAX_FACTS_PER_PERIOD);
+  const pageFacts = new Map([...selectedPageFacts].map(([periodId, facts]) => [
+    periodId,
+    facts.slice(0, FINANCIAL_STATEMENT_MAX_FACTS_PER_PERIOD),
+  ] as const));
   const periods = pageRecords.map((record) => {
     const facts = pageFacts.get(periodIdForRecord(record)) ?? [];
     const allStatementFacts = selectedStatementFacts(record, query.statements);
@@ -1751,10 +1758,10 @@ export async function getFinancialStatements(
   for (const record of pageRecords) {
     const facts = factsByPeriodId.get(periodIdForRecord(record)) ?? [];
     if (record.filingBasis === "unknown") {
-      gaps.push({ code: "ambiguous_basis", severity: "warning", message: "Filing basis is ambiguous", observationIds: facts.map((fact) => fact.id) });
+      gaps.push({ code: "ambiguous_basis", severity: "warning", message: "Filing basis is ambiguous", observationIds: facts.slice(0, FINANCIAL_STATEMENT_MAX_QUALITY_OBSERVATIONS).map((fact) => fact.id) });
     }
     if (record.ambiguityFlags.includes("duplicate_context")) {
-      conflicts.push({ code: "duplicate_context", status: "present", message: "Duplicate filing contexts remain in the selected revision", observationIds: facts.filter((fact) => fact.ambiguityFlags.includes("duplicate_context")).map((fact) => fact.id) });
+      conflicts.push({ code: "duplicate_context", status: "present", message: "Duplicate filing contexts remain in the selected revision", observationIds: facts.filter((fact) => fact.ambiguityFlags.includes("duplicate_context")).slice(0, FINANCIAL_STATEMENT_MAX_QUALITY_OBSERVATIONS).map((fact) => fact.id) });
     }
     if (record.ambiguityFlags.includes("taxonomy_change")) {
       recovery.push({ action: "taxonomy_review", status: "unavailable", message: "Taxonomy change requires manual mapping review." });
@@ -1835,7 +1842,7 @@ export async function getFinancialStatements(
       order: query.page.order,
       nextCursor: remainingRecords.length > query.page.limit ? encodeFinancialStatementsCursor(identity.selector.listingId, query, periods.at(-1) ?? periods[periods.length - 1]!) : null,
       recordCount: periods.length,
-      truncatedByBudget: false,
+      truncatedByBudget,
     },
   });
 }

@@ -261,6 +261,13 @@ describe("financial statement fundamentals report", () => {
     const comparativeRevenue = makeFact("2024-12-31", 2024, null, "revenue", "999", "income");
     const segmentRevenue = makeFact("2025-12-31", 2025, null, "revenue", "777", "income");
     segmentRevenue.dimensions = { OperatingSegmentsAxis: "FoundryMember" };
+    segmentRevenue.unit = { raw: "mystery", normalized: { state: "missing", reasonCode: "unknown_unit" } };
+    segmentRevenue.ambiguity.status = "unknown_unit";
+    latestAnnual.quality.unknownUnits = {
+      status: "present",
+      reasonCodes: ["unknownUnits"],
+      observationIds: [segmentRevenue.observationId],
+    };
     latestAnnual.sourceFacts.find((fact) => fact.metricId === "revenue")!.dimensions = {
       StatementBasisAxis: "ConsolidatedEntitiesMember",
     };
