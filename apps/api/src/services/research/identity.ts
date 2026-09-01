@@ -375,6 +375,15 @@ export function canonicalizeOfficialIdentityRow(input: OfficialIdentityInput) {
   const effectiveAt = atStartOfTaiwanDay(input.snapshotDate);
   const processedAt = input.retrievedAt;
   const listingStatus: "active" | "inactive" = input.listingStatus ?? "active";
+  const issuerClassification = input.row.kind === "fund"
+    ? "investment_fund" as const
+    : input.row.kind === "etn"
+      ? "financial_institution" as const
+      : input.row.kind === "unknown"
+        ? "unknown" as const
+        : input.row.industryCode.trim() === "17"
+          ? "financial_institution" as const
+          : "operating_company" as const;
   const facts = identityFacts(input, issuerId, securityId, listingId);
   const observations: CanonicalIdentityObservation[] = facts.map((fact) => ({
     id: opaqueId("obs", provenanceId, fact.subject.id, fact.field, fact.value ?? "missing"),
@@ -406,11 +415,7 @@ export function canonicalizeOfficialIdentityRow(input: OfficialIdentityInput) {
   return {
     issuer: {
       id: issuerId,
-      classification: input.row.kind === "fund"
-        ? "investment_fund" as const
-        : input.row.kind === "etn"
-          ? "financial_institution" as const
-          : input.row.kind === "unknown" ? "unknown" as const : "operating_company" as const,
+      classification: issuerClassification,
     },
     security: {
       id: securityId,

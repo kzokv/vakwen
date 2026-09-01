@@ -1,10 +1,10 @@
-# ResearchReport Contract
+# ResearchReport Contracts
 
-Construct one of these canonical `research-report/1.0.0` shapes from `get_research_manifest`, `get_research_identity`, and, when available and relevant, `get_price_series` structured content.
+Construct one of these canonical shapes from `get_research_manifest` and the relevant identity, price-series, or monthly-revenue MCP `structuredContent`.
 
-## `identity_only`
+## Identity-only contract
 
-Use this profile when the manifest does not expose `price_series` as available or when the user only needs canonical identity coverage.
+Use this shape when the user asked for identity research only, or when the dataset required by the requested path is unavailable in the manifest: `monthly_revenue` for revenue research or `price_series` for settled-market research. Revenue availability must not control a settled-market request, and price availability must not control a revenue request.
 
 ```json
 {
@@ -81,7 +81,7 @@ Use this profile only when the manifest marks `price_series` as `available`. The
     }
   ],
   "evidence": {
-    "provenanceIds": ["each distinct price-series provenance record used by the report"],
+    "provenanceIds": ["each distinct identity and price-series provenance record used by the report"],
     "sessionDates": ["each returned sessionDate in the report"]
   }
 }
@@ -116,3 +116,70 @@ For `focused_market`, include:
 - every provenance ID present in `evidence.provenanceIds`
 
 Do not add interpretations, comparisons, recommendations, current prices, financial metrics, or source material absent from the artifact.
+
+## Monthly-revenue contract
+
+Use this shape when the user asked for revenue research and the manifest marks `monthly_revenue` as `available`. Copy the `conclusion` object exactly from the `get_monthly_revenue` result; do not derive or rewrite its statement in the Skill.
+
+```json
+{
+  "contractVersion": "research-report/2.0.0",
+  "profile": "monthly_revenue",
+  "selector": { "kind": "listing_id", "listingId": "..." },
+  "context": {
+    "knowledgeAt": "ISO-8601 timestamp",
+    "effectiveAt": "ISO-8601 timestamp",
+    "assessmentMode": "effective | as_recorded | re_evaluate",
+    "policySetVersion": "present only for re_evaluate"
+  },
+  "generatedAt": "the fixed knowledgeAt timestamp",
+  "sections": [
+    {
+      "id": "identity",
+      "issuer": "canonical issuer object",
+      "security": "canonical security object",
+      "listing": "canonical listing object",
+      "displayName": "latest effective normalized value or null"
+    },
+    {
+      "id": "eligibility",
+      "profile": "returned eligibility profile",
+      "state": "returned eligibility state",
+      "reasonCode": "returned eligibility reason code"
+    },
+    {
+      "id": "monthly_revenue",
+      "freshness": "returned monthly revenue freshness object",
+      "latestMonth": "latest returned YYYY-MM month or null",
+      "latestRecord": "the complete latest returned monthly-revenue item, including publication context, raw and normalized source facts, publisher comparisons, basis-change state, and derived metrics, or null",
+      "latestYearOverYearPercent": "returned derived metric object or null"
+    }
+  ],
+  "conclusion": {
+    "status": "supported | withheld",
+    "statement": "exact get_monthly_revenue conclusion statement",
+    "reasonCodes": ["exact get_monthly_revenue reason codes"]
+  },
+  "evidence": {
+    "provenanceIds": ["each distinct provenance record used by the report"]
+  }
+}
+```
+
+## Faithful monthly-revenue Markdown projection
+
+Markdown may add headings, labels, bullets, escaping, and layout only. Every factual value and conclusion statement must come from the canonical report artifact.
+
+Include:
+
+- display name when present in the identity section, otherwise venue and exact ticker
+- listing ID
+- effective and knowledge timestamps
+- latest returned revenue month or `Not available`
+- freshness latest expected month and due status
+- latest record publication context, raw and normalized source facts, publisher comparisons, and basis-change state when present
+- the latest returned YoY metric status and value or withheld reason
+- conclusion status, exact statement, and every reason code
+- every provenance ID
+
+Do not add forecasts, recommendations, valuation claims, or any conclusion that is stronger than the returned `conclusion` object.

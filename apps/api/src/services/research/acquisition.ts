@@ -18,6 +18,10 @@ import {
   canonicalizeOfficialPriceRow,
   type ResearchPriceRecord,
 } from "./price.js";
+import {
+  parseOfficialMonthlyRevenueSnapshot,
+  type RevenueIdentityLookup,
+} from "./providers/monthlyRevenue.js";
 import { researchAcquisitionEnabled } from "./rollout.js";
 import {
   parseOfficialSecuritiesFirmDirectory,
@@ -45,6 +49,7 @@ import {
   parseTwsePriceSnapshot,
   parseTwseSuspensionSnapshot,
 } from "./providers/twsePrice.js";
+import type { ResearchMonthlyRevenueRecord } from "./monthlyRevenue.js";
 
 export const OFFICIAL_IDENTITY_SOURCES = {
   twseCompanies: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
@@ -60,6 +65,11 @@ export const OFFICIAL_IDENTITY_SOURCES = {
   tpexDelistings: "https://www.tpex.org.tw/www/zh-tw/company/deListed?code=&reason=-1",
 } as const;
 
+export const OFFICIAL_MONTHLY_REVENUE_SOURCES = {
+  twseMonthlyRevenue: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+  tpexMonthlyRevenue: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O",
+} as const;
+
 export const OFFICIAL_PRICE_SOURCES = {
   twsePrices: "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
   twseSuspensions: "https://openapi.twse.com.tw/v1/exchangeReport/TWTAWU",
@@ -70,6 +80,7 @@ export const OFFICIAL_PRICE_SOURCES = {
 
 const TPEX_DELISTING_FIRST_YEAR = 2021;
 const ETF_ABSENCE_COMPLETENESS_GUARD_PERCENT = 1;
+const MONTHLY_REVENUE_MINIMUM_COVERAGE_PERCENT = 80;
 
 export class ResearchAcquisitionDisabledError extends Error {
   readonly code = "research_acquisition_disabled";
@@ -196,6 +207,114 @@ function assertPriceSnapshotCompleteness(
       + `${missingListings.length} of ${activeListings.length} active listings are absent`,
     );
   }
+}
+
+function assertMonthlyRevenueSnapshotCompleteness(
+  venue: "TWSE" | "TPEX",
+  listings: ResearchIdentityRecord[],
+  records: ResearchMonthlyRevenueRecord[],
+  expectedStandardMonth: string,
+  expectedInsuranceMonth: string,
+): ResearchMonthlyRevenueRecord[] {
+  const activeCompanies = listings.filter(
+    (record) => record.listing.status === "active" && record.eligibility.profile === "operating_company",
+  );
+  if (activeCompanies.length === 0) {
+    throw new Error(`Official ${venue} monthly revenue snapshot has no active canonical company universe`);
+  }
+  if (records.length === 0) {
+    throw new Error(`Official ${venue} monthly revenue snapshot returned no canonical rows`);
+  }
+  const companiesByListingId = new Map(activeCompanies.map((record) => [record.listing.id, record]));
+  const activeListingIds = new Set(companiesByListingId.keys());
+  const currentRecords = records.filter((record) => {
+    const company = companiesByListingId.get(record.listingId);
+    if (!company) return false;
+    const expectedMonth = company.issuer.classification === "financial_institution"
+      ? expectedInsuranceMonth
+      : expectedStandardMonth;
+    return record.revenueMonth >= expectedMonth;
+  });
+  const observedListingIds = new Set(currentRecords.map((record) => record.listingId));
+  const receivedMonths = [...new Set(records.map((record) => record.revenueMonth))].sort();
+  const groups = [
+    {
+      companies: activeCompanies.filter((record) => record.issuer.classification !== "financial_institution"),
+      expectedMonth: expectedStandardMonth,
+    },
+    {
+      companies: activeCompanies.filter((record) => record.issuer.classification === "financial_institution"),
+      expectedMonth: expectedInsuranceMonth,
+    },
+  ];
+  for (const group of groups) {
+    if (group.companies.length === 0) continue;
+    const observedCount = group.companies.filter((record) => observedListingIds.has(record.listing.id)).length;
+    if (observedCount === 0) {
+      throw new Error(
+        `Official ${venue} monthly revenue snapshot is stale: `
+        + `expected ${group.expectedMonth}, received ${receivedMonths.join(",")}`,
+      );
+    }
+    if (observedCount * 100 < group.companies.length * MONTHLY_REVENUE_MINIMUM_COVERAGE_PERCENT) {
+      throw new Error(
+        `Official ${venue} monthly revenue snapshot failed completeness guard: `
+        + `${group.companies.length - observedCount} of ${group.companies.length} active companies are absent`,
+      );
+    }
+  }
+  const inactiveCutoffByListingId = new Map(listings.flatMap((record) =>
+    record.listing.status === "inactive" && record.listing.inactiveAt
+      ? [[record.listing.id, record.listing.inactiveAt.slice(0, 7)] as const]
+      : []
+  ));
+  const lifecycleApplicableRecords = records.filter((record) => {
+    if (activeListingIds.has(record.listingId)) return true;
+    const inactiveCutoff = inactiveCutoffByListingId.get(record.listingId);
+    return inactiveCutoff !== undefined && record.revenueMonth <= inactiveCutoff;
+  });
+  return lifecycleApplicableRecords;
+}
+
+function shiftIsoMonth(month: string, offset: number): string {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, monthNumber - 1 + offset, 1));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+async function expectedMonthlyRevenueMonth(
+  persistence: Persistence,
+  retrievedAt: string,
+  dueDay: 10 | 15,
+): Promise<string> {
+  const localDate = taiwanBusinessDate(retrievedAt);
+  const currentMonth = localDate.slice(0, 7);
+  const rawDueDate = `${currentMonth}-${dueDay}`;
+  let dueDate = rawDueDate;
+  let dueDateResolved = false;
+  const versions = new Map<number, Awaited<ReturnType<Persistence["getActiveMarketCalendarVersion"]>>>();
+  for (let dayOffset = 0; dayOffset < 14; dayOffset += 1) {
+    const calendarYear = Number(dueDate.slice(0, 4));
+    if (!versions.has(calendarYear)) {
+      versions.set(
+        calendarYear,
+        await persistence.getActiveMarketCalendarVersion("TW", calendarYear),
+      );
+    }
+    const status = resolveMarketCalendarDayStatus(versions.get(calendarYear) ?? null, dueDate);
+    if (status === "calendar_unknown") {
+      throw new Error(`Official TW market calendar is unavailable for ${calendarYear}`);
+    }
+    if (status === "open") {
+      dueDateResolved = true;
+      break;
+    }
+    dueDate = addIsoDays(dueDate, 1);
+  }
+  if (!dueDateResolved) {
+    throw new Error(`Official TW market calendar has no revenue due date after ${rawDueDate}`);
+  }
+  return shiftIsoMonth(currentMonth, localDate > dueDate ? -1 : -2);
 }
 
 function recordOrder(left: ResearchIdentityRecord, right: ResearchIdentityRecord): number {
@@ -785,5 +904,97 @@ export async function runOfficialPriceAcquisition(
     sourceCount: Object.keys(OFFICIAL_PRICE_SOURCES).length,
     recordCount: records.length,
     retrievedAt,
+  };
+}
+
+export async function runOfficialMonthlyRevenueAcquisition(
+  persistence: Persistence,
+  options: AcquisitionOptions = {},
+) {
+  if (!researchAcquisitionEnabled()) {
+    throw new ResearchAcquisitionDisabledError();
+  }
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const retrievedAt = options.retrievedAt ?? new Date().toISOString();
+  const acquisitionRunId = options.acquisitionRunId ?? `monthly-revenue:${retrievedAt}`;
+  const [twseRevenue, tpexRevenue, twseListings, tpexListings] = await Promise.all([
+    fetchArtifact(fetchImpl, OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue),
+    fetchArtifact(fetchImpl, OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue),
+    persistence.listLatestResearchIdentityRecords({
+      subject: { kind: "venue", venue: "TWSE" },
+      effectiveAt: retrievedAt,
+      knowledgeAt: retrievedAt,
+    }),
+    persistence.listLatestResearchIdentityRecords({
+      subject: { kind: "venue", venue: "TPEX" },
+      effectiveAt: retrievedAt,
+      knowledgeAt: retrievedAt,
+    }),
+  ]);
+  const indexRevenueIdentities = (listings: ResearchIdentityRecord[]) => {
+    const byTicker = new Map<string, RevenueIdentityLookup[]>();
+    for (const record of listings) {
+      const companyNames = [
+        normalizedObservationValue(record, "legal_name", "issuer"),
+        normalizedObservationValue(record, "display_name", "security"),
+      ].filter((name): name is string => name !== undefined);
+      const candidates = byTicker.get(record.listing.ticker) ?? [];
+      candidates.push({
+        listingId: record.listing.id,
+        issuerId: record.issuer.id,
+        listedAt: record.listing.listedAt,
+        ...(record.listing.inactiveAt ? { inactiveAt: record.listing.inactiveAt } : {}),
+        companyNames,
+      });
+      byTicker.set(record.listing.ticker, candidates);
+    }
+    return byTicker;
+  };
+  const twseIdentitiesByTicker = indexRevenueIdentities(twseListings);
+  const tpexIdentitiesByTicker = indexRevenueIdentities(tpexListings);
+  const twseRecords = parseOfficialMonthlyRevenueSnapshot(
+    twseRevenue.payload,
+    { ...twseRevenue.metadata, retrievedAt },
+    "TWSE",
+    twseIdentitiesByTicker,
+  );
+  const tpexRecords = parseOfficialMonthlyRevenueSnapshot(
+    tpexRevenue.payload,
+    { ...tpexRevenue.metadata, retrievedAt },
+    "TPEX",
+    tpexIdentitiesByTicker,
+  );
+  const [expectedStandardMonth, expectedInsuranceMonth] = await Promise.all([
+    expectedMonthlyRevenueMonth(persistence, retrievedAt, 10),
+    expectedMonthlyRevenueMonth(persistence, retrievedAt, 15),
+  ]);
+  const currentTwseRecords = assertMonthlyRevenueSnapshotCompleteness(
+    "TWSE",
+    twseListings,
+    twseRecords,
+    expectedStandardMonth,
+    expectedInsuranceMonth,
+  );
+  const currentTpexRecords = assertMonthlyRevenueSnapshotCompleteness(
+    "TPEX",
+    tpexListings,
+    tpexRecords,
+    expectedStandardMonth,
+    expectedInsuranceMonth,
+  );
+  const records: ResearchMonthlyRevenueRecord[] = [...currentTwseRecords, ...currentTpexRecords].map((record) => ({
+    ...record,
+    provenance: {
+      ...record.provenance,
+      acquisitionRunId,
+    },
+  }));
+  await persistence.appendResearchMonthlyRevenueRecords(records);
+  return {
+    acquisitionRunId,
+    sourceCount: Object.keys(OFFICIAL_MONTHLY_REVENUE_SOURCES).length,
+    recordCount: records.length,
+    retrievedAt,
+    months: [...new Set(records.map((record) => record.revenueMonth))].sort(),
   };
 }

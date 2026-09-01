@@ -4,8 +4,10 @@ import { MemoryPersistence } from "../../src/persistence/memory.js";
 import type { MarketCalendarExceptionInput } from "../../src/persistence/types.js";
 import {
   OFFICIAL_IDENTITY_SOURCES,
+  OFFICIAL_MONTHLY_REVENUE_SOURCES,
   OFFICIAL_PRICE_SOURCES,
   runOfficialIdentityAcquisition,
+  runOfficialMonthlyRevenueAcquisition,
   runOfficialPriceAcquisition,
 } from "../../src/services/research/acquisition.js";
 import {
@@ -13,6 +15,13 @@ import {
   canonicalizeOfficialIdentityRow,
   officialFundProductIdentityKey,
 } from "../../src/services/research/identity.js";
+import {
+  RESEARCH_IDENTITY_ACQUISITION_CRON,
+  RESEARCH_IDENTITY_ACQUISITION_QUEUE,
+  RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON,
+  RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE,
+  registerResearchIdentityAcquisitionWorker,
+} from "../../src/services/research/registerIdentityAcquisitionWorker.js";
 import { getResearchIdentity } from "../../src/services/research/service.js";
 
 function stubActiveTaiwanCalendar(
@@ -34,6 +43,45 @@ function stubActiveTaiwanCalendar(
 
 describe("official Taiwan identity acquisition", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
+
+  it("scheduled acquisition: UTC crons → run identity on Taiwan weekdays and revenue after every possible filing day closes", () => {
+    expect(RESEARCH_IDENTITY_ACQUISITION_CRON).toBe("15 18 * * 0-4");
+    expect(RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON).toBe("15 16 * * *");
+  });
+
+  it("worker registration: split identity and revenue schedules → keep startup bootstrap ordered", async () => {
+    const boss = {
+      createQueue: vi.fn().mockResolvedValue(undefined),
+      work: vi.fn().mockResolvedValue(undefined),
+      schedule: vi.fn().mockResolvedValue(undefined),
+      send: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await registerResearchIdentityAcquisitionWorker(boss as never, {
+      persistence: new MemoryPersistence(),
+      log: { info: vi.fn() } as never,
+    });
+
+    expect(boss.createQueue.mock.calls.map(([queue]) => queue)).toEqual([
+      RESEARCH_IDENTITY_ACQUISITION_QUEUE,
+      RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE,
+    ]);
+    expect(boss.schedule).toHaveBeenCalledWith(
+      RESEARCH_IDENTITY_ACQUISITION_QUEUE,
+      RESEARCH_IDENTITY_ACQUISITION_CRON,
+      {},
+    );
+    expect(boss.schedule).toHaveBeenCalledWith(
+      RESEARCH_MONTHLY_REVENUE_ACQUISITION_QUEUE,
+      RESEARCH_MONTHLY_REVENUE_ACQUISITION_CRON,
+      {},
+    );
+    expect(boss.send).toHaveBeenCalledWith(
+      RESEARCH_IDENTITY_ACQUISITION_QUEUE,
+      { bootstrapMonthlyRevenue: true },
+      { singletonKey: RESEARCH_IDENTITY_ACQUISITION_QUEUE },
+    );
+  });
 
   it("enabled acquisition: fetch both venues' official identity and status snapshots → append canonical records", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
@@ -248,7 +296,16 @@ describe("official Taiwan identity acquisition", () => {
     expect(listResolvedLatestSpy).not.toHaveBeenCalled();
 
     expect(requested.sort()).toEqual([
-      ...Object.values(OFFICIAL_IDENTITY_SOURCES).filter((url) => url !== OFFICIAL_IDENTITY_SOURCES.tpexDelistings),
+      OFFICIAL_IDENTITY_SOURCES.twseCompanies,
+      OFFICIAL_IDENTITY_SOURCES.tpexCompanies,
+      OFFICIAL_IDENTITY_SOURCES.twseFunds,
+      OFFICIAL_IDENTITY_SOURCES.tpexFunds,
+      OFFICIAL_IDENTITY_SOURCES.twseSecuritiesFirms,
+      OFFICIAL_IDENTITY_SOURCES.twseEtns,
+      OFFICIAL_IDENTITY_SOURCES.tpexEtns,
+      OFFICIAL_IDENTITY_SOURCES.twseEtnRetirements,
+      OFFICIAL_IDENTITY_SOURCES.tpexEtnRetirements,
+      OFFICIAL_IDENTITY_SOURCES.twseDelistings,
       ...tpexDelistingUrls,
     ].sort());
     expect(requests.find(({ url }) => url === OFFICIAL_IDENTITY_SOURCES.tpexFunds)?.method).toBe("POST");
@@ -380,6 +437,351 @@ describe("official Taiwan identity acquisition", () => {
       });
       expect(history.at(-1)?.listing).toMatchObject({ status: "inactive", inactiveAt: "2026-08-29" });
     }
+  });
+
+  it("monthly revenue acquisition: fetch official TWSE and TPEX snapshots → append authoritative rows for listings applicable to each revenue month", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    stubActiveTaiwanCalendar(persistence);
+    const twseIdentity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-01",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:twse-revenue-identity", sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseCompanies },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    const tpexIdentity = canonicalizeOfficialIdentityRow({
+      venue: "TPEX",
+      snapshotDate: "2026-08-01",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:tpex-revenue-identity", sourceUrl: OFFICIAL_IDENTITY_SOURCES.tpexCompanies },
+      row: {
+        kind: "company",
+        ticker: "5274",
+        legalName: "信驊科技股份有限公司",
+        displayName: "信驊",
+        unifiedBusinessNumber: "27490748",
+        industryCode: "24",
+        listedAt: "2013-04-30",
+      },
+    });
+    const activeBeforeFinalRevenue = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-07-01",
+      retrievedAt: "2026-07-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:inactive-twse-revenue-identity", sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseCompanies },
+      row: {
+        kind: "company",
+        ticker: "1234",
+        legalName: "下市測試股份有限公司",
+        displayName: "下市測試",
+        unifiedBusinessNumber: "87654321",
+        industryCode: "24",
+        listedAt: "2001-01-01",
+      },
+    });
+    const inactiveTwseIdentity = appendOfficialListingStatusRevision(activeBeforeFinalRevenue, {
+      status: "inactive",
+      effectiveDate: "2026-07-31",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      acquisitionRunId: "inactive-before-final-revenue",
+      artifact: {
+        contentHash: "sha256:inactive-twse-revenue-delisting",
+        sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseDelistings,
+        publisherDataset: "company/suspendListingCsvAndHtml",
+        accessProvider: "TWSE_OPENAPI",
+      },
+    });
+    const twseInsuranceIdentity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-01",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:twse-insurance-revenue-identity", sourceUrl: OFFICIAL_IDENTITY_SOURCES.twseCompanies },
+      row: {
+        kind: "company",
+        ticker: "2816",
+        legalName: "旺旺友聯產物保險股份有限公司",
+        displayName: "旺旺保",
+        unifiedBusinessNumber: "03110001",
+        industryCode: "17",
+        listedAt: "1963-12-02",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([
+      twseIdentity,
+      twseInsuranceIdentity,
+      activeBeforeFinalRevenue,
+      inactiveTwseIdentity,
+      tpexIdentity,
+    ]);
+
+    const requested: string[] = [];
+    const payloads = new Map<string, unknown>([
+      [OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue, [
+        {
+          出表日期: "1150810",
+          資料年月: "11507",
+          公司代號: "2330",
+          公司名稱: "台灣積體電路製造股份有限公司",
+          產業別: "24",
+          "營業收入-當月營收": "1,000",
+          "營業收入-上月營收": "990",
+          "營業收入-去年當月營收": "900",
+          "營業收入-上月比較增減(%)": "1.01",
+          "營業收入-去年同月增減(%)": "11.11",
+          "累計營業收入-當月累計營收": "7,000",
+          "累計營業收入-去年累計營收": "6,300",
+          "累計營業收入-前期比較增減(%)": "11.11",
+          備註: "自結數",
+        },
+        {
+          出表日期: "1150810",
+          資料年月: "11505",
+          公司代號: "2330",
+          公司名稱: "台灣積體電路製造股份有限公司",
+          產業別: "24",
+          "營業收入-當月營收": "950",
+          "營業收入-上月營收": "940",
+          "營業收入-去年當月營收": "850",
+          "營業收入-上月比較增減(%)": "1.06",
+          "營業收入-去年同月增減(%)": "11.76",
+          "累計營業收入-當月累計營收": "5,000",
+          "累計營業收入-去年累計營收": "4,500",
+          "累計營業收入-前期比較增減(%)": "11.11",
+          備註: "歷史更正",
+        },
+        {
+          出表日期: "1150810",
+          資料年月: "11507",
+          公司代號: "9999",
+          公司名稱: "未建檔公司",
+          產業別: "24",
+          "營業收入-當月營收": "100",
+          "營業收入-上月營收": "95",
+          "營業收入-去年當月營收": "90",
+          "營業收入-上月比較增減(%)": "5.26",
+          "營業收入-去年同月增減(%)": "11.11",
+          "累計營業收入-當月累計營收": "700",
+          "累計營業收入-去年累計營收": "630",
+          "累計營業收入-前期比較增減(%)": "11.11",
+          備註: "-",
+        },
+        {
+          出表日期: "1150812",
+          資料年月: "11506",
+          公司代號: "2816",
+          公司名稱: "旺旺友聯產物保險股份有限公司",
+          產業別: "17",
+          "營業收入-當月營收": "500",
+          "營業收入-上月營收": "490",
+          "營業收入-去年當月營收": "450",
+          "營業收入-上月比較增減(%)": "2.04",
+          "營業收入-去年同月增減(%)": "11.11",
+          "累計營業收入-當月累計營收": "3,000",
+          "累計營業收入-去年累計營收": "2,700",
+          "累計營業收入-前期比較增減(%)": "11.11",
+          備註: "-",
+        },
+        {
+          出表日期: "1150810",
+          資料年月: "11507",
+          公司代號: "1234",
+          公司名稱: "下市測試股份有限公司",
+          產業別: "24",
+          "營業收入-當月營收": "300",
+          "營業收入-上月營收": "290",
+          "營業收入-去年當月營收": "250",
+          "營業收入-上月比較增減(%)": "3.45",
+          "營業收入-去年同月增減(%)": "20",
+          "累計營業收入-當月累計營收": "1,900",
+          "累計營業收入-去年累計營收": "1,700",
+          "累計營業收入-前期比較增減(%)": "11.76",
+          備註: "下市前末期申報",
+        },
+      ]],
+      [OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue, [
+        {
+          出表日期: "1150811",
+          資料年月: "11507",
+          公司代號: "5274",
+          公司名稱: "信驊科技股份有限公司",
+          產業別: "24",
+          "營業收入-當月營收": "2,000",
+          "營業收入-上月營收": "1,950",
+          "營業收入-去年當月營收": "1,800",
+          "營業收入-上月比較增減(%)": "2.56",
+          "營業收入-去年同月增減(%)": "11.11",
+          "累計營業收入-當月累計營收": "12,000",
+          "累計營業收入-去年累計營收": "10,800",
+          "累計營業收入-前期比較增減(%)": "11.11",
+          備註: "個別自結數",
+        },
+      ]],
+    ]);
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      requested.push(url);
+      return new Response(JSON.stringify(payloads.get(url)), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const result = await runOfficialMonthlyRevenueAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-12T02:00:00.000Z",
+      acquisitionRunId: "monthly-revenue-run",
+    });
+
+    expect(requested.sort()).toEqual([
+      OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue,
+      OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue,
+    ].sort());
+    expect(result).toMatchObject({
+      acquisitionRunId: "monthly-revenue-run",
+      sourceCount: 2,
+      recordCount: 5,
+      months: ["2026-05", "2026-06", "2026-07"],
+    });
+    const twseRecords = await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: twseIdentity.listing.id },
+      effectiveAt: "2026-08-12T02:00:00.000Z",
+      knowledgeAt: "2026-08-12T02:00:00.000Z",
+      startMonth: "2026-07",
+      endMonth: "2026-07",
+    });
+    const tpexRecords = await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: tpexIdentity.listing.id },
+      effectiveAt: "2026-08-12T02:00:00.000Z",
+      knowledgeAt: "2026-08-12T02:00:00.000Z",
+      startMonth: "2026-07",
+      endMonth: "2026-07",
+    });
+    expect(twseRecords).toEqual([
+      expect.objectContaining({
+        rawRevenueMonth: "11507",
+        publicationContext: {
+          publishedAt: "2026-08-10",
+          rawPublishedAt: "1150810",
+          declaredUnit: "TWD_THOUSANDS",
+          basis: "unknown",
+          qualifier: "estimated",
+        },
+        provenance: expect.objectContaining({
+          publisher: "TWSE",
+          publisherDataset: "t187ap05_L",
+          acquisitionRunId: "monthly-revenue-run",
+        }),
+      }),
+    ]);
+    expect(await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: twseIdentity.listing.id },
+      effectiveAt: "2026-08-12T02:00:00.000Z",
+      knowledgeAt: "2026-08-12T02:00:00.000Z",
+      startMonth: "2026-05",
+      endMonth: "2026-05",
+    })).toEqual([
+      expect.objectContaining({
+        revenueMonth: "2026-05",
+        sourceFacts: expect.objectContaining({ note: "歷史更正" }),
+      }),
+    ]);
+    expect(tpexRecords).toEqual([
+      expect.objectContaining({
+        rawRevenueMonth: "11507",
+        publicationContext: {
+          publishedAt: "2026-08-11",
+          rawPublishedAt: "1150811",
+          declaredUnit: "TWD_THOUSANDS",
+          basis: "individual",
+          qualifier: "estimated",
+        },
+        provenance: expect.objectContaining({
+          publisher: "TPEX",
+          publisherDataset: "mopsfin_t187ap05_O",
+          acquisitionRunId: "monthly-revenue-run",
+        }),
+      }),
+    ]);
+    expect(await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: twseInsuranceIdentity.listing.id },
+      effectiveAt: "2026-08-12T02:00:00.000Z",
+      knowledgeAt: "2026-08-12T02:00:00.000Z",
+      startMonth: "2026-06",
+      endMonth: "2026-06",
+    })).toEqual([
+      expect.objectContaining({ revenueMonth: "2026-06" }),
+    ]);
+    expect(await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: inactiveTwseIdentity.listing.id },
+      effectiveAt: "2026-08-12T02:00:00.000Z",
+      knowledgeAt: "2026-08-12T02:00:00.000Z",
+      startMonth: "2026-07",
+      endMonth: "2026-07",
+    })).toEqual([
+      expect.objectContaining({ revenueMonth: "2026-07", listingId: inactiveTwseIdentity.listing.id }),
+    ]);
+
+    await runOfficialMonthlyRevenueAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-13T02:00:00.000Z",
+      acquisitionRunId: "monthly-revenue-unchanged-poll",
+    });
+    const retainedTwseRecords = await persistence.listResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: twseIdentity.listing.id },
+      effectiveAt: "2026-08-13T02:00:00.000Z",
+      knowledgeAt: "2026-08-13T02:00:00.000Z",
+      startMonth: "2026-05",
+      endMonth: "2026-07",
+    });
+    expect(retainedTwseRecords).toHaveLength(2);
+    expect(retainedTwseRecords.every((record) =>
+      record.provenance.retrievedAt === "2026-08-12T02:00:00.000Z"
+      && record.provenance.acquisitionRunId === "monthly-revenue-run"
+    )).toBe(true);
+
+    const currentTpexPayload = payloads.get(OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue);
+    payloads.set(OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue, []);
+    await expect(runOfficialMonthlyRevenueAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-12T03:00:00.000Z",
+      acquisitionRunId: "monthly-revenue-empty-tpex",
+    })).rejects.toThrow("Official TPEX monthly revenue snapshot returned no canonical rows");
+    expect(await persistence.listLatestResearchMonthlyRevenueRecords({
+      subject: { kind: "listing_id", listingId: tpexIdentity.listing.id },
+      effectiveAt: "2026-08-12T03:00:00.000Z",
+      knowledgeAt: "2026-08-12T03:00:00.000Z",
+      startMonth: "2026-07",
+      endMonth: "2026-07",
+    })).toHaveLength(1);
+
+    payloads.set(OFFICIAL_MONTHLY_REVENUE_SOURCES.tpexMonthlyRevenue, currentTpexPayload);
+    const currentTwsePayload = payloads.get(OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue);
+    payloads.set(
+      OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue,
+      (payloads.get(OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue) as Array<Record<string, unknown>>)
+        .map((row) => ({ ...row, 資料年月: "11506" })),
+    );
+    await expect(runOfficialMonthlyRevenueAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-12T04:00:00.000Z",
+      acquisitionRunId: "monthly-revenue-stale-twse",
+    })).rejects.toThrow("Official TWSE monthly revenue snapshot is stale: expected 2026-07, received 2026-06");
+
+    payloads.set(OFFICIAL_MONTHLY_REVENUE_SOURCES.twseMonthlyRevenue, currentTwsePayload);
+    await expect(runOfficialMonthlyRevenueAcquisition(persistence, {
+      fetchImpl,
+      retrievedAt: "2026-08-18T02:00:00.000Z",
+      acquisitionRunId: "monthly-revenue-stale-insurance",
+    })).rejects.toThrow("Official TWSE monthly revenue snapshot is stale: expected 2026-07, received 2026-05,2026-06,2026-07");
   });
 
   it("fresh database: historical company and ETN retirements → seed queryable inactive identities", async () => {

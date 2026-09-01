@@ -1,4 +1,4 @@
 interface:
   display_name: "Taiwan Stock Research"
-  short_description: "Produce canonical TWSE and TPEx identity and settled market research"
-  default_prompt: "Use $taiwan-stock-research to produce a provenance-backed ResearchReport for one exact TWSE or TPEx listing, using get_research_manifest first and get_price_series when settled market context is available."
+  short_description: "Produce canonical Taiwan identity, market, or revenue research"
+  default_prompt: "Use $taiwan-stock-research to produce a provenance-backed ResearchReport for one exact TWSE or TPEx listing, using settled price or monthly-revenue data only when the manifest marks that dataset available."

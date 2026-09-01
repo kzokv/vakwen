@@ -45,6 +45,10 @@ import type {
   ResearchPriceRecordQuery,
 } from "../services/research/price.js";
 import type {
+  ResearchMonthlyRevenueRecord,
+  ResearchMonthlyRevenueRecordQuery,
+} from "../services/research/monthlyRevenue.js";
+import type {
   AccountingStore,
   BookedTradeEvent,
   CashLedgerEntry,
@@ -2860,6 +2864,9 @@ export interface Persistence {
     fromDate: string,
     knowledgeAt: string,
   ): Promise<string[]>;
+  appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void>;
+  listResearchMonthlyRevenueRecords(query: ResearchMonthlyRevenueRecordQuery): Promise<ResearchMonthlyRevenueRecord[]>;
+  listLatestResearchMonthlyRevenueRecords(query: ResearchMonthlyRevenueRecordQuery): Promise<ResearchMonthlyRevenueRecord[]>;
   /**
    * Resolve an existing user by email or create a new one.
    * Returns the internal UUID for the user.

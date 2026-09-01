@@ -45,7 +45,7 @@ Use Node `24.13.0` or newer with npm `11.x` for this repo.
 
 Notes:
 - `infra/docker/docker-compose.yml` is a local fallback Postgres/Redis provider and is not required when using memory mode or external DB/Redis URLs.
-- The Taiwan research rollout is controlled by three independent default-off env gates: `MCP_RESEARCH_ACQUISITION_ENABLED`, `MCP_RESEARCH_MCP_ENABLED`, and `MCP_RESEARCH_SKILL_ENABLED`. It provides official TWSE/TPEx identity acquisition, authoritative settled TWSE/TPEx price-series acquisition, the store-only MCP tools `get_research_manifest`, `get_research_identity`, and `get_price_series`, plus the public `taiwan-stock-research` Skill. See `docs/002-operations/runbook.md` for rollout behavior and `docs/001-architecture/research-identity.md` for contracts and persistence.
+- The additive Taiwan research rollout is controlled by three independent default-off env gates: `MCP_RESEARCH_ACQUISITION_ENABLED`, `MCP_RESEARCH_MCP_ENABLED`, and `MCP_RESEARCH_SKILL_ENABLED`. It provides official TWSE/TPEx identity, settled price-series, and monthly-revenue acquisition; the store-only MCP tools `get_research_manifest`, `get_research_identity`, `get_price_series`, and `get_monthly_revenue`; and the public `taiwan-stock-research` Skill. The Skill can render identity-only, focused-market, or monthly-revenue research artifacts when the canonical store has the required coverage. See `docs/002-operations/runbook.md` for rollout behavior and `docs/001-architecture/research-identity.md` for contracts and persistence.
 
 ## Test
 

@@ -2,6 +2,7 @@ import type { Persistence } from "../../persistence/types.js";
 import {
   MARKET_CONTEXT_SCOPE_STATEMENT,
   researchFocusedMarketReportSchema,
+  researchRevenueFocusedReportSchema,
   IDENTITY_ONLY_SCOPE_STATEMENT,
   researchIdentityOnlyReportSchema,
   type ResearchFocusedMarketReport,
@@ -9,8 +10,9 @@ import {
   type ResearchPriceSession,
   type ResearchPriceSeriesQuery,
   type ResearchQuery,
+  type ResearchRevenueFocusedReport,
 } from "./contracts.js";
-import { getPriceSeries, getResearchIdentity, getResearchManifest, ResearchServiceError } from "./service.js";
+import { getMonthlyRevenue, getPriceSeries, getResearchIdentity, getResearchManifest, ResearchServiceError } from "./service.js";
 
 function presentFactValue(
   facts: Awaited<ReturnType<typeof getResearchIdentity>>["identity"]["facts"],
@@ -63,6 +65,7 @@ export async function buildIdentityOnlyResearchReport(
 
 export type IdentityOnlyResearchReport = ResearchIdentityOnlyReport;
 export type FocusedMarketResearchReport = ResearchFocusedMarketReport;
+export type RevenueFocusedResearchReport = ResearchRevenueFocusedReport;
 
 function markdownValue(value: string | null): string {
   return value === null ? "Not reported" : value.replaceAll("|", "\\|").replaceAll("\n", " ");
@@ -121,6 +124,7 @@ export async function buildFocusedMarketResearchReport(
     history: { limit: 1 },
   });
   const provenanceIds = [...new Set([
+    ...identity.identity.provenance.map((item) => item.id),
     ...priceSeries.sessions
       .flatMap((session: ResearchPriceSession) => ("provenance" in session ? [session.provenance.provenanceId] : [])),
     ...priceSeries.metrics.flatMap((metric) => metric.status === "returned" ? metric.provenanceIds : []),
@@ -196,4 +200,69 @@ export function renderFocusedMarketResearchReportMarkdown(input: FocusedMarketRe
     "",
     ...report.evidence.provenanceIds.map((id) => `- ${id}`),
   ].join("\n");
+}
+
+export async function buildRevenueFocusedResearchReport(
+  persistence: Persistence,
+  query: ResearchQuery,
+) {
+  const manifest = await getResearchManifest(persistence, query);
+  const monthlyRevenueDataset = manifest.datasets.find((dataset) => dataset.id === "monthly_revenue")!;
+  if (monthlyRevenueDataset.status !== "available") {
+    throw new ResearchServiceError(
+      "research_dataset_unavailable",
+      "Monthly-revenue research requires available canonical monthly revenue",
+      { datasetId: "monthly_revenue", reasonCode: monthlyRevenueDataset.reasonCode },
+    );
+  }
+  const frozenQuery = {
+    subject: manifest.selector,
+    context: manifest.context,
+  };
+  const identity = await getResearchIdentity(persistence, {
+    ...frozenQuery,
+    history: { limit: 1 },
+  });
+  const monthlyRevenue = await getMonthlyRevenue(persistence, {
+    ...frozenQuery,
+    page: { limit: 24, order: "desc" },
+  });
+  const latestItem = monthlyRevenue.items[0] ?? null;
+  const latestYoy = latestItem?.derivedMetrics.yearOverYearPercent;
+  return researchRevenueFocusedReportSchema.parse({
+    contractVersion: "research-report/2.0.0" as const,
+    profile: "monthly_revenue" as const,
+    selector: identity.selector,
+    context: identity.context,
+    generatedAt: identity.context.knowledgeAt,
+    sections: [
+      {
+        id: "identity" as const,
+        issuer: identity.identity.issuer,
+        security: identity.identity.security,
+        listing: identity.identity.listing,
+        displayName: presentFactValue(identity.identity.facts, "display_name"),
+      },
+      {
+        id: "eligibility" as const,
+        profile: identity.identity.eligibility.profile,
+        state: identity.identity.eligibility.state,
+        reasonCode: identity.identity.eligibility.reasonCode,
+      },
+      {
+        id: "monthly_revenue" as const,
+        freshness: monthlyRevenue.freshness,
+        latestMonth: latestItem?.revenueMonth ?? null,
+        latestRecord: latestItem,
+        latestYearOverYearPercent: latestYoy ?? null,
+      },
+    ],
+    conclusion: monthlyRevenue.conclusion,
+    evidence: {
+      provenanceIds: [...new Set([
+        ...identity.identity.provenance.map((item) => item.id),
+        ...monthlyRevenue.evidence.provenanceIds,
+      ])],
+    },
+  });
 }

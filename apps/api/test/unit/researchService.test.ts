@@ -1,17 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
+import type { MarketCalendarExceptionInput } from "../../src/persistence/types.js";
 import { researchIdentityQuerySchema } from "../../src/services/research/contracts.js";
 import {
   appendOfficialListingStatusRevision,
   canonicalizeOfficialIdentityRow,
 } from "../../src/services/research/identity.js";
+import { canonicalizeOfficialMonthlyRevenueRow } from "../../src/services/research/monthlyRevenue.js";
 import { canonicalizeOfficialPriceRow } from "../../src/services/research/price.js";
-import { getPriceSeries, getResearchIdentity, getResearchManifest } from "../../src/services/research/service.js";
+import { getMonthlyRevenue, getPriceSeries, getResearchIdentity, getResearchManifest } from "../../src/services/research/service.js";
 import { setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
 
-function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): void {
+function installAuthoritativeCalendarCoverage(
+  persistence: MemoryPersistence,
+  exceptions: MarketCalendarExceptionInput[] = [],
+): void {
   vi.spyOn(persistence, "listMarketCalendarHistory").mockImplementation(async (marketCode, calendarYear) =>
-    calendarYear === 2026
+    calendarYear === 2026 || calendarYear === 2024
       ? [{
           versionId: "calendar-tw-2026",
           importOperationId: "calendar-import-tw-2026",
@@ -34,7 +39,7 @@ function installAuthoritativeCalendarCoverage(persistence: MemoryPersistence): v
             weekdayClosedCount: 0,
             weekendOpenCount: 0,
           },
-          exceptions: [],
+          exceptions: exceptions.filter((item) => item.date.startsWith(`${calendarYear}-`)),
           createdAt: "2025-12-01T00:00:00.000Z",
           updatedAt: "2025-12-01T00:00:00.000Z",
         }]
@@ -528,6 +533,117 @@ describe("Taiwan research store-only service", () => {
     expect(unboundedSpy).not.toHaveBeenCalled();
     expect(latestSpy).toHaveBeenCalledTimes(1);
     expect(pageSpy).toHaveBeenCalledWith(expect.objectContaining({ limit: 2 }));
+  });
+
+  it("monthly revenue freshness: authoritative calendar is unavailable → fail closed without fabricating weekday business days", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:missing-calendar", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+
+    await expect(getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      page: { limit: 24, order: "desc" },
+    })).rejects.toMatchObject({
+      code: "research_calendar_unavailable",
+      statusCode: 422,
+      metadata: { calendarYear: 2026 },
+    });
+  });
+
+  it("early filing: expose availability and default results newer than the latest expected filing month", async () => {
+    const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-05",
+      retrievedAt: "2026-08-05T02:00:00.000Z",
+      artifact: { contentHash: "sha256:early-month-manifest", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchMonthlyRevenueRecords([canonicalizeOfficialMonthlyRevenueRow({
+      venue: "TWSE",
+      listingId: identity.listing.id,
+      issuerId: identity.issuer.id,
+      ticker: "2330",
+      companyName: "台積電",
+      industryName: "半導體業",
+      revenueMonth: "2026-07",
+      rawRevenueMonth: "11507",
+      publishedAt: "2026-08-05",
+      rawPublishedAt: "1150805",
+      retrievedAt: "2026-08-05T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:early-month-revenue",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+        publisherDataset: "t187ap05_L",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      source: {
+        currentMonthRevenue: "1000",
+        priorMonthRevenue: "900",
+        priorYearSameMonthRevenue: "800",
+        monthOverMonthPercent: "11.11",
+        yearOverYearPercent: "25",
+        currentYearToDateRevenue: "6000",
+        priorYearToDateRevenue: "5000",
+        yearToDateYearOverYearPercent: "20",
+        note: "-",
+      },
+    })]);
+
+    const manifest = await getResearchManifest(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-05T12:00:00.000Z",
+        effectiveAt: "2026-08-05T12:00:00.000Z",
+        assessmentMode: "effective",
+      },
+    });
+
+    expect(manifest.datasets.find((dataset) => dataset.id === "monthly_revenue")).toEqual({
+      id: "monthly_revenue",
+      status: "available",
+    });
+    const revenue = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-05T12:00:00.000Z",
+        effectiveAt: "2026-08-05T12:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      page: { limit: 24, order: "desc" },
+    });
+    expect(revenue.freshness.latestExpectedMonth).toBe("2026-06");
+    expect(revenue.window.endMonth).toBe("2026-07");
+    expect(revenue.items[0]?.revenueMonth).toBe("2026-07");
   });
 
   it("price-series manifest and service: read stored TWSE bars only → expose price availability, lineage, and no write-side effects", async () => {
@@ -1110,5 +1226,979 @@ describe("Taiwan research store-only service", () => {
       page: { limit: 1, cursor: firstPage.page.nextCursor! },
       metrics: [],
     })).rejects.toMatchObject({ code: "research_cursor_invalid" });
+  });
+
+  it("monthly revenue: return bounded latest-per-month facts, derived metrics, and cursor paging from the canonical store only", async () => {
+    const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:monthly-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    let latestFreshnessProvenanceId = "";
+    let latestConclusionComparisonProvenanceId = "";
+    for (const revenueMonth of ["2024-07", "2024-08", "2024-09", "2024-10", "2024-11", "2024-12", "2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06", "2025-07", "2025-08", "2025-09", "2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"]) {
+      const [year, month] = revenueMonth.split("-").map(Number);
+      const rocYear = year - 1911;
+      const record = canonicalizeOfficialMonthlyRevenueRow({
+        venue: "TWSE",
+        listingId: identity.listing.id,
+        issuerId: identity.issuer.id,
+        ticker: "2330",
+        companyName: "台積電",
+        industryName: "半導體業",
+        revenueMonth,
+        rawRevenueMonth: `${rocYear}${String(month).padStart(2, "0")}`,
+        publishedAt: "2026-08-17",
+        rawPublishedAt: "1150817",
+        retrievedAt: `2026-08-${String(Math.min(month, 9)).padStart(2, "0")}T02:00:00.000Z`,
+        artifact: {
+          contentHash: `sha256:${revenueMonth}`,
+          sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+          publisherDataset: "t187ap05_L",
+          accessProvider: "TWSE_OPENAPI",
+        },
+        source: {
+          currentMonthRevenue: String(1000 + month * 10),
+          priorMonthRevenue: String(990 + month * 10),
+          priorYearSameMonthRevenue: String(900 + month * 10),
+          monthOverMonthPercent: "1.01",
+          yearOverYearPercent: "11.11",
+          currentYearToDateRevenue: String(5000 + month * 100),
+          priorYearToDateRevenue: String(4500 + month * 100),
+          yearToDateYearOverYearPercent: "11.11",
+          note: "合併營收",
+        },
+      });
+      if (revenueMonth === "2026-07") latestFreshnessProvenanceId = record.provenance.id;
+      if (revenueMonth === "2025-07") latestConclusionComparisonProvenanceId = record.provenance.id;
+      await persistence.appendResearchMonthlyRevenueRecords([record]);
+    }
+
+    const result = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      range: {
+        startMonth: "2025-08",
+        endMonth: "2026-07",
+      },
+      page: {
+        limit: 2,
+        order: "desc",
+      },
+    });
+
+    expect(result.freshness).toMatchObject({
+      latestExpectedMonth: "2026-07",
+      latestDueStatus: "reported",
+    });
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0]).toMatchObject({
+      revenueMonth: "2026-07",
+      publicationContext: { declaredUnit: "TWD_THOUSANDS", basis: "consolidated" },
+      sourceFacts: {
+        currentMonthRevenue: { raw: "1070", normalized: { state: "present", value: "1070" } },
+      },
+    });
+    expect(result.items[0]?.derivedMetrics.yearOverYearPercent.status).toBe("available");
+    expect(result.items[0]?.derivedMetrics.trailing12MonthRevenue.status).toBe("available");
+    expect(result.conclusion).toMatchObject({ status: "supported", reasonCodes: [] });
+    expect(result.conclusion.statement).toContain("latest available month 2026-07");
+    expect(result.page.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await getMonthlyRevenue(persistence, {
+      subject: result.selector,
+      context: result.context,
+      range: {
+        startMonth: result.window.startMonth,
+        endMonth: result.window.endMonth,
+      },
+      page: {
+        limit: 2,
+        order: "desc",
+        cursor: result.page.nextCursor!,
+      },
+    });
+    expect(secondPage.items[0]?.revenueMonth).toBe("2026-05");
+    expect(secondPage.conclusion).toEqual(result.conclusion);
+    expect(secondPage.evidence.provenanceIds).toContain(latestFreshnessProvenanceId);
+    expect(secondPage.evidence.provenanceIds).toContain(latestConclusionComparisonProvenanceId);
+
+    const oldestPage = await getMonthlyRevenue(persistence, {
+      subject: result.selector,
+      context: result.context,
+      range: { startMonth: "2024-08", endMonth: "2026-07" },
+      page: { limit: 1, order: "asc" },
+    });
+    expect(oldestPage.items[0]?.revenueMonth).toBe("2024-08");
+    expect(oldestPage.conclusion).toEqual(result.conclusion);
+    expect(oldestPage.evidence.provenanceIds).toContain(latestFreshnessProvenanceId);
+    expect(oldestPage.evidence.provenanceIds).toContain(latestConclusionComparisonProvenanceId);
+
+    for (const revenueMonth of ["1900-01", "not-a-month"]) {
+      const decodedCursor = JSON.parse(Buffer.from(result.page.nextCursor!, "base64url").toString("utf8")) as Record<string, unknown>;
+      const invalidCursor = Buffer.from(JSON.stringify({ ...decodedCursor, revenueMonth }), "utf8").toString("base64url");
+      await expect(getMonthlyRevenue(persistence, {
+        subject: result.selector,
+        context: result.context,
+        range: {
+          startMonth: result.window.startMonth,
+          endMonth: result.window.endMonth,
+        },
+        page: {
+          limit: 2,
+          order: "desc",
+          cursor: invalidCursor,
+        },
+      })).rejects.toMatchObject({ code: "research_cursor_invalid" });
+    }
+
+    const historicalWindow = await getMonthlyRevenue(persistence, {
+      subject: result.selector,
+      context: result.context,
+      range: { startMonth: "2026-01", endMonth: "2026-06" },
+      page: { limit: 12, order: "desc" },
+    });
+    expect(historicalWindow.items[0]?.revenueMonth).toBe("2026-06");
+    expect(historicalWindow.freshness).toMatchObject({
+      latestExpectedMonth: "2026-07",
+      latestDueStatus: "reported",
+    });
+    expect(historicalWindow.evidence.provenanceIds).toContain(latestFreshnessProvenanceId);
+  });
+
+  it("monthly revenue gates: withhold only the affected derived claims → preserve source facts and read-only behavior", async () => {
+    const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
+    const appendIdentitySpy = vi.spyOn(persistence, "appendResearchIdentityRecords");
+    const appendRevenueSpy = vi.spyOn(persistence, "appendResearchMonthlyRevenueRecords");
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:monthly-gates-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    appendIdentitySpy.mockClear();
+    appendRevenueSpy.mockClear();
+
+    const basisChanged = canonicalizeOfficialMonthlyRevenueRow({
+      venue: "TWSE",
+      listingId: identity.listing.id,
+      issuerId: identity.issuer.id,
+      ticker: "2330",
+      companyName: "台積電",
+      industryName: "半導體業",
+      revenueMonth: "2026-07",
+      rawRevenueMonth: "11507",
+      publishedAt: "2026-08-10",
+      rawPublishedAt: "1150810",
+      retrievedAt: "2026-08-12T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:monthly-gates",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+        publisherDataset: "t187ap05_L",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      source: {
+        currentMonthRevenue: "1000",
+        priorMonthRevenue: "990",
+        priorYearSameMonthRevenue: "900",
+        monthOverMonthPercent: "1.01",
+        yearOverYearPercent: "11.11",
+        currentYearToDateRevenue: "7000",
+        priorYearToDateRevenue: "6300",
+        yearToDateYearOverYearPercent: "11.11",
+        note: "115/7月起新增合併個體，自結數",
+      },
+    });
+    const unknownUnit = {
+      ...canonicalizeOfficialMonthlyRevenueRow({
+        venue: "TWSE",
+        listingId: identity.listing.id,
+        issuerId: identity.issuer.id,
+        ticker: "2330",
+        companyName: "台積電",
+        industryName: "半導體業",
+        revenueMonth: "2026-06",
+        rawRevenueMonth: "11506",
+        publishedAt: "2026-07-10",
+        rawPublishedAt: "1150710",
+        retrievedAt: "2026-08-11T02:00:00.000Z",
+        artifact: {
+          contentHash: "sha256:monthly-gates-unknown",
+          sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+          publisherDataset: "t187ap05_L",
+          accessProvider: "TWSE_OPENAPI",
+        },
+        source: {
+          currentMonthRevenue: "950",
+          priorMonthRevenue: "940",
+          priorYearSameMonthRevenue: "850",
+          monthOverMonthPercent: "1.06",
+          yearOverYearPercent: "11.76",
+          currentYearToDateRevenue: "6000",
+          priorYearToDateRevenue: "5400",
+          yearToDateYearOverYearPercent: "11.11",
+          note: "-",
+        },
+      }),
+      publicationContext: {
+        ...canonicalizeOfficialMonthlyRevenueRow({
+          venue: "TWSE",
+          listingId: identity.listing.id,
+          issuerId: identity.issuer.id,
+          ticker: "2330",
+          companyName: "台積電",
+          industryName: "半導體業",
+          revenueMonth: "2026-06",
+          rawRevenueMonth: "11506",
+          publishedAt: "2026-07-10",
+          rawPublishedAt: "1150710",
+          retrievedAt: "2026-08-11T02:00:00.000Z",
+          artifact: {
+            contentHash: "sha256:monthly-gates-unknown",
+            sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+            publisherDataset: "t187ap05_L",
+            accessProvider: "TWSE_OPENAPI",
+          },
+          source: {
+            currentMonthRevenue: "950",
+            priorMonthRevenue: "940",
+            priorYearSameMonthRevenue: "850",
+            monthOverMonthPercent: "1.06",
+            yearOverYearPercent: "11.76",
+            currentYearToDateRevenue: "6000",
+            priorYearToDateRevenue: "5400",
+            yearToDateYearOverYearPercent: "11.11",
+            note: "-",
+          },
+        }).publicationContext,
+        declaredUnit: "UNKNOWN" as const,
+      },
+    };
+    await persistence.appendResearchMonthlyRevenueRecords([basisChanged, unknownUnit]);
+    appendRevenueSpy.mockClear();
+
+    const result = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      range: {
+        startMonth: "2026-06",
+        endMonth: "2026-07",
+      },
+      page: {
+        limit: 24,
+        order: "desc",
+      },
+    });
+
+    expect(appendIdentitySpy).not.toHaveBeenCalled();
+    expect(appendRevenueSpy).not.toHaveBeenCalled();
+    expect(result.freshness).toMatchObject({
+      latestExpectedMonth: "2026-07",
+      latestDueStatus: "reported",
+    });
+    expect(result.items[0]).toMatchObject({
+      revenueMonth: "2026-07",
+      sourceFacts: {
+        publisherComparisons: {
+          yearOverYearPercent: { raw: "11.11", normalized: { state: "present", value: "11.11" } },
+        },
+      },
+      derivedMetrics: {
+        yearOverYearPercent: { status: "withheld", reasonCode: "missing_comparable_month" },
+        rolling3MonthRevenue: { status: "withheld", reasonCode: "missing_comparable_month" },
+      },
+    });
+    expect(result.items[1]).toMatchObject({
+      revenueMonth: "2026-06",
+      derivedMetrics: {
+        yearOverYearPercent: { status: "withheld", reasonCode: "unknown_unit" },
+        trailing12MonthRevenue: { status: "withheld", reasonCode: "missing_comparable_month" },
+      },
+    });
+  });
+
+  it("monthly revenue comparisons: filing basis is unreported → preserve source facts and withhold basis-dependent metrics", async () => {
+    const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: "2026-08-27T02:00:00.000Z",
+      artifact: { contentHash: "sha256:monthly-comparisons-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchMonthlyRevenueRecords([canonicalizeOfficialMonthlyRevenueRow({
+      venue: "TWSE",
+      listingId: identity.listing.id,
+      issuerId: identity.issuer.id,
+      ticker: "2330",
+      companyName: "台積電",
+      industryName: "半導體業",
+      revenueMonth: "2026-07",
+      rawRevenueMonth: "11507",
+      publishedAt: "2026-08-10",
+      rawPublishedAt: "1150810",
+      retrievedAt: "2026-08-12T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:monthly-comparisons",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+        publisherDataset: "t187ap05_L",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      source: {
+        currentMonthRevenue: "1000",
+        priorMonthRevenue: "990",
+        priorYearSameMonthRevenue: "900",
+        monthOverMonthPercent: "1.01",
+        yearOverYearPercent: "11.11",
+        currentYearToDateRevenue: "7000",
+        priorYearToDateRevenue: "6300",
+        yearToDateYearOverYearPercent: "11.11",
+        note: "-",
+      },
+    })]);
+
+    const result = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      range: {
+        startMonth: "2026-07",
+        endMonth: "2026-07",
+      },
+      page: {
+        limit: 24,
+        order: "desc",
+      },
+    });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      publicationContext: { basis: "unknown", qualifier: "unknown" },
+      sourceFacts: {
+        publisherComparisons: {
+          yearOverYearPercent: { raw: "11.11", normalized: { state: "present", value: "11.11" } },
+          currentYearToDateRevenue: { raw: "7000", normalized: { state: "present", value: "7000" } },
+          priorYearToDateRevenue: { raw: "6300", normalized: { state: "present", value: "6300" } },
+          yearToDateYearOverYearPercent: { raw: "11.11", normalized: { state: "present", value: "11.11" } },
+        },
+      },
+      derivedMetrics: {
+        yearOverYearPercent: { status: "withheld", reasonCode: "unknown_basis" },
+        currentYearToDateRevenue: { status: "withheld", reasonCode: "unknown_basis" },
+        priorYearToDateRevenue: { status: "withheld", reasonCode: "unknown_basis" },
+        yearToDateYearOverYearPercent: { status: "withheld", reasonCode: "unknown_basis" },
+      },
+    });
+  });
+
+  it("monthly revenue evidence: zero prior-year revenue → withhold the ratio without claiming evidence is missing", async () => {
+    const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-01",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:support-provenance-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    const records = ["2025-07", "2026-07"].map((revenueMonth, index) => canonicalizeOfficialMonthlyRevenueRow({
+      venue: "TWSE",
+      listingId: identity.listing.id,
+      issuerId: identity.issuer.id,
+      ticker: "2330",
+      companyName: "台積電",
+      industryName: "半導體業",
+      revenueMonth,
+      rawRevenueMonth: revenueMonth === "2025-07" ? "11407" : "11507",
+      publishedAt: revenueMonth === "2025-07" ? "2025-08-10" : "2026-08-10",
+      rawPublishedAt: revenueMonth === "2025-07" ? "1140810" : "1150810",
+      retrievedAt: revenueMonth === "2025-07" ? "2025-08-11T02:00:00.000Z" : "2026-08-11T02:00:00.000Z",
+      artifact: {
+        contentHash: `sha256:support-provenance-${index}`,
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+        publisherDataset: "t187ap05_L",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      source: {
+        currentMonthRevenue: index === 0 ? "0" : "1000",
+        priorMonthRevenue: "890",
+        priorYearSameMonthRevenue: "800",
+        monthOverMonthPercent: "1.12",
+        yearOverYearPercent: "11.11",
+        currentYearToDateRevenue: "7000",
+        priorYearToDateRevenue: "6300",
+        yearToDateYearOverYearPercent: "11.11",
+        note: "合併營收",
+      },
+    }));
+    await persistence.appendResearchMonthlyRevenueRecords(records);
+
+    const result = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      range: { startMonth: "2026-07", endMonth: "2026-07" },
+      page: { limit: 1, order: "desc" },
+    });
+
+    expect(result.items[0]?.derivedMetrics.yearOverYearPercent).toMatchObject({
+      status: "withheld",
+      reasonCode: "zero_denominator",
+      lineageMonths: ["2025-07", "2026-07"],
+    });
+    expect(result.evidence.provenanceIds).toEqual(records.map((record) => record.provenance.id));
+  });
+
+  it("monthly revenue derived windows: distinguish a post-listing acquisition gap from a genuine early-series short window", async () => {
+    const makeIdentity = (ticker: string, suffix: string, listedAt = "1994-09-05") => canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-27",
+      retrievedAt: `2026-08-27T02:00:0${suffix}.000Z`,
+      artifact: {
+        contentHash: `sha256:monthly-window-${suffix}`,
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+      },
+      row: {
+        kind: "company",
+        ticker,
+        legalName: `測試公司${suffix}`,
+        displayName: `測試${suffix}`,
+        unifiedBusinessNumber: `2209913${suffix}`,
+        industryCode: "24",
+        listedAt,
+      },
+    });
+    const appendRevenueMonth = async (
+      persistence: MemoryPersistence,
+      identity: ReturnType<typeof canonicalizeOfficialIdentityRow>,
+      revenueMonth: string,
+      sequence: number,
+    ) => {
+      const [year, month] = revenueMonth.split("-").map(Number);
+      const rocYear = year - 1911;
+      await persistence.appendResearchMonthlyRevenueRecords([canonicalizeOfficialMonthlyRevenueRow({
+        venue: "TWSE",
+        listingId: identity.listing.id,
+        issuerId: identity.issuer.id,
+        ticker: identity.listing.ticker,
+        companyName: "測試公司",
+        industryName: "半導體業",
+        revenueMonth,
+        rawRevenueMonth: `${rocYear}${String(month).padStart(2, "0")}`,
+        publishedAt: `${year}-${String((month % 12) + 1).padStart(2, "0")}-10`,
+        rawPublishedAt: `${rocYear}${String((month % 12) + 1).padStart(2, "0")}10`,
+        retrievedAt: `2026-08-${String((sequence % 20) + 1).padStart(2, "0")}T02:00:00.000Z`,
+        artifact: {
+          contentHash: `sha256:${identity.listing.id}-${revenueMonth}`,
+          sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+          publisherDataset: "t187ap05_L",
+          accessProvider: "TWSE_OPENAPI",
+        },
+        source: {
+          currentMonthRevenue: String(1000 + sequence * 10),
+          priorMonthRevenue: String(990 + sequence * 10),
+          priorYearSameMonthRevenue: String(900 + sequence * 10),
+          monthOverMonthPercent: "1.01",
+          yearOverYearPercent: "11.11",
+          currentYearToDateRevenue: String(10000 + sequence * 100),
+          priorYearToDateRevenue: String(9000 + sequence * 100),
+          yearToDateYearOverYearPercent: "11.11",
+          note: "合併營收",
+        },
+      })]);
+    };
+
+    const missingComparablePersistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(missingComparablePersistence);
+    const missingComparableIdentity = makeIdentity("2330", "8");
+    await missingComparablePersistence.appendResearchIdentityRecords([missingComparableIdentity]);
+    for (const [index, revenueMonth] of ["2026-06", "2026-07"].entries()) {
+      await appendRevenueMonth(missingComparablePersistence, missingComparableIdentity, revenueMonth, index);
+    }
+
+    const missingComparable = await getMonthlyRevenue(missingComparablePersistence, {
+      subject: { kind: "listing_id", listingId: missingComparableIdentity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      range: {
+        startMonth: "2026-07",
+        endMonth: "2026-07",
+      },
+      page: {
+        limit: 24,
+        order: "desc",
+      },
+    });
+
+    expect(missingComparable.items[0]).toMatchObject({
+      revenueMonth: "2026-07",
+      derivedMetrics: {
+        rolling3MonthRevenue: { status: "withheld", reasonCode: "missing_comparable_month" },
+        trailing12MonthRevenue: { status: "withheld", reasonCode: "missing_comparable_month" },
+      },
+    });
+
+    const shortWindowPersistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(shortWindowPersistence);
+    const shortWindowIdentity = makeIdentity("2331", "9", "2026-05-01");
+    await shortWindowPersistence.appendResearchIdentityRecords([shortWindowIdentity]);
+    for (const [index, revenueMonth] of ["2026-05", "2026-06", "2026-07"].entries()) {
+      await appendRevenueMonth(shortWindowPersistence, shortWindowIdentity, revenueMonth, index);
+    }
+
+    const shortWindow = await getMonthlyRevenue(shortWindowPersistence, {
+      subject: { kind: "listing_id", listingId: shortWindowIdentity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      range: {
+        startMonth: "2026-05",
+        endMonth: "2026-05",
+      },
+      page: {
+        limit: 24,
+        order: "desc",
+      },
+    });
+
+    expect(shortWindow.items[0]).toMatchObject({
+      revenueMonth: "2026-05",
+      derivedMetrics: {
+        yearOverYearPercent: { status: "withheld", reasonCode: "short_window" },
+        rolling3MonthRevenue: { status: "withheld", reasonCode: "short_window" },
+        trailing12MonthRevenue: { status: "withheld", reasonCode: "short_window" },
+        currentYearToDateRevenue: { status: "withheld", reasonCode: "short_window" },
+        priorYearToDateRevenue: { status: "withheld", reasonCode: "short_window" },
+        yearToDateYearOverYearPercent: { status: "withheld", reasonCode: "short_window" },
+      },
+    });
+  });
+
+  it("monthly revenue timing: use the effective cutoff for visibility and freshness → withhold months published after that cutoff", async () => {
+    const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-01",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:monthly-timing-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchMonthlyRevenueRecords([
+      canonicalizeOfficialMonthlyRevenueRow({
+        venue: "TWSE",
+        listingId: identity.listing.id,
+        issuerId: identity.issuer.id,
+        ticker: "2330",
+        companyName: "台積電",
+        industryName: "半導體業",
+        revenueMonth: "2026-06",
+        rawRevenueMonth: "11506",
+        publishedAt: "2026-07-10",
+        rawPublishedAt: "1150710",
+        retrievedAt: "2026-07-11T02:00:00.000Z",
+        artifact: {
+          contentHash: "sha256:monthly-timing-2026-06",
+          sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+          publisherDataset: "t187ap05_L",
+          accessProvider: "TWSE_OPENAPI",
+        },
+        source: {
+          currentMonthRevenue: "950",
+          priorMonthRevenue: "940",
+          priorYearSameMonthRevenue: "850",
+          monthOverMonthPercent: "1.06",
+          yearOverYearPercent: "11.76",
+          currentYearToDateRevenue: "6000",
+          priorYearToDateRevenue: "5400",
+          yearToDateYearOverYearPercent: "11.11",
+          note: "-",
+        },
+      }),
+      canonicalizeOfficialMonthlyRevenueRow({
+        venue: "TWSE",
+        listingId: identity.listing.id,
+        issuerId: identity.issuer.id,
+        ticker: "2330",
+        companyName: "台積電",
+        industryName: "半導體業",
+        revenueMonth: "2026-07",
+        rawRevenueMonth: "11507",
+        publishedAt: "2026-08-10",
+        rawPublishedAt: "1150810",
+        retrievedAt: "2026-08-12T02:00:00.000Z",
+        artifact: {
+          contentHash: "sha256:monthly-timing-2026-07",
+          sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+          publisherDataset: "t187ap05_L",
+          accessProvider: "TWSE_OPENAPI",
+        },
+        source: {
+          currentMonthRevenue: "1000",
+          priorMonthRevenue: "990",
+          priorYearSameMonthRevenue: "900",
+          monthOverMonthPercent: "1.01",
+          yearOverYearPercent: "11.11",
+          currentYearToDateRevenue: "7000",
+          priorYearToDateRevenue: "6300",
+          yearToDateYearOverYearPercent: "11.11",
+          note: "-",
+        },
+      }),
+    ]);
+
+    const result = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-20T00:00:00.000Z",
+        effectiveAt: "2026-08-09T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      range: {
+        startMonth: "2026-06",
+        endMonth: "2026-07",
+      },
+      page: {
+        limit: 24,
+        order: "desc",
+      },
+    });
+
+    expect(result.freshness).toMatchObject({
+      latestExpectedMonth: "2026-06",
+      latestDueStatus: "reported",
+    });
+    expect(result.items.map((item) => item.revenueMonth)).toEqual(["2026-06"]);
+  });
+
+  it("monthly revenue TPEX: resolve a ticker_venue query and preserve TPEX routing in the returned selector and facts", async () => {
+    const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TPEX",
+      snapshotDate: "2026-08-01",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:tpex-monthly-identity", sourceUrl: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O" },
+      row: {
+        kind: "company",
+        ticker: "5274",
+        legalName: "信驊科技股份有限公司",
+        displayName: "信驊",
+        unifiedBusinessNumber: "27490748",
+        industryCode: "24",
+        listedAt: "2013-04-30",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    for (const [index, revenueMonth] of ["2025-08", "2025-09", "2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"].entries()) {
+      const [year, month] = revenueMonth.split("-").map(Number);
+      const rocYear = year - 1911;
+      await persistence.appendResearchMonthlyRevenueRecords([canonicalizeOfficialMonthlyRevenueRow({
+        venue: "TPEX",
+        listingId: identity.listing.id,
+        issuerId: identity.issuer.id,
+        ticker: "5274",
+        companyName: "信驊",
+        industryName: "24",
+        revenueMonth,
+        rawRevenueMonth: `${rocYear}${String(month).padStart(2, "0")}`,
+        publishedAt: revenueMonth === "2026-07" ? "2026-08-11" : `${year}-${String((month % 12) + 1).padStart(2, "0")}-11`,
+        rawPublishedAt: revenueMonth === "2026-07" ? "1150811" : `${rocYear}${String((month % 12) + 1).padStart(2, "0")}11`,
+        retrievedAt: `2026-08-${String((index % 9) + 1).padStart(2, "0")}T02:00:00.000Z`,
+        artifact: {
+          contentHash: `sha256:tpex-monthly-${revenueMonth}`,
+          sourceUrl: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O",
+          publisherDataset: "mopsfin_t187ap05_O",
+          accessProvider: "TPEX_OPENAPI",
+        },
+        source: {
+          currentMonthRevenue: String(2000 + index * 10),
+          priorMonthRevenue: String(1990 + index * 10),
+          priorYearSameMonthRevenue: String(1800 + index * 10),
+          monthOverMonthPercent: "1.01",
+          yearOverYearPercent: "11.11",
+          currentYearToDateRevenue: String(12000 + index * 100),
+          priorYearToDateRevenue: String(10800 + index * 100),
+          yearToDateYearOverYearPercent: "11.11",
+          note: "個別自結數",
+        },
+      })]);
+    }
+
+    const result = await getMonthlyRevenue(persistence, {
+      subject: { kind: "ticker_venue", ticker: "5274", listingVenue: "TPEX" },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      page: {
+        limit: 1,
+        order: "desc",
+      },
+    });
+
+    expect(result.selector).toEqual({ kind: "listing_id", listingId: identity.listing.id });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      revenueMonth: "2026-07",
+      publicationContext: {
+        publishedAt: "2026-08-11",
+        basis: "individual",
+        qualifier: "estimated",
+      },
+      sourceFacts: {
+        companyName: "信驊",
+      },
+    });
+  });
+
+  it("monthly revenue freshness: use the insurance 15th deadline with Taiwan business-day grace for financial-institution contexts", async () => {
+    const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence, [{
+      date: "2026-08-17",
+      status: "closed",
+      name: "Official weekday holiday",
+      evidence: "TW official calendar fixture",
+      overrideReason: "Authoritative exchange closure",
+    }]);
+    const baseIdentity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-01",
+      retrievedAt: "2026-08-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:insurance-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2816",
+        legalName: "測試金融公司",
+        displayName: "測試金融",
+        unifiedBusinessNumber: "12345678",
+        industryCode: "17",
+        listedAt: "2001-01-01",
+      },
+    });
+    expect(baseIdentity.issuer.classification).toBe("financial_institution");
+    await persistence.appendResearchIdentityRecords([baseIdentity]);
+    await persistence.appendResearchMonthlyRevenueRecords([canonicalizeOfficialMonthlyRevenueRow({
+      venue: "TWSE",
+      listingId: baseIdentity.listing.id,
+      issuerId: baseIdentity.issuer.id,
+      ticker: "2816",
+      companyName: "測試金融",
+      industryName: "金融保險業",
+      revenueMonth: "2026-06",
+      rawRevenueMonth: "11506",
+      publishedAt: "2026-07-15",
+      rawPublishedAt: "1150715",
+      retrievedAt: "2026-07-16T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:insurance-2026-06",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+        publisherDataset: "t187ap05_L",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      source: {
+        currentMonthRevenue: "500",
+        priorMonthRevenue: "490",
+        priorYearSameMonthRevenue: "450",
+        monthOverMonthPercent: "2.04",
+        yearOverYearPercent: "11.11",
+        currentYearToDateRevenue: "3000",
+        priorYearToDateRevenue: "2700",
+        yearToDateYearOverYearPercent: "11.11",
+        note: "-",
+      },
+    })]);
+
+    const onFilingDay = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: baseIdentity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-18T00:00:00.000Z",
+        effectiveAt: "2026-08-18T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      page: { limit: 1, order: "desc" },
+    });
+    const afterFilingDay = await getMonthlyRevenue(persistence, {
+      subject: { kind: "listing_id", listingId: baseIdentity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-19T00:00:00.000Z",
+        effectiveAt: "2026-08-19T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      page: { limit: 1, order: "desc" },
+    });
+
+    expect(onFilingDay.freshness).toMatchObject({
+      basis: "insurance_15th",
+      latestExpectedMonth: "2026-06",
+      statutoryDueDate: "2026-07-15",
+      latestDueStatus: "reported",
+    });
+    expect(afterFilingDay.freshness).toMatchObject({
+      basis: "insurance_15th",
+      latestExpectedMonth: "2026-07",
+      statutoryDueDate: "2026-08-18",
+      latestDueStatus: "missing",
+    });
+  });
+
+  it("monthly revenue freshness: inactive listing queried later → cap the target at its final applicable filing month", async () => {
+    const persistence = new MemoryPersistence();
+    installAuthoritativeCalendarCoverage(persistence);
+    const activeIdentity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2024-03-01",
+      retrievedAt: "2024-03-01T02:00:00.000Z",
+      artifact: { contentHash: "sha256:inactive-revenue-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "1234",
+        legalName: "下市測試股份有限公司",
+        displayName: "下市測試",
+        unifiedBusinessNumber: "87654321",
+        industryCode: "24",
+        listedAt: "2001-01-01",
+      },
+    });
+    const inactiveIdentity = appendOfficialListingStatusRevision(activeIdentity, {
+      status: "inactive",
+      effectiveDate: "2024-03-31",
+      retrievedAt: "2024-04-01T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:inactive-revenue-delisting",
+        sourceUrl: "https://openapi.twse.com.tw/v1/company/suspendListingCsvAndHtml",
+        publisherDataset: "company/suspendListingCsvAndHtml",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([activeIdentity, inactiveIdentity]);
+    await persistence.appendResearchMonthlyRevenueRecords([canonicalizeOfficialMonthlyRevenueRow({
+      venue: "TWSE",
+      listingId: activeIdentity.listing.id,
+      issuerId: activeIdentity.issuer.id,
+      ticker: "1234",
+      companyName: "下市測試",
+      industryName: "測試業",
+      revenueMonth: "2024-03",
+      rawRevenueMonth: "11303",
+      publishedAt: "2024-04-10",
+      rawPublishedAt: "1130410",
+      retrievedAt: "2024-04-10T02:00:00.000Z",
+      artifact: {
+        contentHash: "sha256:inactive-revenue-2024-03",
+        sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+        publisherDataset: "t187ap05_L",
+        accessProvider: "TWSE_OPENAPI",
+      },
+      source: {
+        currentMonthRevenue: "100",
+        priorMonthRevenue: "90",
+        priorYearSameMonthRevenue: "80",
+        monthOverMonthPercent: "11.11",
+        yearOverYearPercent: "25",
+        currentYearToDateRevenue: "270",
+        priorYearToDateRevenue: "240",
+        yearToDateYearOverYearPercent: "12.5",
+        note: "-",
+      },
+    })]);
+
+    const query = {
+      subject: { kind: "listing_id" as const, listingId: activeIdentity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        effectiveAt: "2026-08-28T00:00:00.000Z",
+        assessmentMode: "effective" as const,
+      },
+    };
+    const result = await getMonthlyRevenue(persistence, {
+      ...query,
+      page: { limit: 12, order: "desc" },
+    });
+    const manifest = await getResearchManifest(persistence, query);
+
+    expect(result.freshness).toMatchObject({
+      basis: "standard_10th",
+      latestExpectedMonth: "2024-03",
+      statutoryDueDate: "2024-04-10",
+      latestDueStatus: "reported",
+    });
+    expect(result.window.endMonth).toBe("2024-03");
+    expect(result.items[0]?.revenueMonth).toBe("2024-03");
+    expect(manifest.datasets.find((dataset) => dataset.id === "monthly_revenue")).toEqual({
+      id: "monthly_revenue",
+      status: "available",
+    });
   });
 });
