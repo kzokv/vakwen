@@ -1462,7 +1462,7 @@ function deriveMetricForRecord(
   }
   if (metricId === "reconstructed_discrete_quarter") {
     const baseMetricId = metricParameterMetricId(parameters);
-    if (!baseMetricId) return withholding("missing_inputs", []);
+    if (!baseMetricId || record.periodicity !== "quarterly") return withholding("missing_inputs", []);
     if (!isDurationMetric(baseMetricId)) return withholding("incomparable_inputs", []);
     const value = discreteMetricValueForRecord(baseMetricId, record, recordFacts, recordsByToken, factsByPeriodId);
     if ("reason" in value) return withholding(value.reason, []);

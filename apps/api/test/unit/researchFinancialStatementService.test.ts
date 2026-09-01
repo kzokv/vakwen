@@ -875,6 +875,35 @@ describe("research financial-statement service", () => {
     expect(result.derivedOutcomes.every((metric) => metric.status === "returned" && metric.calculatedAt === "2026-09-01T00:00:00.000Z")).toBe(true);
   });
 
+  it("reconstructed discrete quarter: withholds annual duration metrics", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeAnnualRecord(identity, 2025, { revenue: "144" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "annual",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "reconstructed_discrete_quarter", parameters: { baseMetricId: "revenue" } }],
+    });
+
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({
+        status: "withheld",
+        metricId: "reconstructed_discrete_quarter",
+        reasonCode: "missing_inputs",
+      }),
+    ]);
+  });
+
   it("trailing-twelve-month: withholds instant balance-sheet metrics", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

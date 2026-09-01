@@ -243,6 +243,16 @@ describePostgres("research financial statements memory/Postgres parity", () => {
     const [latestQuarterly] = await postgres.listLatestResearchFinancialStatementRecords(quarterlyQuery);
     expect(latestQuarterly?.publicationContext.revisionId).toBe("mops-2026q2-r1");
 
+    const preAmendmentQuery = {
+      ...quarterlyQuery,
+      effectiveAt: "2026-08-15T00:00:00.000Z",
+    };
+    expect(await postgres.listLatestResearchFinancialStatementRecords(preAmendmentQuery)).toEqual(
+      await memory.listLatestResearchFinancialStatementRecords(preAmendmentQuery),
+    );
+    const [preAmendment] = await postgres.listLatestResearchFinancialStatementRecords(preAmendmentQuery);
+    expect(preAmendment?.publicationContext.revisionId).toBe("mops-2026q2-r0");
+
     const issuerAnnualQuery = {
       subject: { kind: "issuer_id" as const, issuerId: annual.issuerId },
       effectiveAt: "2026-08-20T00:00:00.000Z",

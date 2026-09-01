@@ -234,6 +234,38 @@ describe("research financial statements", () => {
     expect(resolveLatestResearchFinancialStatementRecords([original, amendment])).toEqual([amendment]);
   });
 
+  it("effective-time reads do not expose revisions before their own publication", async () => {
+    const persistence = new MemoryPersistence();
+    const original = makeRecord();
+    const amendment = makeRecord({
+      publicationContext: {
+        ...original.publicationContext,
+        revisionId: "mops-2026q2-r1",
+        revisionPublishedAt: "2026-08-16T09:00:00.000Z",
+        revisionSequence: 1,
+        processingId: "proc-2",
+        amendment: true,
+      },
+      provenance: {
+        ...original.provenance,
+        id: "prv_fin_stmt_2330_q2_amended",
+        contentHash: "sha256:fin-stmt-q2-amended",
+        retrievedAt: "2026-08-17T01:00:00.000Z",
+        processedAt: "2026-08-17T01:05:00.000Z",
+      },
+    });
+    await persistence.appendResearchFinancialStatementRecords([original, amendment]);
+
+    const [latest] = await persistence.listLatestResearchFinancialStatementRecords({
+      subject: { kind: "listing_id", listingId: original.listingId },
+      effectiveAt: "2026-08-15T00:00:00.000Z",
+      knowledgeAt: "2026-08-20T00:00:00.000Z",
+      periodicity: "quarterly",
+    });
+
+    expect(latest?.publicationContext.revisionId).toBe(original.publicationContext.revisionId);
+  });
+
   it("validation requires core statements but still preserves sector-extension and unmapped metadata", async () => {
     const persistence = new MemoryPersistence();
     const record = makeRecord({

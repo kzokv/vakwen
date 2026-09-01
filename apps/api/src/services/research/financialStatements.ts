@@ -415,7 +415,7 @@ export function materializeResearchFinancialStatementRecord(
     const unitRecord = fact.unitRef ? unitsById.get(fact.unitRef) : undefined;
     pushFact(statementKind, normalizeResearchFinancialStatementFact({
       listingId: input.listingId,
-      issuerId: input.contexts[0]?.entityIdentifiers[0] ?? input.listingId,
+      issuerId: input.issuerId,
       filingId: input.filing.filingId,
       revisionId: `${input.filing.filingId}:r${input.filing.revision}`,
       statementKind,
@@ -449,7 +449,7 @@ export function materializeResearchFinancialStatementRecord(
   }
   const record: ResearchFinancialStatementRecord = {
     listingId: input.listingId,
-    issuerId: input.contexts[0]?.entityIdentifiers[0] ?? input.listingId,
+    issuerId: input.issuerId,
     ticker: input.ticker,
     venue: input.venue,
     periodicity,

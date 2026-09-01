@@ -3,6 +3,7 @@ import {
   parseMopsFinancialStatementArtifact,
   type MopsFinancialStatementDescriptor,
 } from "../../src/services/research/providers/mopsXbrl.js";
+import { materializeResearchFinancialStatementRecord } from "../../src/services/research/financialStatements.js";
 
 const xbrlDescriptor: MopsFinancialStatementDescriptor = {
   listingId: "lst_2330_twse",
@@ -65,9 +66,14 @@ describe("MOPS XBRL provider parser", () => {
           </xbrli:entity>
           <xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period>
         </xbrli:context>
+        <xbrli:context id="ctx_instant">
+          <xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity>
+          <xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period>
+        </xbrli:context>
         <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
         <xbrli:unit id="twd_alias"><xbrli:measure>currency:TWD</xbrli:measure></xbrli:unit>
         <ifrs-full:Assets contextRef="ctx_consolidated" unitRef="twd">3450000</ifrs-full:Assets>
+        <ifrs-full:Inventories contextRef="ctx_instant" unitRef="twd">210000</ifrs-full:Inventories>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_consolidated" unitRef="twd">1234000</ifrs-full:RevenueFromContractsWithCustomers>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_individual" unitRef="twd">1111000</ifrs-full:RevenueFromContractsWithCustomers>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_typed_segment" unitRef="twd">222000</ifrs-full:RevenueFromContractsWithCustomers>
@@ -93,7 +99,9 @@ describe("MOPS XBRL provider parser", () => {
     expect(artifact.issues.taxonomyAmbiguity).toBe(false);
     expect(artifact.facts.map((fact) => fact.concept.localName)).toContain("RevenueFromContractsWithCustomers");
     expect(artifact.facts.find((fact) => fact.concept.localName === "GrossProfit")?.normalizedValue).toBe("");
-    expect(artifact.contexts).toHaveLength(4);
+    expect(artifact.contexts).toHaveLength(5);
+    expect(artifact.facts.find((fact) => fact.concept.localName === "Inventories")?.statementRole)
+      .toBe("balance_sheet");
     expect(artifact.contexts.find((context) => context.id === "ctx_typed_segment")?.dimensions).toEqual([
       { dimension: "custom:OperatingSegmentAxis", member: "custom:SegmentName:Foundry" },
     ]);
@@ -105,6 +113,15 @@ describe("MOPS XBRL provider parser", () => {
       ["{http://www.xbrl.org/2003/iso4217}TWD"],
       ["{http://www.xbrl.org/2003/iso4217}TWD"],
     ]);
+    const record = materializeResearchFinancialStatementRecord(artifact);
+    expect(record.issuerId).toBe(xbrlDescriptor.issuerId);
+    expect(record.statements.find((statement) => statement.kind === "balance_sheet")?.facts)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          issuerId: xbrlDescriptor.issuerId,
+          concept: expect.objectContaining({ qname: "ifrs-full:Inventories" }),
+        }),
+      ]));
   });
 
   it("ixbrl parser: preserve inline facts, scale, and taxonomy lineage → no quarter synthesis during parsing", () => {

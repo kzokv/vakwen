@@ -1722,7 +1722,7 @@ export class PostgresPersistence implements Persistence {
        FROM research.financial_statement_records
        WHERE ${selectorSql}
          AND periodicity = $2
-         AND filing_published_at <= $3::timestamptz
+         AND COALESCE(revision_published_at, filing_published_at) <= $3::timestamptz
          AND retrieved_at <= $4::timestamptz
          AND ($5::text IS NULL OR period_key >= $5::text)
          AND ($6::text IS NULL OR period_key <= $6::text)

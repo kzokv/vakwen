@@ -280,8 +280,21 @@ function extractUnits(content: string, namespaceMap: Readonly<Record<string, str
   return units;
 }
 
-function statementRoleForConcept(localName: string): MopsStatementRole {
-  return KNOWN_STATEMENT_ROLE_BY_CONCEPT.get(localName) ?? "unknown";
+function statementRoleForConcept(
+  localName: string,
+  namespaceUri: string | null,
+  context: MopsContextRecord | undefined,
+): MopsStatementRole {
+  const knownRole = KNOWN_STATEMENT_ROLE_BY_CONCEPT.get(localName);
+  if (knownRole) return knownRole;
+  if (
+    namespaceUri
+    && /^https?:\/\/xbrl\.ifrs\.org\/taxonomy\/.+\/ifrs-full\/?$/i.test(namespaceUri)
+    && context?.periodType === "instant"
+  ) {
+    return "balance_sheet";
+  }
+  return "unknown";
 }
 
 function buildFactRecord(
@@ -299,7 +312,7 @@ function buildFactRecord(
   const rawValue = stripMarkup(innerValue);
   return {
     id: `fact_${createHash("sha256").update([qname, contextRef, attributes.unitRef ?? "", rawValue].join("\u001f")).digest("hex").slice(0, 24)}`,
-    statementRole: statementRoleForConcept(localName),
+    statementRole: statementRoleForConcept(localName, namespaceMap[prefix] ?? null, context),
     concept: {
       qname,
       prefix,

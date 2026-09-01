@@ -1129,7 +1129,9 @@ export class MemoryPersistence implements Persistence {
           : record.issuerId === query.subject.issuerId;
         if (!subjectMatches) return false;
         if (record.periodicity !== query.periodicity) return false;
-        if (record.publicationContext.publishedAt > query.effectiveAt) return false;
+        const effectivePublicationAt = record.publicationContext.revisionPublishedAt
+          ?? record.publicationContext.publishedAt;
+        if (effectivePublicationAt > query.effectiveAt) return false;
         if (record.provenance.retrievedAt > query.knowledgeAt) return false;
         const periodKey = record.periodicity === "annual"
           ? String(record.fiscalPeriod.fiscalYear).padStart(4, "0")
