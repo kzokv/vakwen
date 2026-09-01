@@ -1037,7 +1037,11 @@ function selectedOutputFacts(
   record: ResearchFinancialStatementRecord,
   query: ResearchFinancialStatementsQuery,
 ): ResearchFinancialStatementFact[] {
-  return selectedStatementFacts(record, query.statements).filter((fact) => factMatchesMetricSelection(fact, query.metricSelection));
+  const sectorExtensionSelected = query.metricSelection.groups.includes("sector_extension");
+  return selectedStatementFacts(record, query.statements).filter((fact) => (
+    (sectorExtensionSelected && fact.statementKind === "sector_extension")
+    || factMatchesMetricSelection(fact, query.metricSelection)
+  ));
 }
 
 function factDateRange(fact: ResearchFinancialStatementFact) {

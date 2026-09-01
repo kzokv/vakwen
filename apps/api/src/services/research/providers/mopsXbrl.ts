@@ -351,6 +351,21 @@ function taxonomyVersionsForFacts(
   return [...candidates].filter((value) => value !== "").sort();
 }
 
+function hasTaxonomyAmbiguity(facts: readonly MopsFactRecord[]): boolean {
+  const versionsByFamily = new Map<string, Set<string>>();
+  for (const fact of facts) {
+    const namespace = fact.concept.namespaceUri;
+    if (!namespace) continue;
+    const versionMatch = /\b20\d{2}(?:[-/](?:Q?[1-4]|0[1-9]|1[0-2]))?(?:[-/]\d{2})?\b/.exec(namespace);
+    if (!versionMatch) continue;
+    const family = namespace.replace(versionMatch[0], "{version}");
+    const versions = versionsByFamily.get(family) ?? new Set<string>();
+    versions.add(versionMatch[0]);
+    versionsByFamily.set(family, versions);
+  }
+  return [...versionsByFamily.values()].some((versions) => versions.size > 1);
+}
+
 function hasBasisAmbiguity(facts: readonly MopsFactRecord[]): boolean {
   const basisByConcept = new Map<string, Set<string>>();
   for (const fact of facts) {
@@ -427,7 +442,7 @@ export function parseMopsFinancialStatementArtifact(
       unknownUnitIds,
       unmappedConcepts,
       basisAmbiguity: hasBasisAmbiguity(facts),
-      taxonomyAmbiguity: taxonomyVersions.length > 1,
+      taxonomyAmbiguity: hasTaxonomyAmbiguity(facts),
       contextAmbiguity: duplicateContextGroups.length > 0,
       missingStatementRoles,
     },

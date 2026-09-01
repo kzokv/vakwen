@@ -897,6 +897,47 @@ describe("research financial-statement service", () => {
     });
   });
 
+  it("sector-extension group: returns unmapped extension facts from the requested section", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const record = makeQuarterRecord(identity, 2026, 2, { revenue: "60" });
+    const extensionFact = normalizeResearchFinancialStatementFact({
+      listingId: identity.listing.id,
+      issuerId: identity.issuer.id,
+      filingId: record.publicationContext.filingId,
+      revisionId: record.publicationContext.revisionId,
+      statementKind: "sector_extension",
+      concept: { qname: "tifrs:BankCapitalAdequacyRatio", label: "Capital adequacy ratio" },
+      metric: { state: "unmapped", reason: "no_core_metric_mapping" },
+      contextId: "sector-extension",
+      period: { kind: "instant", instantAt: "2026-06-30T23:59:59.999Z" },
+      valueKind: "instant",
+      rawValue: "13.4",
+      unit: { state: "known", unitId: "pure" },
+    });
+    record.statements.push({ kind: "sector_extension", facts: [extensionFact], metadata: { sector: "financial_institution" } });
+    await persistence.appendResearchFinancialStatementRecords([record]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      statements: ["sector_extension"],
+      metricSelection: { base: "required_core", groups: ["sector_extension"], explicitMetricIds: [] },
+      derivedMetrics: [],
+    });
+
+    expect(result.periods[0]?.sourceFacts).toEqual([
+      expect.objectContaining({ statement: "sector_extension", concept: expect.objectContaining({ raw: "tifrs:BankCapitalAdequacyRatio" }) }),
+    ]);
+  });
+
   it("filters output facts by metric selection, preserves quality flags, and withholds missing derived inputs without zero fill", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

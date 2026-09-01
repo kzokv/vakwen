@@ -270,6 +270,18 @@ function periodLabel(period: ResearchFinancialStatementsOutput["periods"][number
   throw new Error(`Unsupported fiscal quarter: ${String(period.fiscalQuarter)}`);
 }
 
+function factMatchesSelectedBasis(
+  fact: ResearchFinancialStatementsOutput["periods"][number]["sourceFacts"][number],
+): boolean {
+  return Object.entries(fact.dimensions).every(([dimension, member]) => {
+    if (!/statementbasis|consolidated|separate|individual/i.test(`${dimension}:${member}`)) return false;
+    if (fact.filingBasis.normalized.state !== "present") return false;
+    return fact.filingBasis.normalized.value === "consolidated"
+      ? /consolidated/i.test(member) && !/separate|individual/i.test(member)
+      : /separate|individual/i.test(member) && !/consolidated/i.test(member);
+  });
+}
+
 function findFact(
   period: ResearchFinancialStatementsOutput["periods"][number],
   metricId: string,
@@ -279,7 +291,7 @@ function findFact(
     : `${period.fiscalYear}-${String(((period.fiscalQuarter - 1) * 3) + 1).padStart(2, "0")}-01`;
   return period.sourceFacts.find((fact) => (
     fact.metricId === metricId
-    && Object.keys(fact.dimensions).length === 0
+    && factMatchesSelectedBasis(fact)
     && fact.period.endDate === period.periodEndDate
     && (fact.period.startDate === null || fact.period.startDate === expectedStartDate)
   ));
@@ -305,7 +317,7 @@ function quarterlyRevenueObservation(
   if (period.fiscalQuarter !== 4) return null;
   const cumulative = period.sourceFacts.find((fact) => (
     fact.metricId === "revenue"
-    && Object.keys(fact.dimensions).length === 0
+    && factMatchesSelectedBasis(fact)
     && fact.period.startDate === `${period.fiscalYear}-01-01`
     && fact.period.endDate === period.periodEndDate
     && fact.value.state === "present"
@@ -314,7 +326,7 @@ function quarterlyRevenueObservation(
   const thirdQuarter = periods.find((candidate) => candidate.fiscalYear === period.fiscalYear && candidate.fiscalQuarter === 3);
   const priorCumulative = thirdQuarter?.sourceFacts.find((fact) => (
     fact.metricId === "revenue"
-    && Object.keys(fact.dimensions).length === 0
+    && factMatchesSelectedBasis(fact)
     && fact.period.startDate === `${period.fiscalYear}-01-01`
     && fact.period.endDate === thirdQuarter.periodEndDate
     && fact.value.state === "present"
@@ -346,10 +358,11 @@ function periodHasRequiredStatements(period: ResearchFinancialStatementsOutput["
 }
 
 function firstAmbiguityReason(periods: readonly ResearchFinancialStatementsOutput["periods"][number][]): string | null {
-  if (periods.some((period) => period.quality.unknownUnits.status === "present")) return "unknown_unit";
+  const revenueFacts = periods.flatMap((period) => period.sourceFacts.filter((fact) => fact.metricId === "revenue"));
+  if (revenueFacts.some((fact) => fact.unit.normalized.state === "missing")) return "unknown_unit";
   if (periods.some((period) => period.quality.ambiguousBasis.status === "present")) return "basis_ambiguity";
   if (periods.some((period) => period.quality.taxonomyChanges.status === "present")) return "taxonomy_ambiguity";
-  if (periods.some((period) => period.quality.duplicateContexts.status === "present")) return "context_ambiguity";
+  if (revenueFacts.some((fact) => fact.ambiguity.status === "duplicate_context")) return "context_ambiguity";
   if (periods.some((period) => !periodHasRequiredStatements(period))) return "missing_required_statement";
   return null;
 }
