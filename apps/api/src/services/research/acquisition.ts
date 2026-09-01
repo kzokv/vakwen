@@ -192,6 +192,16 @@ function timestampAtStartOfDay(date: string): string {
   return `${date}T00:00:00.000Z`;
 }
 
+function financialStatementPublishedAtTimestamp(value: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return new Date(`${value}T00:00:00+08:00`).toISOString();
+  }
+  if (value.includes("T") && !Number.isNaN(Date.parse(value))) {
+    return new Date(value).toISOString();
+  }
+  throw new Error(`Invalid financial statement publication date or timestamp: ${value}`);
+}
+
 function artifactAmbiguityFlags(
   artifact: MopsFinancialStatementArtifact,
 ): ResearchFinancialStatementAmbiguityFlag[] {
@@ -243,7 +253,7 @@ async function canonicalizeFinancialStatementArtifact(
               : "original"
           : "amendment",
         publishedAt: matchesLatestRevision
-          ? latestRevision!.publicationContext.publishedAt.slice(0, 10)
+          ? latestRevision!.publicationContext.publishedAt
           : artifact.filing.publishedAt,
       },
     };
@@ -319,10 +329,11 @@ async function canonicalizeFinancialStatementArtifact(
     ? String(artifact.filing.fiscalYear).padStart(4, "0")
     : `${String(artifact.filing.fiscalYear).padStart(4, "0")}-Q${artifact.filing.fiscalPeriod.slice(1)}`;
   const filingBasis = resolveMopsArtifactFilingBasis(artifact);
+  const publishedAt = financialStatementPublishedAtTimestamp(artifact.filing.publishedAt);
   const predecessorCandidates = artifact.filing.revision > 0
     ? await persistence.listLatestResearchFinancialStatementRecords({
         subject: { kind: "listing_id", listingId: artifact.listingId },
-        effectiveAt: timestampAtEndOfDay(artifact.filing.publishedAt),
+        effectiveAt: publishedAt,
         knowledgeAt: artifact.artifact.retrievedAt,
         periodicity: artifact.filing.fiscalPeriod === "annual" ? "annual" : "quarterly",
         filingBasis,
@@ -355,9 +366,9 @@ async function canonicalizeFinancialStatementArtifact(
     publicationContext: {
       filingId: artifact.filing.filingId,
       revisionId,
-      publishedAt: new Date(`${artifact.filing.publishedAt}T00:00:00+08:00`).toISOString(),
+      publishedAt,
       revisionPublishedAt: artifact.filing.revision > 0
-        ? new Date(`${artifact.filing.publishedAt}T00:00:00+08:00`).toISOString()
+        ? publishedAt
         : null,
       filingSequence: 0,
       revisionSequence: artifact.filing.revision,

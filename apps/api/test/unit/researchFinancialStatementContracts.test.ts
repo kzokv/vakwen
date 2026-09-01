@@ -55,16 +55,45 @@ describe("research financial-statement contracts", () => {
   });
 
   it("rejects request shapes that can exceed derived-outcome capacity", () => {
+    const derivedMetrics = [
+      { metricId: "gross_margin", parameters: {} },
+      { metricId: "operating_margin", parameters: {} },
+      { metricId: "net_margin", parameters: {} },
+      { metricId: "return_on_equity", parameters: {} },
+      { metricId: "return_on_assets", parameters: {} },
+      { metricId: "debt_to_equity", parameters: {} },
+      { metricId: "current_ratio", parameters: {} },
+      { metricId: "free_cash_flow", parameters: {} },
+      { metricId: "reconstructed_discrete_quarter", parameters: { baseMetricId: "revenue" } },
+      { metricId: "trailing_twelve_month", parameters: { baseMetricId: "revenue" } },
+      { metricId: "period_over_period_change", parameters: { baseMetricId: "revenue" } },
+    ];
     expect(() => researchFinancialStatementsQuerySchema.parse({
       subject: { kind: "listing_id", listingId: "lst_demo" },
       context: { knowledgeAt: "2026-09-01T00:00:00.000Z", effectiveAt: "2026-09-01T00:00:00.000Z", assessmentMode: "effective" },
       periodicity: "quarterly",
       page: { limit: 20, order: "desc" },
-      derivedMetrics: Array.from({ length: 11 }, (_, index) => ({
-        metricId: "gross_margin",
-        parameters: { variant: index },
-      })),
+      derivedMetrics,
     })).toThrow(/must not exceed 200 outcomes/);
+  });
+
+  it("rejects unsupported or invalid derived-metric parameters at the query boundary", () => {
+    const baseQuery = {
+      subject: { kind: "listing_id", listingId: "lst_demo" },
+      context: { knowledgeAt: "2026-09-01T00:00:00.000Z", effectiveAt: "2026-09-01T00:00:00.000Z", assessmentMode: "effective" },
+    };
+    expect(() => researchFinancialStatementsQuerySchema.parse({
+      ...baseQuery,
+      derivedMetrics: [{ metricId: "compound_annual_growth_rate", parameters: { baseMetricId: "revenue", windowPeriods: 1 } }],
+    })).toThrow();
+    expect(() => researchFinancialStatementsQuerySchema.parse({
+      ...baseQuery,
+      derivedMetrics: [{ metricId: "gross_margin", parameters: { variant: true } }],
+    })).toThrow();
+    expect(researchFinancialStatementsQuerySchema.parse({
+      ...baseQuery,
+      derivedMetrics: [{ metricId: "compound_annual_growth_rate", parameters: { baseMetricId: "revenue" } }],
+    }).derivedMetrics[0]?.parameters).toEqual({ baseMetricId: "revenue", windowPeriods: 3 });
   });
 
   it("accepts only wrapped structured tool results", () => {

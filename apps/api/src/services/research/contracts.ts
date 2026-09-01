@@ -627,6 +627,22 @@ const financialStatementDerivedMetricIdSchema = z.enum([
   "free_cash_flow",
 ]);
 const financialStatementScalarParameterSchema = z.union([z.string(), z.number(), z.boolean()]);
+const financialStatementBaseMetricIdSchema = z.enum([
+  "revenue",
+  "gross_profit",
+  "operating_income",
+  "net_income",
+  "assets",
+  "liabilities",
+  "equity",
+  "current_assets",
+  "current_liabilities",
+  "cash_and_cash_equivalents",
+  "interest_bearing_debt",
+  "operating_cash_flow",
+  "investing_cash_flow",
+  "capital_expenditure",
+]);
 const financialStatementMetricSelectionSchema = z.object({
   base: z.literal("required_core").default("required_core"),
   groups: z.array(financialStatementMetricGroupSchema).max(20).default([]),
@@ -647,10 +663,44 @@ const financialStatementMetricSelectionSchema = z.object({
     });
   }
 });
-const financialStatementDerivedMetricRequestSchema = z.object({
-  metricId: financialStatementDerivedMetricIdSchema,
-  parameters: z.record(z.string().min(1).max(120), financialStatementScalarParameterSchema).default({}),
+const financialStatementBaseMetricParametersSchema = z.object({
+  baseMetricId: financialStatementBaseMetricIdSchema,
 }).strict();
+const financialStatementNoParametersSchema = z.object({}).strict().default({});
+const financialStatementDerivedMetricRequestSchema = z.discriminatedUnion("metricId", [
+  z.object({
+    metricId: z.literal("reconstructed_discrete_quarter"),
+    parameters: financialStatementBaseMetricParametersSchema,
+  }).strict(),
+  z.object({
+    metricId: z.literal("trailing_twelve_month"),
+    parameters: financialStatementBaseMetricParametersSchema,
+  }).strict(),
+  z.object({
+    metricId: z.literal("period_over_period_change"),
+    parameters: financialStatementBaseMetricParametersSchema,
+  }).strict(),
+  z.object({
+    metricId: z.literal("compound_annual_growth_rate"),
+    parameters: z.object({
+      baseMetricId: financialStatementBaseMetricIdSchema,
+      windowPeriods: z.number().int().min(2).max(10).default(3),
+    }).strict(),
+  }).strict(),
+  ...([
+    "gross_margin",
+    "operating_margin",
+    "net_margin",
+    "return_on_equity",
+    "return_on_assets",
+    "debt_to_equity",
+    "current_ratio",
+    "free_cash_flow",
+  ] as const).map((metricId) => z.object({
+    metricId: z.literal(metricId),
+    parameters: financialStatementNoParametersSchema,
+  }).strict()),
+]);
 const financialStatementRangeSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("latest_periods"),

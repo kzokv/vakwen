@@ -99,6 +99,32 @@ describe("research financial statement acquisition", () => {
     expect(appendSpy).not.toHaveBeenCalled();
   });
 
+  it("unknown publication time: preserves the exact first-observation timestamp", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    const observedAt = "2026-08-31T17:30:00.000Z";
+    await runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors: [{
+        ...acquisitionDescriptor(1),
+        filing: { ...acquisitionDescriptor(1).filing, publishedAt: observedAt },
+      }],
+      fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
+      retrievedAt: observedAt,
+      acquisitionRunId: "exact-first-observation",
+    });
+
+    const records = await persistence.listResearchFinancialStatementRecords({
+      subject: { kind: "listing_id", listingId: "lst_1" },
+      effectiveAt: observedAt,
+      knowledgeAt: observedAt,
+      periodicity: "quarterly",
+      filingBasis: "consolidated",
+      startPeriod: "2026-Q2",
+      endPeriod: "2026-Q2",
+    });
+    expect(records[0]?.publicationContext.publishedAt).toBe(observedAt);
+  });
+
   it("changed scheduled artifact: promotes changes and restorations to new amendment revisions with lineage", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
@@ -385,7 +411,7 @@ describe("research financial statement acquisition", () => {
           periodStart: "2026-04-01",
           periodEnd: "2026-06-30",
           filingBasis: "consolidated",
-          publishedAt: "2026-09-01",
+          publishedAt: "2026-09-01T00:00:00.000Z",
         }),
       }),
     );
@@ -402,6 +428,13 @@ describe("research financial statement acquisition", () => {
     expect(descriptors.filter((descriptor) => descriptor.filing.fiscalPeriod === "annual")
       .map((descriptor) => descriptor.filing.fiscalYear)).toEqual([2023, 2023, 2024, 2024, 2025, 2025]);
     expect(descriptors.filter((descriptor) => descriptor.filing.fiscalPeriod !== "annual")).toHaveLength(16);
+
+    const afterMidnightTaiwan = buildCurrentMopsFinancialStatementDescriptors(
+      [identity],
+      new Date("2026-08-31T17:30:00.000Z"),
+    );
+    expect(afterMidnightTaiwan.every((descriptor) => descriptor.filing.publishedAt === "2026-08-31T17:30:00.000Z"))
+      .toBe(true);
 
     const postAnnualDue = buildCurrentMopsFinancialStatementDescriptors(
       [identity],

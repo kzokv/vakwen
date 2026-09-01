@@ -110,6 +110,7 @@ export function buildCurrentMopsFinancialStatementDescriptors(
   now = new Date(),
 ): MopsFinancialStatementDescriptor[] {
   const observedOn = taiwanDate(now);
+  const observedAt = now.toISOString();
   const targets = requiredFilingTargets(observedOn);
   return identities
     .filter((identity) => (
@@ -141,10 +142,10 @@ export function buildCurrentMopsFinancialStatementDescriptors(
           periodStart: target.periodStart,
           periodEnd: target.periodEnd,
           filingBasis,
-          // The direct artifact endpoint does not expose a filing timestamp in
-          // its URL contract. Use the first observation date conservatively;
-          // never backdate it to the statutory due date.
-          publishedAt: observedOn,
+          // The direct artifact endpoint does not expose a filing timestamp.
+          // Preserve the exact first-observation instant rather than making the
+          // artifact visible from the start of its Taiwan calendar date.
+          publishedAt: observedAt,
           // The canonicalizer compares content hashes with stored revisions and
           // promotes changed artifacts to the next amendment revision.
           revision: 0,

@@ -397,17 +397,20 @@ function buildSupportedOrWithheldConclusions(
   annuals: readonly ResearchFinancialStatementsOutput["periods"][number][],
   quarters: readonly ResearchFinancialStatementsOutput["periods"][number][],
   annualFreshness: ResearchFinancialStatementsOutput["freshness"]["state"],
+  truncation: { annual: boolean; quarterly: boolean },
 ) {
   const orderedAnnuals = [...annuals].sort((left, right) => left.fiscalYear - right.fiscalYear);
   const orderedQuarters = [...quarters].sort((left, right) => quarterSortValue(left) - quarterSortValue(right));
-  const annualReason = firstAmbiguityReason(orderedAnnuals);
-  const quarterlyReason = firstAmbiguityReason(orderedQuarters);
+  const annualReason = truncation.annual ? "source_facts_truncated" : firstAmbiguityReason(orderedAnnuals);
+  const quarterlyReason = truncation.quarterly ? "source_facts_truncated" : firstAmbiguityReason(orderedQuarters);
   const latestAnnual = orderedAnnuals.at(-1);
   const priorAnnual = latestAnnual
     ? orderedAnnuals.find((period) => period.fiscalYear === latestAnnual.fiscalYear - 1)
     : undefined;
-  const yoyReason = firstAmbiguityReason([priorAnnual, latestAnnual]
-    .filter((period): period is NonNullable<typeof period> => period !== undefined));
+  const yoyReason = truncation.annual
+    ? "source_facts_truncated"
+    : firstAmbiguityReason([priorAnnual, latestAnnual]
+        .filter((period): period is NonNullable<typeof period> => period !== undefined));
   const latestAnnualRevenue = latestAnnual ? numericFact(latestAnnual, "revenue") : null;
   const priorAnnualRevenue = priorAnnual ? numericFact(priorAnnual, "revenue") : null;
   const latestAnnualRevenueFact = latestAnnual ? findFact(latestAnnual, "revenue") : undefined;
@@ -551,7 +554,15 @@ export async function buildFinancialStatementFundamentalsResearchReport(
           reasonCodes: ["unsupported_sector"],
         },
       ]
-    : buildSupportedOrWithheldConclusions(annualStatements.periods, quarterlyStatements.periods, annualStatements.freshness.state);
+    : buildSupportedOrWithheldConclusions(
+        annualStatements.periods,
+        quarterlyStatements.periods,
+        annualStatements.freshness.state,
+        {
+          annual: annualStatements.page.truncatedByBudget,
+          quarterly: quarterlyStatements.page.truncatedByBudget,
+        },
+      );
   const evidenceProvenanceIds = [...new Set([
     ...annualStatements.provenanceIndex.map((item) => item.provenanceId),
     ...quarterlyStatements.provenanceIndex.map((item) => item.provenanceId),

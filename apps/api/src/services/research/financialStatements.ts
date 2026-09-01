@@ -233,11 +233,14 @@ export function applyResearchFinancialStatementTransform(
   return negative && normalized !== "0" ? `-${normalized}` : normalized;
 }
 
-function taiwanPublishedAtTimestamp(date: string): string {
-  if (!isIsoDate(date)) {
-    throw invalidResearchFinancialStatementRecord(`invalid published date ${date}`);
+function financialStatementPublishedAtTimestamp(value: string): string {
+  if (isIsoDate(value)) {
+    return new Date(`${value}T00:00:00+08:00`).toISOString();
   }
-  return new Date(`${date}T00:00:00+08:00`).toISOString();
+  if (value.includes("T") && !Number.isNaN(Date.parse(value))) {
+    return new Date(value).toISOString();
+  }
+  throw invalidResearchFinancialStatementRecord(`invalid published date or timestamp ${value}`);
 }
 
 function quarterForFilingPeriod(period: "annual" | "q1" | "q2" | "q3" | "q4"): 1 | 2 | 3 | 4 | null {
@@ -395,7 +398,7 @@ export function materializeResearchFinancialStatementRecord(
             ? `${input.filing.fiscalYear}-07-01`
             : `${input.filing.fiscalYear}-10-01`);
   const filingBasis = resolveMopsArtifactFilingBasis(input);
-  const publishedAt = taiwanPublishedAtTimestamp(input.filing.publishedAt);
+  const publishedAt = financialStatementPublishedAtTimestamp(input.filing.publishedAt);
   const issuesByContextSignature = new Set(
     input.issues.duplicateContextGroups.flatMap((group) => group.contextIds),
   );

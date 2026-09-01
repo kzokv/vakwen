@@ -252,6 +252,38 @@ describe("financial statement fundamentals report", () => {
     expect(markdown).toContain("- latest_revenue_yoy: supported");
   });
 
+  it("truncated source facts: withholds conclusions instead of treating retained facts as unique", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => {
+          const output = query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters);
+          output.page.truncatedByBudget = true;
+          return output;
+        },
+      },
+    );
+
+    expect(report.conclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "latest_revenue_yoy", status: "withheld", reasonCodes: ["source_facts_truncated"] }),
+      expect.objectContaining({ id: "multi_year_revenue_trend", status: "withheld", reasonCodes: ["source_facts_truncated"] }),
+      expect.objectContaining({ id: "quarterly_revenue_trend", status: "withheld", reasonCodes: ["source_facts_truncated"] }),
+    ]));
+  });
+
   it("comparative filing facts: report calculations select the current filing context", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
