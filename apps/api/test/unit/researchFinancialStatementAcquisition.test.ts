@@ -78,11 +78,44 @@ describe("research financial statement acquisition", () => {
 
     expect(maxActive).toBeLessThanOrEqual(4);
     expect(result).toMatchObject({ sourceCount: 6, recordCount: 5, failureCount: 1 });
-    expect(appendSpy).toHaveBeenCalledWith(expect.arrayContaining([
+    expect(appendSpy).toHaveBeenCalledTimes(5);
+    expect(appendSpy.mock.calls.flatMap(([records]) => records)).toEqual(expect.arrayContaining([
       expect.objectContaining({ listingId: "lst_0" }),
       expect.objectContaining({ listingId: "lst_5" }),
     ]));
-    expect(appendSpy.mock.calls[0]?.[0]).toHaveLength(5);
+    expect(appendSpy.mock.calls.every(([records]) => records.length === 1)).toBe(true);
+  });
+
+  it("persistence validation failure: isolates one filing and retains successful peers", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    const append = persistence.appendResearchFinancialStatementRecords.bind(persistence);
+    vi.spyOn(persistence, "appendResearchFinancialStatementRecords").mockImplementation(async (records) => {
+      if (records[0]?.listingId === "lst_1") throw new Error("duplicate fact id");
+      await append(records);
+    });
+
+    const result = await runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors: [acquisitionDescriptor(0), acquisitionDescriptor(1), acquisitionDescriptor(2)],
+      fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
+      retrievedAt: "2026-08-15T00:00:00.000Z",
+      acquisitionRunId: "persistence-isolation-run",
+    });
+
+    expect(result).toMatchObject({ sourceCount: 3, recordCount: 2, failureCount: 1 });
+    expect(result.failures[0]).toMatchObject({ listingId: "lst_1", message: "duplicate fact id" });
+    await expect(persistence.listResearchFinancialStatementRecords({
+      subject: { kind: "listing_id", listingId: "lst_0" },
+      effectiveAt: "2026-08-15T00:00:00.000Z",
+      knowledgeAt: "2026-08-15T00:00:00.000Z",
+      periodicity: "quarterly",
+    })).resolves.toHaveLength(1);
+    await expect(persistence.listResearchFinancialStatementRecords({
+      subject: { kind: "listing_id", listingId: "lst_2" },
+      effectiveAt: "2026-08-15T00:00:00.000Z",
+      knowledgeAt: "2026-08-15T00:00:00.000Z",
+      periodicity: "quarterly",
+    })).resolves.toHaveLength(1);
   });
 
   it("maintenance HTML: rejects an artifact with no required statement facts", async () => {

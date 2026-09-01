@@ -281,6 +281,55 @@ describe("research financial-statement service", () => {
     expect(statements.freshness.state).toBe("stale");
   });
 
+  it("freshness deadlines advance only after the Taiwan statutory day ends", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeAnnualRecord(identity, 2025, { revenue: "100" }),
+      makeQuarterRecord(identity, 2027, 1, { revenue: "25" }),
+    ]);
+    const context = (effectiveAt: string) => ({
+      knowledgeAt: "2027-09-01T00:00:00.000Z",
+      effectiveAt,
+      assessmentMode: "effective" as const,
+    });
+
+    const annualOnDeadline = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: context("2027-03-31T08:00:00.000Z"),
+      periodicity: "annual",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [],
+    });
+    const annualAfterDeadline = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: context("2027-04-01T00:00:00.000Z"),
+      periodicity: "annual",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [],
+    });
+    const quarterlyOnDeadline = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: context("2027-08-14T08:00:00.000Z"),
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [],
+    });
+    const quarterlyAfterDeadline = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: context("2027-08-15T00:00:00.000Z"),
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [],
+    });
+
+    expect(annualOnDeadline.freshness.state).toBe("current");
+    expect(annualAfterDeadline.freshness.state).toBe("stale");
+    expect(quarterlyOnDeadline.freshness.state).toBe("current");
+    expect(quarterlyAfterDeadline.freshness.state).toBe("stale");
+  });
+
   it("quarterly-only store: manifest reports financial statements available", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
@@ -1030,6 +1079,11 @@ describe("research financial-statement service", () => {
       expect.objectContaining({ status: "returned", metricId: "return_on_equity", value: "0.211765" }),
       expect.objectContaining({ status: "returned", metricId: "return_on_assets", value: "0.092308" }),
     ]);
+    expect(annual.provenanceIndex.map((item) => item.provenanceId)).toEqual(expect.arrayContaining([
+      "prv-mops-2023-annual-consolidated",
+      "prv-mops-2024-annual-consolidated",
+      "prv-mops-2025-annual-consolidated",
+    ]));
     expect(quarterly.periods[0]).toMatchObject({ fiscalYear: 2026, fiscalQuarter: 2 });
   });
 

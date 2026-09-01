@@ -137,13 +137,13 @@ function latestDueFinancialStatementPeriodEnd(
   const { year, month, day } = taiwanLocalDateParts(effectiveAt);
   const monthDay = `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   if (periodicity === "annual") {
-    const fiscalYear = monthDay >= "03-31" ? year - 1 : year - 2;
+    const fiscalYear = monthDay > "03-31" ? year - 1 : year - 2;
     return `${fiscalYear}-12-31`;
   }
-  if (monthDay >= "11-14") return `${year}-09-30`;
-  if (monthDay >= "08-14") return `${year}-06-30`;
-  if (monthDay >= "05-15") return `${year}-03-31`;
-  if (monthDay >= "03-31") return `${year - 1}-12-31`;
+  if (monthDay > "11-14") return `${year}-09-30`;
+  if (monthDay > "08-14") return `${year}-06-30`;
+  if (monthDay > "05-15") return `${year}-03-31`;
+  if (monthDay > "03-31") return `${year - 1}-12-31`;
   return `${year - 1}-09-30`;
 }
 
@@ -1859,7 +1859,13 @@ export async function getFinancialStatements(
         request.parameters,
         query.context.knowledgeAt,
       )));
-  const provenanceIndex = dedupeByKey(pageRecords.map((record) => ({
+  const pageRecordIds = new Set(pageRecords.map((record) => periodIdForRecord(record)));
+  const derivedObservationIds = new Set(derivedOutcomes.flatMap((outcome) => outcome.periodObservationIds));
+  const provenanceRecords = calculationRecords.filter((record) => (
+    pageRecordIds.has(periodIdForRecord(record))
+    || record.statements.some((section) => section.facts.some((fact) => derivedObservationIds.has(fact.id)))
+  ));
+  const provenanceIndex = dedupeByKey(provenanceRecords.map((record) => ({
     provenanceId: record.provenance.id,
     publisher: record.provenance.publisher,
     accessProvider: record.provenance.accessProvider,

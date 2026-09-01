@@ -1316,7 +1316,9 @@ export async function runOfficialFinancialStatementAcquisition(
             `Official MOPS financial statement artifact ${descriptor.sourceUrl} is missing required statement roles: ${parsed.issues.missingStatementRoles.join(",")}`,
           );
         }
-        records.push(await canonicalizeFinancialStatementArtifact(persistence, parsed));
+        const record = await canonicalizeFinancialStatementArtifact(persistence, parsed);
+        await persistence.appendResearchFinancialStatementRecords([record]);
+        records.push(record);
       } catch (error) {
         failures.push({
           listingId: descriptor.listingId,
@@ -1334,7 +1336,6 @@ export async function runOfficialFinancialStatementAcquisition(
   if (records.length === 0) {
     throw failures[0]?.error ?? new Error("Official MOPS financial statement acquisition produced no records");
   }
-  await persistence.appendResearchFinancialStatementRecords(records);
   return {
     acquisitionRunId,
     sourceCount: descriptors.length,
