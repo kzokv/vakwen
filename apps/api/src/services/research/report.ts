@@ -315,7 +315,7 @@ function quarterlyRevenueObservation(
     return Number.isFinite(value) ? { value, unit: direct.unit.normalized.value } : null;
   }
   if (period.fiscalQuarter !== 4) return null;
-  const cumulative = period.sourceFacts.find((fact) => (
+  const cumulativeCandidates = period.sourceFacts.filter((fact) => (
     fact.metricId === "revenue"
     && factMatchesSelectedBasis(fact)
     && fact.period.startDate === `${period.fiscalYear}-01-01`
@@ -324,18 +324,23 @@ function quarterlyRevenueObservation(
     && fact.unit.normalized.state === "present"
   ));
   const thirdQuarter = periods.find((candidate) => candidate.fiscalYear === period.fiscalYear && candidate.fiscalQuarter === 3);
-  const priorCumulative = thirdQuarter?.sourceFacts.find((fact) => (
+  const priorCumulativeCandidates = thirdQuarter?.sourceFacts.filter((fact) => (
     fact.metricId === "revenue"
     && factMatchesSelectedBasis(fact)
     && fact.period.startDate === `${period.fiscalYear}-01-01`
     && fact.period.endDate === thirdQuarter.periodEndDate
     && fact.value.state === "present"
     && fact.unit.normalized.state === "present"
-  ));
+  )) ?? [];
+  if (cumulativeCandidates.length !== 1 || priorCumulativeCandidates.length !== 1) return null;
+  const cumulative = cumulativeCandidates[0]!;
+  const priorCumulative = priorCumulativeCandidates[0]!;
   if (
-    cumulative?.value.state !== "present"
+    cumulative.ambiguity.status === "duplicate_context"
+    || priorCumulative.ambiguity.status === "duplicate_context"
+    || cumulative.value.state !== "present"
     || cumulative.unit.normalized.state !== "present"
-    || priorCumulative?.value.state !== "present"
+    || priorCumulative.value.state !== "present"
     || priorCumulative.unit.normalized.state !== "present"
     || cumulative.unit.normalized.value !== priorCumulative.unit.normalized.value
   ) return null;

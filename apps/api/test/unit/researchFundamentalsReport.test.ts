@@ -498,6 +498,24 @@ describe("financial statement fundamentals report", () => {
     );
 
     expect(report.conclusions.find((conclusion) => conclusion.id === "quarterly_revenue_trend")?.status).toBe("supported");
+
+    const duplicateQ4 = makeFact("2025-12-31", 2025, 4, "revenue", "999", "income");
+    duplicateQ4.observationId = "obs_revenue_2025_q4_duplicate";
+    duplicateQ4.period.startDate = "2025-01-01";
+    quarters.find((period) => period.fiscalYear === 2025 && period.fiscalQuarter === 4)!.sourceFacts.push(duplicateQ4);
+    const ambiguousReport = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+    expect(ambiguousReport.conclusions.find((conclusion) => conclusion.id === "quarterly_revenue_trend")?.status).toBe("withheld");
   });
 
   it("annual trend: withholds nonconsecutive years and periods without usable revenue", async () => {
