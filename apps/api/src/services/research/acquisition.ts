@@ -245,6 +245,41 @@ async function canonicalizeFinancialStatementArtifact(
   persistence: Persistence,
   artifact: MopsFinancialStatementArtifact,
 ): Promise<ResearchFinancialStatementRecord> {
+  const initialPeriodToken = artifact.filing.fiscalPeriod === "annual"
+    ? String(artifact.filing.fiscalYear).padStart(4, "0")
+    : `${String(artifact.filing.fiscalYear).padStart(4, "0")}-Q${artifact.filing.fiscalPeriod.slice(1)}`;
+  const initialFilingBasis = resolveMopsArtifactFilingBasis(artifact);
+  const existingRevisions = await persistence.listResearchFinancialStatementRecords({
+    subject: { kind: "listing_id", listingId: artifact.listingId },
+    effectiveAt: artifact.artifact.retrievedAt,
+    knowledgeAt: artifact.artifact.retrievedAt,
+    periodicity: artifact.filing.fiscalPeriod === "annual" ? "annual" : "quarterly",
+    filingBasis: initialFilingBasis,
+    startPeriod: initialPeriodToken,
+    endPeriod: initialPeriodToken,
+  });
+  const identicalRevision = existingRevisions.find((record) => record.provenance.contentHash === artifact.artifact.contentHash);
+  const latestRevisionSequence = existingRevisions.reduce(
+    (latest, record) => Math.max(latest, record.publicationContext.revisionSequence),
+    -1,
+  );
+  if (artifact.filing.revision === 0 && existingRevisions.length > 0) {
+    artifact = {
+      ...artifact,
+      filing: {
+        ...artifact.filing,
+        revision: identicalRevision?.publicationContext.revisionSequence ?? latestRevisionSequence + 1,
+        amendmentType: identicalRevision
+          ? identicalRevision.publicationContext.restatement
+            ? "restatement"
+            : identicalRevision.publicationContext.amendment
+              ? "amendment"
+              : "original"
+          : "amendment",
+        publishedAt: identicalRevision?.publicationContext.publishedAt.slice(0, 10) ?? artifact.filing.publishedAt,
+      },
+    };
+  }
   const unitsById = new Map(artifact.units.map((unit) => [unit.id, unit] as const));
   const duplicateContextIds = new Set(
     artifact.issues.duplicateContextGroups.flatMap((group) => group.contextIds),

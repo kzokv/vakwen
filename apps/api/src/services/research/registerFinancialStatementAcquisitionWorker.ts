@@ -53,24 +53,72 @@ function latestDueFiling(localDate: string): {
   return { fiscalYear: year - 1, fiscalPeriod: "q3", periodEnd: `${year - 1}-09-30`, season: 3 };
 }
 
+interface FilingTarget {
+  fiscalYear: number;
+  fiscalPeriod: MopsFinancialStatementDescriptor["filing"]["fiscalPeriod"];
+  periodStart: string;
+  periodEnd: string;
+  season: number;
+}
+
+function quarterTarget(fiscalYear: number, quarter: 1 | 2 | 3 | 4): FilingTarget {
+  const startMonth = ((quarter - 1) * 3) + 1;
+  const endMonth = quarter * 3;
+  const endDay = quarter === 1 || quarter === 4 ? 31 : 30;
+  return {
+    fiscalYear,
+    fiscalPeriod: `q${quarter}` as FilingTarget["fiscalPeriod"],
+    periodStart: `${fiscalYear}-${String(startMonth).padStart(2, "0")}-01`,
+    periodEnd: `${fiscalYear}-${String(endMonth).padStart(2, "0")}-${endDay}`,
+    season: quarter,
+  };
+}
+
+function previousQuarter(target: FilingTarget): FilingTarget {
+  const quarter = Number(target.fiscalPeriod.slice(1)) as 1 | 2 | 3 | 4;
+  return quarter === 1
+    ? quarterTarget(target.fiscalYear - 1, 4)
+    : quarterTarget(target.fiscalYear, (quarter - 1) as 1 | 2 | 3 | 4);
+}
+
+function requiredFilingTargets(localDate: string): FilingTarget[] {
+  const due = latestDueFiling(localDate);
+  const year = Number(localDate.slice(0, 4));
+  const monthDay = localDate.slice(5);
+  const latestAnnualYear = monthDay >= "03-31" ? year - 1 : year - 2;
+  const latestQuarter = due.fiscalPeriod === "annual"
+    ? quarterTarget(year - 1, 3)
+    : quarterTarget(due.fiscalYear, Number(due.fiscalPeriod.slice(1)) as 1 | 2 | 3 | 4);
+  const quarters: FilingTarget[] = [latestQuarter];
+  while (quarters.length < 8) quarters.push(previousQuarter(quarters.at(-1)!));
+  const annuals = Array.from({ length: 3 }, (_, index): FilingTarget => ({
+    fiscalYear: latestAnnualYear - index,
+    fiscalPeriod: "annual",
+    periodStart: `${latestAnnualYear - index}-01-01`,
+    periodEnd: `${latestAnnualYear - index}-12-31`,
+    season: 4,
+  }));
+  return [...annuals, ...quarters];
+}
+
 export function buildCurrentMopsFinancialStatementDescriptors(
   identities: readonly ResearchIdentityRecord[],
   now = new Date(),
 ): MopsFinancialStatementDescriptor[] {
   const observedOn = taiwanDate(now);
-  const due = latestDueFiling(observedOn);
+  const targets = requiredFilingTargets(observedOn);
   return identities
     .filter((identity) => (
       identity.listing.status === "active"
       && identity.security.type === "common_equity"
       && identity.eligibility.profile === "operating_company"
     ))
-    .map((identity) => {
+    .flatMap((identity) => targets.map((target) => {
       const sourceUrl = new URL(OFFICIAL_FINANCIAL_STATEMENT_BASE_URL);
       sourceUrl.searchParams.set("step", "1");
       sourceUrl.searchParams.set("CO_ID", identity.listing.ticker);
-      sourceUrl.searchParams.set("SYEAR", String(due.fiscalYear));
-      sourceUrl.searchParams.set("SSEASON", String(due.season));
+      sourceUrl.searchParams.set("SYEAR", String(target.fiscalYear));
+      sourceUrl.searchParams.set("SSEASON", String(target.season));
       sourceUrl.searchParams.set("REPORT_ID", "C");
       return {
         listingId: identity.listing.id,
@@ -80,22 +128,25 @@ export function buildCurrentMopsFinancialStatementDescriptors(
         sector: "operating_company" as const,
         sourceUrl: sourceUrl.toString(),
         filing: {
-          filingId: `mops:${identity.listing.ticker}:${due.fiscalYear}:${due.fiscalPeriod}`,
-          fiscalYear: due.fiscalYear,
-          fiscalPeriod: due.fiscalPeriod,
-          periodStart: `${due.fiscalYear}-01-01`,
-          periodEnd: due.periodEnd,
+          filingId: `mops:${identity.listing.ticker}:${target.fiscalYear}:${target.fiscalPeriod}`,
+          fiscalYear: target.fiscalYear,
+          fiscalPeriod: target.fiscalPeriod,
+          periodStart: target.periodStart,
+          periodEnd: target.periodEnd,
           filingBasis: "unknown" as const,
           // The direct artifact endpoint does not expose a filing timestamp in
           // its URL contract. Use the first observation date conservatively;
           // never backdate it to the statutory due date.
           publishedAt: observedOn,
+          // The canonicalizer compares content hashes with stored revisions and
+          // promotes changed artifacts to the next amendment revision.
           revision: 0,
           amendmentType: "unknown" as const,
         },
       };
-    })
-    .sort((left, right) => `${left.venue}:${left.ticker}`.localeCompare(`${right.venue}:${right.ticker}`));
+    }))
+    .sort((left, right) => `${left.venue}:${left.ticker}:${left.filing.periodEnd}:${left.filing.fiscalPeriod}`
+      .localeCompare(`${right.venue}:${right.ticker}:${right.filing.periodEnd}:${right.filing.fiscalPeriod}`));
 }
 
 export function createResearchFinancialStatementAcquisitionHandler(

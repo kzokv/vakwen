@@ -96,6 +96,36 @@ describe("research financial statement acquisition", () => {
     expect(appendSpy).not.toHaveBeenCalled();
   });
 
+  it("changed scheduled artifact: promotes the content to an amendment revision with lineage", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    const descriptor = acquisitionDescriptor(0);
+    await runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors: [descriptor],
+      fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
+      retrievedAt: "2026-08-15T00:00:00.000Z",
+    });
+    await runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors: [{ ...descriptor, filing: { ...descriptor.filing, publishedAt: "2026-08-20" } }],
+      fetchImpl: async () => new Response(validAcquisitionXbrl.replace(">60<", ">61<"), { status: 200 }),
+      retrievedAt: "2026-08-20T00:00:00.000Z",
+    });
+
+    const records = await persistence.listResearchFinancialStatementRecords({
+      subject: { kind: "listing_id", listingId: descriptor.listingId },
+      effectiveAt: "2026-08-21T00:00:00.000Z",
+      knowledgeAt: "2026-08-21T00:00:00.000Z",
+      periodicity: "quarterly",
+      filingBasis: "consolidated",
+      startPeriod: "2026-Q2",
+      endPeriod: "2026-Q2",
+    });
+    const amendment = records.find((record) => record.publicationContext.revisionSequence === 1);
+    const original = records.find((record) => record.publicationContext.revisionSequence === 0);
+    expect(amendment?.publicationContext).toMatchObject({ amendment: true, revisionSequence: 1 });
+    expect(amendment?.relations).toEqual([{ kind: "supersedes", targetRecordKey: researchFinancialStatementRecordKey(original!) }]);
+  });
+
   it("official MOPS acquisition: discrete quarter contexts stay discrete and emitted supersedes keys resolve to stored predecessors", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const q2Revision1Url = `${OFFICIAL_FINANCIAL_STATEMENT_BASE_URL}?co_id=2330&year=2026&season=2&rev=1`;
@@ -306,7 +336,8 @@ describe("research financial statement acquisition", () => {
       new Date("2026-09-01T00:00:00.000Z"),
     );
 
-    expect(descriptors).toEqual([
+    expect(descriptors).toHaveLength(11);
+    expect(descriptors).toContainEqual(
       expect.objectContaining({
         listingId: identity.listing.id,
         issuerId: identity.issuer.id,
@@ -317,12 +348,15 @@ describe("research financial statement acquisition", () => {
         filing: expect.objectContaining({
           fiscalYear: 2026,
           fiscalPeriod: "q2",
-          periodStart: "2026-01-01",
+          periodStart: "2026-04-01",
           periodEnd: "2026-06-30",
           filingBasis: "unknown",
           publishedAt: "2026-09-01",
         }),
       }),
-    ]);
+    );
+    expect(descriptors.filter((descriptor) => descriptor.filing.fiscalPeriod === "annual")
+      .map((descriptor) => descriptor.filing.fiscalYear)).toEqual([2023, 2024, 2025]);
+    expect(descriptors.filter((descriptor) => descriptor.filing.fiscalPeriod !== "annual")).toHaveLength(8);
   });
 });

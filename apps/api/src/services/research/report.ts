@@ -322,36 +322,15 @@ function buildSupportedOrWithheldConclusions(
 ) {
   const orderedAnnuals = [...annuals].sort((left, right) => left.fiscalYear - right.fiscalYear);
   const orderedQuarters = [...quarters].sort((left, right) => quarterSortValue(left) - quarterSortValue(right));
-  const commonReason = firstAmbiguityReason([...orderedAnnuals, ...orderedQuarters]);
-  if (commonReason) {
-    return [
-      {
-        id: "latest_revenue_yoy" as const,
-        status: "withheld" as const,
-        statement: "Latest due year-over-year financial statement conclusion is withheld.",
-        reasonCodes: [commonReason],
-      },
-      {
-        id: "multi_year_revenue_trend" as const,
-        status: "withheld" as const,
-        statement: "Multi-year financial statement trend is withheld.",
-        reasonCodes: [commonReason],
-      },
-      {
-        id: "quarterly_revenue_trend" as const,
-        status: "withheld" as const,
-        statement: "Quarterly financial statement trend is withheld.",
-        reasonCodes: [commonReason],
-      },
-    ];
-  }
+  const annualReason = firstAmbiguityReason(orderedAnnuals);
+  const quarterlyReason = firstAmbiguityReason(orderedQuarters);
   const latestAnnual = orderedAnnuals.at(-1);
   const priorAnnual = latestAnnual
     ? orderedAnnuals.find((period) => period.fiscalYear === latestAnnual.fiscalYear - 1)
     : undefined;
   const latestAnnualRevenue = latestAnnual ? numericFact(latestAnnual, "revenue") : null;
   const priorAnnualRevenue = priorAnnual ? numericFact(priorAnnual, "revenue") : null;
-  const yoyConclusion = annualFreshness !== "stale" && latestAnnual && priorAnnual && latestAnnualRevenue !== null && priorAnnualRevenue !== null && priorAnnualRevenue !== 0
+  const yoyConclusion = !annualReason && annualFreshness !== "stale" && latestAnnual && priorAnnual && latestAnnualRevenue !== null && priorAnnualRevenue !== null && priorAnnualRevenue !== 0
     ? {
         id: "latest_revenue_yoy" as const,
         status: "supported" as const,
@@ -362,7 +341,7 @@ function buildSupportedOrWithheldConclusions(
         id: "latest_revenue_yoy" as const,
         status: "withheld" as const,
         statement: "Latest due year-over-year financial statement conclusion is withheld.",
-        reasonCodes: [annualFreshness === "stale" ? "stale_financial_statements" : "insufficient_yoy_window"],
+        reasonCodes: [annualReason ?? (annualFreshness === "stale" ? "stale_financial_statements" : "insufficient_yoy_window")],
       };
   const annualYearsAreConsecutive = orderedAnnuals.every((period, index) => (
     index === 0 || period.fiscalYear === orderedAnnuals[index - 1]!.fiscalYear + 1
@@ -376,6 +355,7 @@ function buildSupportedOrWithheldConclusions(
   const annualRevenueIsComparable = annualRevenueUnits.every((unit): unit is string => unit !== null)
     && new Set(annualRevenueUnits).size === 1;
   const multiYearConclusion = orderedAnnuals.length >= FUNDAMENTALS_MINIMUM_WINDOWS.multiYearTrendAnnualPeriods
+    && !annualReason
     && annualYearsAreConsecutive
     && annualRevenueIsComparable
     ? {
@@ -388,7 +368,7 @@ function buildSupportedOrWithheldConclusions(
         id: "multi_year_revenue_trend" as const,
         status: "withheld" as const,
         statement: "Multi-year financial statement trend is withheld.",
-        reasonCodes: ["insufficient_multi_year_window"],
+        reasonCodes: [annualReason ?? "insufficient_multi_year_window"],
       };
   const quartersAreConsecutive = orderedQuarters.every((period, index) => {
     if (index === 0) return true;
@@ -404,6 +384,7 @@ function buildSupportedOrWithheldConclusions(
   const quarterlyRevenueIsComparable = quarterlyRevenueUnits.every((unit): unit is string => unit !== null)
     && new Set(quarterlyRevenueUnits).size === 1;
   const quarterlyConclusion = orderedQuarters.length >= FUNDAMENTALS_MINIMUM_WINDOWS.quarterlyTrendDiscreteQuarters
+    && !quarterlyReason
     && quartersAreConsecutive
     && quarterlyRevenueIsComparable
     ? {
@@ -416,7 +397,7 @@ function buildSupportedOrWithheldConclusions(
         id: "quarterly_revenue_trend" as const,
         status: "withheld" as const,
         statement: "Quarterly financial statement trend is withheld.",
-        reasonCodes: ["insufficient_quarterly_window"],
+        reasonCodes: [quarterlyReason ?? "insufficient_quarterly_window"],
       };
   return [yoyConclusion, multiYearConclusion, quarterlyConclusion];
 }

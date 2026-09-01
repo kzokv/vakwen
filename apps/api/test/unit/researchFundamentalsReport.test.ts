@@ -343,6 +343,37 @@ describe("financial statement fundamentals report", () => {
     }
   });
 
+  it("quarterly ambiguity: does not suppress clean annual conclusions", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+    quarters[0]!.quality.unknownUnits = { status: "present", reasonCodes: ["unknownUnits"], observationIds: [] };
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions.map((conclusion) => [conclusion.id, conclusion.status])).toEqual([
+      ["latest_revenue_yoy", "supported"],
+      ["multi_year_revenue_trend", "supported"],
+      ["quarterly_revenue_trend", "withheld"],
+    ]);
+  });
+
   it("annual trend: withholds nonconsecutive years and periods without usable revenue", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
