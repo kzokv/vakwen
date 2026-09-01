@@ -163,6 +163,7 @@ describe("MOPS XBRL provider parser", () => {
           <ix:nonFraction name="ifrs-full:CashFlowsFromUsedInOperatingActivities" contextRef="ctx_q2" unitRef="twd">66</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:PurchaseOfPropertyPlantAndEquipment" contextRef="ctx_q2" unitRef="twd" sign="-">25</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:DividendsPaidClassifiedAsFinancingActivities" contextRef="ctx_q2" unitRef="twd">10</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:AdjustmentsForReconcileProfitLoss" contextRef="ctx_q2" unitRef="twd">15</ix:nonFraction>
           <ix:nonNumeric name="custom:NarrativeDisclosure" contextRef="ctx_q2" continuedAt="continuation-1">Alpha <ix:exclude>remove me</ix:exclude></ix:nonNumeric>
           <ix:continuation id="continuation-1" continuedAt="continuation-2">Beta</ix:continuation>
           <ix:continuation id="continuation-2">Gamma</ix:continuation>
@@ -197,6 +198,8 @@ describe("MOPS XBRL provider parser", () => {
       .toBe("cash_flow_statement");
     expect(artifact.facts.find((fact) => fact.concept.localName === "DividendsPaidClassifiedAsFinancingActivities")?.statementRole)
       .toBe("cash_flow_statement");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "AdjustmentsForReconcileProfitLoss")?.statementRole)
+      .toBe("cash_flow_statement");
     expect(artifact.facts.find((fact) => fact.concept.localName === "NarrativeDisclosure")?.rawValue)
       .toBe("Alpha Beta Gamma");
     expect(artifact.facts.find((fact) => fact.concept.localName === "EquityAtBeginningOfPeriod")?.statementRole)
@@ -217,5 +220,29 @@ describe("MOPS XBRL provider parser", () => {
         acquisitionRunId: "financial-statements-test",
       },
     )).toThrow("references unknown context missing-context");
+  });
+
+  it("accepts single-quoted XML attributes", () => {
+    const artifact = parseMopsFinancialStatementArtifact(
+      `<xbrli:xbrl xmlns:xbrli='http://www.xbrl.org/2003/instance'
+        xmlns:ifrs-full='http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full'>
+        <xbrli:context id='single-context'>
+          <xbrli:entity><xbrli:identifier scheme='TWSE'>22099131</xbrli:identifier></xbrli:entity>
+          <xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period>
+        </xbrli:context>
+        <xbrli:unit id='twd'><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
+        <ifrs-full:Revenue contextRef='single-context' unitRef='twd'>10</ifrs-full:Revenue>
+      </xbrli:xbrl>`,
+      xbrlDescriptor,
+      {
+        retrievedAt: "2026-08-15T00:00:00.000Z",
+        acquisitionRunId: "financial-statements-test",
+      },
+    );
+
+    expect(artifact.contexts[0]?.id).toBe("single-context");
+    expect(artifact.facts).toEqual([
+      expect.objectContaining({ contextRef: "single-context", rawValue: "10" }),
+    ]);
   });
 });

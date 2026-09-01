@@ -720,6 +720,36 @@ describe("research financial-statement service", () => {
     expect(secondPage.freshness).toEqual(firstPage.freshness);
   });
 
+  it("publication dates project exact instants onto the Taiwan calendar", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60" }, {
+        publicationContext: { publishedAt: "2026-08-31T17:30:00.000Z" },
+      }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T18:00:00.000Z",
+        effectiveAt: "2026-09-01T18:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [],
+    });
+
+    expect(result.periods[0]).toMatchObject({
+      publishedAt: "2026-09-01",
+      filingDate: "2026-09-01",
+      acceptedAt: "2026-08-31T17:30:00.000Z",
+    });
+    expect(result.freshness.authoritativeAsOf).toBe("2026-09-01");
+  });
+
   it("maps canonical records to paged periods and derives ratios from source facts only", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

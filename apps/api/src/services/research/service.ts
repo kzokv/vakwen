@@ -125,6 +125,11 @@ function taiwanLocalDateParts(isoDateTime: string) {
   };
 }
 
+function taiwanCalendarDate(isoDateTime: string): string {
+  const { year, month, day } = taiwanLocalDateParts(isoDateTime);
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 function latestDueFinancialStatementPeriodEnd(
   effectiveAt: string,
   periodicity: "annual" | "quarterly",
@@ -1822,8 +1827,8 @@ export async function getFinancialStatements(
       fiscalQuarter: record.fiscalPeriod.fiscalQuarter,
       periodStartDate: record.fiscalPeriod.periodStart,
       periodEndDate: record.fiscalPeriod.periodEnd,
-      publishedAt: record.publicationContext.publishedAt.slice(0, 10),
-      filingDate: record.publicationContext.publishedAt.slice(0, 10),
+      publishedAt: taiwanCalendarDate(record.publicationContext.publishedAt),
+      filingDate: taiwanCalendarDate(record.publicationContext.publishedAt),
       acceptedAt: record.publicationContext.revisionPublishedAt ?? record.publicationContext.publishedAt,
       filingBasis: record.filingBasis,
       statements: record.statements.filter((section) => query.statements.includes(section.kind)).map((section) => section.kind),
@@ -1925,7 +1930,9 @@ export async function getFinancialStatements(
         : latestSelected!.fiscalPeriod.periodEnd < latestDueFinancialStatementPeriodEnd(identity.context.effectiveAt, query.periodicity)
           ? "stale"
           : "current",
-      authoritativeAsOf: latestSelected?.publicationContext.publishedAt.slice(0, 10) ?? null,
+      authoritativeAsOf: latestSelected
+        ? taiwanCalendarDate(latestSelected.publicationContext.publishedAt)
+        : null,
       latestAcceptedAt: latestSelected
         ? latestSelected.publicationContext.revisionPublishedAt ?? latestSelected.publicationContext.publishedAt
         : null,

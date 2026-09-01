@@ -142,8 +142,8 @@ const KNOWN_STATEMENT_ROLE_BY_CONCEPT = new Map<string, MopsStatementRole>([
 
 function parseAttributes(fragment: string): Record<string, string> {
   const attributes: Record<string, string> = {};
-  for (const match of fragment.matchAll(/([A-Za-z_][\w:.-]*)\s*=\s*"([^"]*)"/g)) {
-    attributes[match[1]] = match[2] ?? "";
+  for (const match of fragment.matchAll(/([A-Za-z_][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+    attributes[match[1]] = match[2] ?? match[3] ?? "";
   }
   return attributes;
 }
@@ -291,7 +291,7 @@ function statementRoleForConcept(
     if (context?.periodType === "instant") return "balance_sheet";
     if (context?.periodType === "duration") {
       if (
-        /CashFlows?|ClassifiedAs(?:Operating|Investing|Financing)Activities|ProceedsFrom|Payments(?:To|For)|PurchaseOf|AcquisitionOf|DisposalOf/i
+        /Cash|AdjustmentsFor|ReconcileProfitLoss|IncreaseDecreaseIn|ClassifiedAs(?:Operating|Investing|Financing)Activities|ProceedsFrom|Payments(?:To|For)|PurchaseOf|AcquisitionOf|DisposalOf/i
           .test(localName)
       ) {
         return "cash_flow_statement";
