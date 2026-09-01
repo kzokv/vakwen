@@ -901,6 +901,59 @@ describe("research financial-statement service", () => {
     expect(result.readiness).toEqual({ status: "withheld", reasonCodes: ["no_authoritative_filing"] });
   });
 
+  it("period-end range: loads predecessor lookback for derived metrics without widening output", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 1, { revenue: "28" }),
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "period_end_range", startDate: "2026-06-30", endDate: "2026-06-30" },
+      derivedMetrics: [{ metricId: "period_over_period_change", parameters: { baseMetricId: "revenue" } }],
+    });
+
+    expect(result.periods).toHaveLength(1);
+    expect(result.periods[0]).toMatchObject({ fiscalYear: 2026, fiscalQuarter: 2 });
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "period_over_period_change", value: "0.142857" }),
+    ]);
+  });
+
+  it("quarterly freshness: treats Q4 as due once the annual filing deadline passes", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 3, { revenue: "90" }),
+      makeQuarterRecord(identity, 2026, 4, { revenue: "130" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2027-04-15T00:00:00.000Z",
+        effectiveAt: "2027-04-15T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [],
+    });
+
+    expect(result.periods[0]).toMatchObject({ fiscalYear: 2026, fiscalQuarter: 4 });
+    expect(result.freshness.state).toBe("current");
+  });
+
   it("optional statement section: returns no periods when the selected filing has no requested section", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

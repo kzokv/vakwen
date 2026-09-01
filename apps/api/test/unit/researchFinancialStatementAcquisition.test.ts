@@ -362,5 +362,13 @@ describe("research financial statement acquisition", () => {
     expect(descriptors.filter((descriptor) => descriptor.filing.fiscalPeriod === "annual")
       .map((descriptor) => descriptor.filing.fiscalYear)).toEqual([2023, 2024, 2025]);
     expect(descriptors.filter((descriptor) => descriptor.filing.fiscalPeriod !== "annual")).toHaveLength(8);
+
+    const postAnnualDue = buildCurrentMopsFinancialStatementDescriptors(
+      [identity],
+      new Date("2026-04-15T00:00:00.000Z"),
+    );
+    expect(postAnnualDue.filter((descriptor) => descriptor.filing.fiscalPeriod !== "annual")).toContainEqual(
+      expect.objectContaining({ filing: expect.objectContaining({ fiscalYear: 2025, fiscalPeriod: "q4", periodEnd: "2025-12-31" }) }),
+    );
   });
 });

@@ -109,6 +109,7 @@ describe("MOPS XBRL provider parser", () => {
           <ix:nonFraction name="ifrs-full:CurrentAssets" contextRef="ctx_q2" unitRef="twd">700</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:CurrentLiabilities" contextRef="ctx_q2" unitRef="twd">350</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:InterestBearingBorrowings" contextRef="ctx_q2" unitRef="twd">120</ix:nonFraction>
+          <ix:nonFraction name="tifrs-bsci-ci:EquityAtBeginningOfPeriod" contextRef="ctx_q2" unitRef="twd">800</ix:nonFraction>
         </body>
       </html>`,
       {
@@ -133,6 +134,8 @@ describe("MOPS XBRL provider parser", () => {
       .every((fact) => fact.statementRole === "balance_sheet")).toBe(true);
     expect(artifact.facts.find((fact) => fact.concept.localName === "PurchaseOfPropertyPlantAndEquipment")?.statementRole)
       .toBe("cash_flow_statement");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "EquityAtBeginningOfPeriod")?.statementRole)
+      .toBe("equity_statement");
     expect(artifact.issues.missingStatementRoles).toEqual([]);
     expect(artifact.issues.taxonomyAmbiguity).toBe(false);
   });

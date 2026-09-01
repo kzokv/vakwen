@@ -90,7 +90,7 @@ function requiredFilingTargets(localDate: string): FilingTarget[] {
   const monthDay = localDate.slice(5);
   const latestAnnualYear = monthDay >= "03-31" ? year - 1 : year - 2;
   const latestQuarter = due.fiscalPeriod === "annual"
-    ? quarterTarget(year - 1, 3)
+    ? quarterTarget(due.fiscalYear, 4)
     : quarterTarget(due.fiscalYear, Number(due.fiscalPeriod.slice(1)) as 1 | 2 | 3 | 4);
   const quarters: FilingTarget[] = [latestQuarter];
   while (quarters.length < 8) quarters.push(previousQuarter(quarters.at(-1)!));

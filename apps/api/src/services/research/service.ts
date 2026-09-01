@@ -138,6 +138,7 @@ function latestDueFinancialStatementPeriodEnd(
   if (monthDay >= "11-14") return `${year}-09-30`;
   if (monthDay >= "08-14") return `${year}-06-30`;
   if (monthDay >= "05-15") return `${year}-03-31`;
+  if (monthDay >= "03-31") return `${year - 1}-12-31`;
   return `${year - 1}-09-30`;
 }
 
@@ -888,22 +889,6 @@ function selectFinancialStatementBasis(
   return { selected: "policy_selected", fallbackApplied: false, records: [...unknown] };
 }
 
-function financialPeriodToken(periodicity: ResearchFinancialStatementsQuery["periodicity"], date: string): string {
-  const year = date.slice(0, 4);
-  if (periodicity === "annual") return year;
-  const month = Number(date.slice(5, 7));
-  const quarter = month <= 3 ? 1 : month <= 6 ? 2 : month <= 9 ? 3 : 4;
-  return `${year}-Q${quarter}`;
-}
-
-function financialRangeToPeriodBounds(query: ResearchFinancialStatementsQuery): { startPeriod?: string; endPeriod?: string } {
-  if (query.range.kind === "latest_periods") return {};
-  return {
-    startPeriod: financialPeriodToken(query.periodicity, query.range.startDate),
-    endPeriod: financialPeriodToken(query.periodicity, query.range.endDate),
-  };
-}
-
 function buildFinancialStatementsNotApplicableResult(
   identity: Awaited<ReturnType<typeof getResearchIdentity>>,
   query: ResearchFinancialStatementsQuery,
@@ -1649,13 +1634,11 @@ export async function getFinancialStatements(
   if (availability.status !== "eligible") {
     return buildFinancialStatementsNotApplicableResult(identity, query);
   }
-  const bounds = financialRangeToPeriodBounds(query);
   const baseQuery = {
     subject: { kind: "listing_id" as const, listingId: identity.selector.listingId },
     knowledgeAt: identity.context.knowledgeAt,
     effectiveAt: identity.context.effectiveAt,
     periodicity: query.periodicity,
-    ...bounds,
   };
   const consolidated = query.filingBasis === "individual"
     ? []
@@ -1666,15 +1649,33 @@ export async function getFinancialStatements(
   const unknown = query.filingBasis === "policy_selected"
     ? await persistence.listLatestResearchFinancialStatementRecords({ ...baseQuery, filingBasis: "unknown" })
     : [];
-  const basisSelection = selectFinancialStatementBasis(consolidated, individual, unknown, query.filingBasis);
-  const selectedRecordsWithinRange = (() => {
-    if (query.range.kind !== "period_end_range") return basisSelection.records;
+  const recordsWithinRange = (records: readonly ResearchFinancialStatementRecord[]) => {
+    if (query.range.kind !== "period_end_range") return [...records];
     const { startDate, endDate } = query.range;
-    return basisSelection.records.filter((record) => (
+    return records.filter((record) => (
       record.fiscalPeriod.periodEnd >= startDate
       && record.fiscalPeriod.periodEnd <= endDate
     ));
+  };
+  const basisSelection = selectFinancialStatementBasis(
+    recordsWithinRange(consolidated),
+    recordsWithinRange(individual),
+    recordsWithinRange(unknown),
+    query.filingBasis,
+  );
+  const calculationRecords = (() => {
+    if (query.filingBasis === "consolidated") return consolidated;
+    if (query.filingBasis === "individual") return individual;
+    const selectedKnownBasis = basisSelection.records.find((record) => record.filingBasis !== "unknown")?.filingBasis;
+    if (selectedKnownBasis === "consolidated") {
+      return selectFinancialStatementBasis(consolidated, [], unknown, "policy_selected").records;
+    }
+    if (selectedKnownBasis === "individual") {
+      return selectFinancialStatementBasis([], individual, unknown, "policy_selected").records;
+    }
+    return unknown;
   })();
+  const selectedRecordsWithinRange = basisSelection.records;
   const selectedRecordsWithRequestedStatements = selectedRecordsWithinRange.filter((record) => (
     record.statements.some((section) => query.statements.includes(section.kind))
   ));
@@ -1729,8 +1730,11 @@ export async function getFinancialStatements(
       },
     };
   });
-  const recordsByKey = new Map(orderedSelected.map((record) => [periodIdForRecord(record), record] as const));
-  const factsByPeriodId = new Map(orderedSelected.map((record) => [periodIdForRecord(record), selectedStatementFacts(record, query.statements)] as const));
+  const calculationRecordsWithRequestedStatements = calculationRecords.filter((record) => (
+    record.statements.some((section) => query.statements.includes(section.kind))
+  ));
+  const recordsByKey = new Map(calculationRecordsWithRequestedStatements.map((record) => [periodIdForRecord(record), record] as const));
+  const factsByPeriodId = new Map(calculationRecordsWithRequestedStatements.map((record) => [periodIdForRecord(record), selectedStatementFacts(record, query.statements)] as const));
   const derivedOutcomes = query.page.cursor
     ? []
     : pageRecords.flatMap((record) => query.derivedMetrics.map((request) => deriveMetricForRecord(
@@ -1775,7 +1779,7 @@ export async function getFinancialStatements(
   const missingMetricCount = derivedOutcomes.filter((metric) => metric.status !== "returned").length;
   const readinessReasonCodes = dedupeByKey([
     ...(selectedRecordsWithRequestedStatements.length === 0 ? ["no_authoritative_filing"] : []),
-    ...(basisSelection.selected === "policy_selected" ? ["ambiguous_basis"] : []),
+    ...(selectedRecordsWithRequestedStatements.length > 0 && basisSelection.selected === "policy_selected" ? ["ambiguous_basis"] : []),
     ...gaps.map((gap) => gap.code),
     ...conflicts.map((conflict) => conflict.code),
   ], (value) => value);
