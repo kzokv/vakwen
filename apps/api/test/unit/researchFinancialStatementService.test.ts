@@ -576,9 +576,20 @@ describe("research financial-statement service", () => {
     const identity = makeIdentity();
     await persistence.appendResearchIdentityRecords([identity]);
     await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 1, {
+        equity: "90",
+        assets: "180",
+      }, {
+        valueKinds: {
+          equity: { taxonomyVersion: "2025" },
+          assets: { taxonomyVersion: "2025" },
+        },
+      }),
       makeQuarterRecord(identity, 2026, 2, {
         revenue: "100",
         gross_profit: "40",
+        net_income: "20",
+        assets: "200",
         interest_bearing_debt: "50",
         equity: "100",
         current_assets: "120",
@@ -590,6 +601,8 @@ describe("research financial-statement service", () => {
         valueKinds: {
           revenue: { valueKind: "discrete", taxonomyVersion: "2026" },
           gross_profit: { valueKind: "discrete", taxonomyVersion: "2025" },
+          net_income: { valueKind: "discrete", taxonomyVersion: "2026" },
+          assets: { taxonomyVersion: "2025" },
           interest_bearing_debt: { taxonomyVersion: "2026" },
           equity: { taxonomyVersion: "2025" },
           current_assets: { taxonomyVersion: "2026" },
@@ -614,6 +627,8 @@ describe("research financial-statement service", () => {
         { metricId: "debt_to_equity", parameters: {} },
         { metricId: "current_ratio", parameters: {} },
         { metricId: "free_cash_flow", parameters: {} },
+        { metricId: "return_on_equity", parameters: {} },
+        { metricId: "return_on_assets", parameters: {} },
       ],
     });
 
@@ -622,6 +637,8 @@ describe("research financial-statement service", () => {
       expect.objectContaining({ status: "withheld", metricId: "debt_to_equity", reasonCode: "incomparable_inputs" }),
       expect.objectContaining({ status: "withheld", metricId: "current_ratio", reasonCode: "incomparable_inputs" }),
       expect.objectContaining({ status: "withheld", metricId: "free_cash_flow", reasonCode: "incomparable_inputs" }),
+      expect.objectContaining({ status: "withheld", metricId: "return_on_equity", reasonCode: "incomparable_inputs" }),
+      expect.objectContaining({ status: "withheld", metricId: "return_on_assets", reasonCode: "incomparable_inputs" }),
     ]));
   });
 

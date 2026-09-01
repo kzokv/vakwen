@@ -1510,7 +1510,10 @@ function deriveMetricForRecord(
     if ("reason" in numerator) return withholding(numerator.reason, []);
     const denominator = averageBalanceMetricForRecord(metricId === "return_on_equity" ? "equity" : "assets", record, recordFacts, recordsInOrder, factsByPeriodId);
     if ("reason" in denominator) return withholding(denominator.reason, []);
-    if (numerator.unit !== denominator.unit) return withholding("incomparable_inputs", [...numerator.facts, ...denominator.facts].map((fact) => fact.id));
+    const formulaFacts = [...numerator.facts, ...denominator.facts];
+    if (numerator.unit !== denominator.unit || !factsHaveComparableTaxonomy(formulaFacts)) {
+      return withholding("incomparable_inputs", formulaFacts.map((fact) => fact.id));
+    }
     return returned(numerator.value / denominator.value, "ratio", [...numerator.facts, ...denominator.facts].map((fact) => fact.id), metricId);
   }
   return withholding("missing_inputs", []);
