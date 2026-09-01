@@ -1,5 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { z } from "zod";
 import type { AiConnectorScope } from "@vakwen/shared-types";
 import { Env } from "@vakwen/config";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -145,8 +146,15 @@ import {
   manageAdminMarketCalendarImportTool,
   updateAdminMarketCalendarSourceTool,
 } from "./adminCalendarTools.js";
-import { getMonthlyRevenue, getPriceSeries, getResearchIdentity, getResearchManifest } from "../services/research/service.js";
+import {
+  getFinancialStatements,
+  getMonthlyRevenue,
+  getPriceSeries,
+  getResearchIdentity,
+  getResearchManifest,
+} from "../services/research/service.js";
 import type {
+  ResearchFinancialStatementsQuery,
   ResearchIdentityQuery,
   ResearchMonthlyRevenueQuery,
   ResearchPriceSeriesQuery,
@@ -231,6 +239,48 @@ function wrapPriceSeriesCursor(
   return Buffer.from(JSON.stringify(wrapper), "utf8").toString("base64url");
 }
 
+function wrapFinancialStatementsCursor(
+  auth: McpAuthContext,
+  toolName: "get_financial_statements",
+  cursor: string | null,
+  secret: string | undefined,
+): string | null {
+  if (!cursor) return null;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    return cursor;
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    return cursor;
+  }
+  const payload = decoded as Record<string, unknown>;
+  if (!secret) {
+    throw routeError(503, "mcp_cursor_secret_unconfigured", "SESSION_SECRET is required for MCP cursor signing");
+  }
+  const wrapper = {
+    version: payload.version,
+    binding: createHmac("sha256", secret)
+      .update("vakwen:mcp-financial-statements-cursor:v1\0")
+      .update(JSON.stringify({
+        sessionUserId: auth.sessionUserId,
+        clientId: auth.clientId,
+        scopes: [...auth.scopes].sort(),
+        toolName,
+        cursor,
+        issuedAt: payload.issuedAt,
+        boundaryPeriodEndDate: payload.boundaryPeriodEndDate,
+        version: payload.version,
+      }))
+      .digest("base64url"),
+    issuedAt: payload.issuedAt,
+    boundaryPeriodEndDate: payload.boundaryPeriodEndDate,
+    innerCursor: cursor,
+  };
+  return Buffer.from(JSON.stringify(wrapper), "utf8").toString("base64url");
+}
+
 function unwrapPriceSeriesCursor(
   auth: McpAuthContext,
   toolName: "get_price_series",
@@ -276,6 +326,51 @@ function unwrapPriceSeriesCursor(
   return payload.innerCursor;
 }
 
+function unwrapFinancialStatementsCursor(
+  auth: McpAuthContext,
+  toolName: "get_financial_statements",
+  cursor: string | undefined,
+  secret: string | undefined,
+): string | undefined {
+  if (!cursor) return cursor;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw routeError(422, "research_cursor_invalid", "The financial-statements cursor is not an authenticated MCP cursor");
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    throw routeError(422, "research_cursor_invalid", "The financial-statements cursor is not an authenticated MCP cursor");
+  }
+  const payload = decoded as Record<string, unknown>;
+  if (typeof payload.innerCursor !== "string") {
+    throw routeError(422, "research_cursor_invalid", "The financial-statements cursor is not an authenticated MCP cursor");
+  }
+  if (!secret) {
+    throw routeError(503, "mcp_cursor_secret_unconfigured", "SESSION_SECRET is required for MCP cursor verification");
+  }
+  const expectedBinding = createHmac("sha256", secret)
+    .update("vakwen:mcp-financial-statements-cursor:v1\0")
+    .update(JSON.stringify({
+      sessionUserId: auth.sessionUserId,
+      clientId: auth.clientId,
+      scopes: [...auth.scopes].sort(),
+      toolName,
+      cursor: payload.innerCursor,
+      issuedAt: payload.issuedAt,
+      boundaryPeriodEndDate: payload.boundaryPeriodEndDate,
+      version: payload.version,
+    }))
+    .digest("base64url");
+  const receivedBinding = typeof payload.binding === "string" ? payload.binding : "";
+  const bindingMatches = Buffer.byteLength(receivedBinding) === Buffer.byteLength(expectedBinding)
+    && timingSafeEqual(Buffer.from(receivedBinding), Buffer.from(expectedBinding));
+  if (!bindingMatches) {
+    throw routeError(422, "research_cursor_invalid", "The financial-statements cursor does not match the authenticated MCP context");
+  }
+  return payload.innerCursor;
+}
+
 function researchToolSummary(toolName: McpToolName, value: Record<string, unknown>): string | undefined {
   if (toolName === "get_research_manifest") {
     const selector = value.selector as { listingId?: string } | undefined;
@@ -300,6 +395,12 @@ function researchToolSummary(toolName: McpToolName, value: Record<string, unknow
     const freshness = value.freshness as { latestExpectedMonth?: string; latestDueStatus?: string } | undefined;
     return `Monthly revenue for ${selector?.listingId ?? "unknown listing"}: ${items.length} months returned; latest expected ${freshness?.latestExpectedMonth ?? "unknown"} is ${freshness?.latestDueStatus ?? "unknown"}.`;
   }
+  if (toolName === "get_financial_statements") {
+    const selector = value.selector as { listingId?: string } | undefined;
+    const periods = Array.isArray(value.periods) ? value.periods : [];
+    const readiness = value.readiness as { status?: string } | undefined;
+    return `Financial statements for ${selector?.listingId ?? "unknown listing"}: ${periods.length} filing periods returned; readiness ${readiness?.status ?? "unknown"}.`;
+  }
   return undefined;
 }
 
@@ -322,6 +423,13 @@ function buildToolErrorResult(
     structuredContent: wrapResearchResult ? { result: structuredContent } : structuredContent,
     isError: true,
   };
+}
+
+function unwrapZodObjectShape(schema: unknown): z.ZodRawShape {
+  if (schema instanceof z.ZodObject) return schema.shape;
+  if (schema instanceof z.ZodEffects) return unwrapZodObjectShape(schema.innerType());
+  if (schema instanceof z.ZodDefault) return unwrapZodObjectShape(schema.removeDefault());
+  throw new Error("MCP tool input schema must resolve to a Zod object");
 }
 
 function extractRequestedContextUserId(args: unknown): string | undefined {
@@ -632,6 +740,45 @@ export async function registerMcpRoutes(
         case "get_monthly_revenue":
           result = await getMonthlyRevenue(app.persistence, args as ResearchMonthlyRevenueQuery);
           break;
+        case "get_financial_statements": {
+          const cursorSecret = app.oauthConfig?.sessionSecret ?? Env.SESSION_SECRET;
+          result = await getFinancialStatements(app.persistence, {
+            ...(args as ResearchFinancialStatementsQuery),
+            page: {
+              ...(args as ResearchFinancialStatementsQuery).page,
+              cursor: unwrapFinancialStatementsCursor(
+                auth,
+                "get_financial_statements",
+                (args as ResearchFinancialStatementsQuery).page.cursor,
+                cursorSecret,
+              ),
+            },
+          });
+          if (
+            result
+            && typeof result === "object"
+            && !Array.isArray(result)
+            && "page" in result
+            && result.page
+            && typeof result.page === "object"
+            && !Array.isArray(result.page)
+          ) {
+            const page = result.page as { nextCursor?: string | null };
+            result = {
+              ...result,
+              page: {
+                ...page,
+                nextCursor: wrapFinancialStatementsCursor(
+                  auth,
+                  "get_financial_statements",
+                  page.nextCursor ?? null,
+                  cursorSecret,
+                ),
+              },
+            };
+          }
+          break;
+        }
         case "get_portfolio_overview":
           result = await getPortfolioOverview(
             { app, requestContext, tradingCalendar: app.tradingCalendarCache },
@@ -1161,7 +1308,8 @@ export async function registerMcpRoutes(
       const isResearchTool = toolName === "get_research_manifest"
         || toolName === "get_research_identity"
         || toolName === "get_price_series"
-        || toolName === "get_monthly_revenue";
+        || toolName === "get_monthly_revenue"
+        || toolName === "get_financial_statements";
       return buildToolResult(
         isResearchTool ? { result: adapted } : adapted,
         researchToolSummary(toolName, adapted),
@@ -1193,7 +1341,8 @@ export async function registerMcpRoutes(
           toolName === "get_research_manifest"
             || toolName === "get_research_identity"
             || toolName === "get_price_series"
-            || toolName === "get_monthly_revenue",
+            || toolName === "get_monthly_revenue"
+            || toolName === "get_financial_statements",
         );
       }
       throw error;
@@ -1222,7 +1371,7 @@ export async function registerMcpRoutes(
         tool.name,
         {
           description: tool.description,
-          inputSchema: tool.inputSchema.shape,
+          inputSchema: unwrapZodObjectShape(tool.inputSchema),
           outputSchema: tool.outputSchema,
           annotations: tool.annotations,
           _meta: tool._meta

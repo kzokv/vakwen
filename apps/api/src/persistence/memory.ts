@@ -93,6 +93,17 @@ import {
   type ResearchMonthlyRevenueRecord,
   type ResearchMonthlyRevenueRecordQuery,
 } from "../services/research/monthlyRevenue.js";
+import {
+  materializeResearchFinancialStatementRecord,
+  type ResearchFinancialStatementAppendInput,
+  researchFinancialStatementRecordKey,
+  researchFinancialStatementRecordSortOrder,
+  resolveLatestResearchFinancialStatementRecords,
+  validateResearchFinancialStatementQuery,
+  validateResearchFinancialStatementRecord,
+  type ResearchFinancialStatementRecord,
+  type ResearchFinancialStatementRecordQuery,
+} from "../services/research/financialStatements.js";
 import type {
   AdminAuditLogResponse,
   AdminInviteListResponse,
@@ -701,6 +712,7 @@ export class MemoryPersistence implements Persistence {
   private readonly researchIdentityRecords = new Map<string, ResearchIdentityRecord>();
   private readonly researchPriceRecords = new Map<string, ResearchPriceRecord>();
   private readonly researchMonthlyRevenueRecords = new Map<string, ResearchMonthlyRevenueRecord>();
+  private readonly researchFinancialStatementRecords = new Map<string, ResearchFinancialStatementRecord>();
   private readonly stores = new Map<string, Store>();
   private readonly idempotencyKeys = new Map<string, Set<string>>();
   private readonly dailyBars: MemoryDailyBar[] = [];
@@ -1088,6 +1100,54 @@ export class MemoryPersistence implements Persistence {
   ): Promise<ResearchMonthlyRevenueRecord[]> {
     return resolveLatestMonthlyRevenueRecords(
       await this.listResearchMonthlyRevenueRecords(query),
+    ).map((record) => structuredClone(record));
+  }
+
+  async appendResearchFinancialStatementRecords(
+    records: readonly ResearchFinancialStatementAppendInput[],
+  ): Promise<void> {
+    const materialized = records.map((record) => materializeResearchFinancialStatementRecord(record));
+    for (const record of materialized) {
+      validateResearchFinancialStatementRecord(record);
+    }
+    for (const record of materialized) {
+      const key = researchFinancialStatementRecordKey(record);
+      if (!this.researchFinancialStatementRecords.has(key)) {
+        this.researchFinancialStatementRecords.set(key, structuredClone(record));
+      }
+    }
+  }
+
+  async listResearchFinancialStatementRecords(
+    query: ResearchFinancialStatementRecordQuery,
+  ): Promise<ResearchFinancialStatementRecord[]> {
+    validateResearchFinancialStatementQuery(query);
+    return [...this.researchFinancialStatementRecords.values()]
+      .filter((record) => {
+        const subjectMatches = query.subject.kind === "listing_id"
+          ? record.listingId === query.subject.listingId
+          : record.issuerId === query.subject.issuerId;
+        if (!subjectMatches) return false;
+        if (record.periodicity !== query.periodicity) return false;
+        if (record.publicationContext.publishedAt > query.effectiveAt) return false;
+        if (record.provenance.retrievedAt > query.knowledgeAt) return false;
+        const periodKey = record.periodicity === "annual"
+          ? String(record.fiscalPeriod.fiscalYear).padStart(4, "0")
+          : `${String(record.fiscalPeriod.fiscalYear).padStart(4, "0")}-Q${record.fiscalPeriod.fiscalQuarter}`;
+        if (query.startPeriod && periodKey < query.startPeriod) return false;
+        if (query.endPeriod && periodKey > query.endPeriod) return false;
+        if (query.filingBasis && record.filingBasis !== query.filingBasis) return false;
+        return true;
+      })
+      .sort(researchFinancialStatementRecordSortOrder)
+      .map((record) => structuredClone(record));
+  }
+
+  async listLatestResearchFinancialStatementRecords(
+    query: ResearchFinancialStatementRecordQuery,
+  ): Promise<ResearchFinancialStatementRecord[]> {
+    return resolveLatestResearchFinancialStatementRecords(
+      await this.listResearchFinancialStatementRecords(query),
     ).map((record) => structuredClone(record));
   }
 

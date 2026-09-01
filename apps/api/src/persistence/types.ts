@@ -49,6 +49,11 @@ import type {
   ResearchMonthlyRevenueRecordQuery,
 } from "../services/research/monthlyRevenue.js";
 import type {
+  ResearchFinancialStatementAppendInput,
+  ResearchFinancialStatementRecord,
+  ResearchFinancialStatementRecordQuery,
+} from "../services/research/financialStatements.js";
+import type {
   AccountingStore,
   BookedTradeEvent,
   CashLedgerEntry,
@@ -2867,6 +2872,13 @@ export interface Persistence {
   appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void>;
   listResearchMonthlyRevenueRecords(query: ResearchMonthlyRevenueRecordQuery): Promise<ResearchMonthlyRevenueRecord[]>;
   listLatestResearchMonthlyRevenueRecords(query: ResearchMonthlyRevenueRecordQuery): Promise<ResearchMonthlyRevenueRecord[]>;
+  appendResearchFinancialStatementRecords(records: readonly ResearchFinancialStatementAppendInput[]): Promise<void>;
+  listResearchFinancialStatementRecords(
+    query: ResearchFinancialStatementRecordQuery,
+  ): Promise<ResearchFinancialStatementRecord[]>;
+  listLatestResearchFinancialStatementRecords(
+    query: ResearchFinancialStatementRecordQuery,
+  ): Promise<ResearchFinancialStatementRecord[]>;
   /**
    * Resolve an existing user by email or create a new one.
    * Returns the internal UUID for the user.

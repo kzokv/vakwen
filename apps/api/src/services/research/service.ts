@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import type { MarketCalendarVersionRecord, Persistence } from "../../persistence/types.js";
 import type {
+  ResearchFinancialStatementsOutput,
+  ResearchFinancialStatementsQuery,
+  ResearchFinancialStatementsQueryInput,
   ResearchIdentityQuery,
   ResearchPriceMetricResult,
   ResearchPriceSeriesQuery,
@@ -10,6 +13,16 @@ import type {
   ResearchMonthlyRevenueQuery,
   ResearchTemporalContext,
 } from "./contracts.js";
+import {
+  researchFinancialStatementsOutputSchema,
+  researchFinancialStatementsQuerySchema,
+} from "./contracts.js";
+import {
+  researchFinancialStatementPeriodKey,
+  type ResearchFinancialStatementFact,
+  type ResearchFinancialStatementMetricId,
+  type ResearchFinancialStatementRecord,
+} from "./financialStatements.js";
 import {
   researchIdentityHistoryPosition,
   researchIdentityRecordSortOrder,
@@ -67,6 +80,26 @@ const RESEARCH_PRICE_RUNTIME_POLICY_VERSION = "canonical-store-only/1.0.0";
 const METRIC_LINEAGE_MAX_RETURNED_OBSERVATIONS = 64;
 const DEFAULT_MONTHLY_REVENUE_MONTHS = 24;
 const MAX_MONTHLY_REVENUE_WINDOW_MONTHS = 120;
+const FINANCIAL_STATEMENTS_CURSOR_TTL_MS = 24 * 60 * 60 * 1000;
+const RESEARCH_FINANCIAL_STATEMENTS_CURSOR_VERSION = 1;
+const RESEARCH_FINANCIAL_STATEMENTS_CURSOR_PURPOSE = "canonical_research_financial_statements_read";
+const RESEARCH_FINANCIAL_STATEMENTS_CONTRACT_VERSION = "research-financial-statements/1.0.0";
+const RESEARCH_FINANCIAL_STATEMENTS_DATASET_VERSION = "financial_statements/1.0.0";
+const RESEARCH_FINANCIAL_STATEMENTS_POLICY_VERSION = "mops-xbrl-canonical-store/1.0.0";
+const FINANCIAL_STATEMENT_DEFAULT_POLICY_ID = "mops-xbrl-basis-selection/1.0.0";
+
+type ResearchFinancialStatementPeriod = ResearchFinancialStatementsOutput["periods"][number];
+type ResearchFinancialStatementDerivedOutcome = ResearchFinancialStatementsOutput["derivedOutcomes"][number];
+type ResearchFinancialStatementGap = ResearchFinancialStatementsOutput["gaps"][number];
+type ResearchFinancialStatementConflict = ResearchFinancialStatementsOutput["conflicts"][number];
+type ResearchFinancialStatementRecovery = ResearchFinancialStatementsOutput["recovery"][number];
+type ResearchFinancialStatementsAvailability = ResearchFinancialStatementsOutput["identity"]["availability"];
+type FinancialMetricValue = {
+  facts: ResearchFinancialStatementFact[];
+  value: number;
+  unit: string;
+};
+type FinancialMetricFailureReason = "missing_inputs" | "unknown_unit" | "ambiguous_inputs" | "incomparable_inputs";
 
 const taiwanLocalDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Taipei",
@@ -98,6 +131,18 @@ function shiftMonth(month: string, delta: number): string {
   const [yearPart, monthPart] = month.split("-");
   const absolute = (Number(yearPart) * 12) + Number(monthPart) - 1 + delta;
   return formatMonth(Math.floor(absolute / 12), (absolute % 12) + 1);
+}
+
+function dedupeByKey<T>(items: readonly T[], keyFor: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+  for (const item of items) {
+    const key = keyFor(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+  return deduped;
 }
 
 function monthsInclusive(startMonth: string, endMonth: string): number {
@@ -621,6 +666,728 @@ function latestApplicableRevenueMonth(identity: ResearchIdentityResult): string 
   return inactiveMonth && inactiveMonth < effectiveMonth ? inactiveMonth : effectiveMonth;
 }
 
+function displayNameFromIdentity(identity: Awaited<ReturnType<typeof getResearchIdentity>>): string | null {
+  const displayFact = identity.identity.facts.find((fact) => fact.field === "display_name");
+  if (displayFact?.normalized.state === "present") return displayFact.normalized.value;
+  const legalFact = identity.identity.facts.find((fact) => fact.field === "legal_name");
+  return legalFact?.normalized.state === "present" ? legalFact.normalized.value : null;
+}
+
+function financialStatementsDefaultLimit(periodicity: ResearchFinancialStatementsQuery["periodicity"]): number {
+  return periodicity === "annual" ? 3 : 8;
+}
+
+function financialStatementsMaxLimit(periodicity: ResearchFinancialStatementsQuery["periodicity"]): number {
+  return periodicity === "annual" ? 10 : 20;
+}
+
+function financialStatementsRangeRequestedCount(query: ResearchFinancialStatementsQuery): number {
+  return query.range.kind === "latest_periods" ? (query.range.count ?? financialStatementsDefaultLimit(query.periodicity)) : query.page.limit;
+}
+
+function financialStatementSortOrder(
+  left: ResearchFinancialStatementRecord,
+  right: ResearchFinancialStatementRecord,
+): number {
+  return right.fiscalPeriod.periodEnd.localeCompare(left.fiscalPeriod.periodEnd)
+    || right.publicationContext.publishedAt.localeCompare(left.publicationContext.publishedAt)
+    || right.publicationContext.filingId.localeCompare(left.publicationContext.filingId)
+    || right.publicationContext.revisionId.localeCompare(left.publicationContext.revisionId);
+}
+
+function financialStatementsCursorBinding(listingId: string, query: ResearchFinancialStatementsQuery): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      listingId,
+      authContext: {
+        knowledgeAt: query.context.knowledgeAt,
+        effectiveAt: query.context.effectiveAt,
+        assessmentMode: query.context.assessmentMode,
+        policySetVersion: query.context.policySetVersion ?? null,
+      },
+      normalizedQuery: {
+        periodicity: query.periodicity,
+        range: query.range,
+        filingBasis: query.filingBasis,
+        statements: query.statements,
+        metricSelection: query.metricSelection,
+        derivedMetrics: query.derivedMetrics,
+        order: query.page.order,
+        limit: query.page.limit,
+      },
+      purposes: [RESEARCH_FINANCIAL_STATEMENTS_CURSOR_PURPOSE, "mcp:get_financial_statements"],
+      versions: {
+        contractVersion: RESEARCH_FINANCIAL_STATEMENTS_CONTRACT_VERSION,
+        datasetVersion: RESEARCH_FINANCIAL_STATEMENTS_DATASET_VERSION,
+        policyVersion: RESEARCH_FINANCIAL_STATEMENTS_POLICY_VERSION,
+      },
+    }))
+    .digest("base64url")
+    .slice(0, 48);
+}
+
+function encodeFinancialStatementsCursor(
+  listingId: string,
+  query: ResearchFinancialStatementsQuery,
+  period: ResearchFinancialStatementPeriod,
+): string {
+  return Buffer.from(JSON.stringify({
+    version: RESEARCH_FINANCIAL_STATEMENTS_CURSOR_VERSION,
+    binding: financialStatementsCursorBinding(listingId, query),
+    issuedAt: new Date().toISOString(),
+    boundaryPeriodEndDate: period.periodEndDate,
+    filingPeriodId: period.filingPeriodId,
+  }), "utf8").toString("base64url");
+}
+
+function decodeFinancialStatementsCursor(
+  listingId: string,
+  query: ResearchFinancialStatementsQuery,
+  cursor?: string,
+): { periodEndDate: string; filingPeriodId: string } | null {
+  if (!cursor) return null;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new ResearchServiceError("research_cursor_invalid", "The financial-statements cursor is invalid");
+  }
+  if (
+    !decoded
+    || typeof decoded !== "object"
+    || Array.isArray(decoded)
+    || (decoded as { version?: unknown }).version !== RESEARCH_FINANCIAL_STATEMENTS_CURSOR_VERSION
+    || (decoded as { binding?: unknown }).binding !== financialStatementsCursorBinding(listingId, query)
+    || typeof (decoded as { boundaryPeriodEndDate?: unknown }).boundaryPeriodEndDate !== "string"
+    || typeof (decoded as { filingPeriodId?: unknown }).filingPeriodId !== "string"
+    || typeof (decoded as { issuedAt?: unknown }).issuedAt !== "string"
+  ) {
+    throw new ResearchServiceError("research_cursor_invalid", "The financial-statements cursor does not match the bound query");
+  }
+  const issuedAtMs = Date.parse((decoded as { issuedAt: string }).issuedAt);
+  if (!Number.isFinite(issuedAtMs) || issuedAtMs > Date.now()) {
+    throw new ResearchServiceError("research_cursor_invalid", "The financial-statements cursor is invalid");
+  }
+  if (Date.now() - issuedAtMs > FINANCIAL_STATEMENTS_CURSOR_TTL_MS) {
+    throw new ResearchServiceError("research_cursor_invalid", "The financial-statements cursor has expired");
+  }
+  return {
+    periodEndDate: (decoded as { boundaryPeriodEndDate: string }).boundaryPeriodEndDate,
+    filingPeriodId: (decoded as { filingPeriodId: string }).filingPeriodId,
+  };
+}
+
+function financialStatementsAvailabilityForIdentity(
+  identity: Awaited<ReturnType<typeof getResearchIdentity>>,
+): ResearchFinancialStatementsAvailability {
+  return identity.identity.eligibility.profile === "operating_company"
+    && identity.identity.eligibility.state === "eligible"
+    ? { status: "eligible", reasonCode: "operating_company" }
+    : { status: "not_applicable", reasonCode: "not_applicable_subject" };
+}
+
+async function hasFinancialStatementsAvailable(
+  persistence: Persistence,
+  listingId: string,
+  query: ResearchFinancialStatementsQuery,
+): Promise<boolean> {
+  try {
+    const records = await persistence.listLatestResearchFinancialStatementRecords({
+      subject: { kind: "listing_id", listingId },
+      knowledgeAt: query.context.knowledgeAt,
+      effectiveAt: query.context.effectiveAt,
+      periodicity: query.periodicity,
+      filingBasis: "consolidated",
+    });
+    if (records.length > 0) return true;
+    return (await persistence.listLatestResearchFinancialStatementRecords({
+      subject: { kind: "listing_id", listingId },
+      knowledgeAt: query.context.knowledgeAt,
+      effectiveAt: query.context.effectiveAt,
+      periodicity: query.periodicity,
+      filingBasis: "individual",
+    })).length > 0;
+  } catch (error) {
+    if (error instanceof ResearchServiceError && error.code === "research_dataset_unavailable") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function selectFinancialStatementBasis(
+  consolidated: readonly ResearchFinancialStatementRecord[],
+  individual: readonly ResearchFinancialStatementRecord[],
+  requested: ResearchFinancialStatementsQuery["filingBasis"],
+): { selected: ResearchFinancialStatementsOutput["basisPolicy"]["selected"]; fallbackApplied: boolean; records: ResearchFinancialStatementRecord[] } {
+  if (requested === "consolidated" || requested === "individual") {
+    return {
+      selected: requested,
+      fallbackApplied: false,
+      records: [...(requested === "consolidated" ? consolidated : individual)],
+    };
+  }
+  const consolidatedKeys = new Set(consolidated.map((record) => researchFinancialStatementPeriodKey(record)));
+  const individualKeys = new Set(individual.map((record) => researchFinancialStatementPeriodKey(record)));
+  const unionKeys = new Set([...consolidatedKeys, ...individualKeys]);
+  const consolidatedCoversAll = unionKeys.size > 0 && unionKeys.size === consolidatedKeys.size;
+  const individualCoversAll = unionKeys.size > 0 && unionKeys.size === individualKeys.size;
+  if (consolidatedCoversAll) {
+    return { selected: "consolidated", fallbackApplied: false, records: [...consolidated] };
+  }
+  if (individualCoversAll) {
+    return { selected: "individual", fallbackApplied: true, records: [...individual] };
+  }
+  if (consolidated.length >= individual.length && consolidated.length > 0) {
+    return { selected: "consolidated", fallbackApplied: false, records: [...consolidated] };
+  }
+  if (individual.length > 0) {
+    return { selected: "individual", fallbackApplied: true, records: [...individual] };
+  }
+  return { selected: "policy_selected", fallbackApplied: false, records: [] };
+}
+
+function financialPeriodToken(periodicity: ResearchFinancialStatementsQuery["periodicity"], date: string): string {
+  const year = date.slice(0, 4);
+  if (periodicity === "annual") return year;
+  const month = Number(date.slice(5, 7));
+  const quarter = month <= 3 ? 1 : month <= 6 ? 2 : month <= 9 ? 3 : 4;
+  return `${year}-Q${quarter}`;
+}
+
+function financialRangeToPeriodBounds(query: ResearchFinancialStatementsQuery): { startPeriod?: string; endPeriod?: string } {
+  if (query.range.kind === "latest_periods") return {};
+  return {
+    startPeriod: financialPeriodToken(query.periodicity, query.range.startDate),
+    endPeriod: financialPeriodToken(query.periodicity, query.range.endDate),
+  };
+}
+
+function buildFinancialStatementsNotApplicableResult(
+  identity: Awaited<ReturnType<typeof getResearchIdentity>>,
+  query: ResearchFinancialStatementsQuery,
+): ResearchFinancialStatementsOutput {
+  return researchFinancialStatementsOutputSchema.parse({
+    contractVersion: RESEARCH_FINANCIAL_STATEMENTS_CONTRACT_VERSION,
+    selector: identity.selector,
+    context: identity.context,
+    identity: {
+      issuer: identity.identity.issuer,
+      security: identity.identity.security,
+      listing: identity.identity.listing,
+      displayName: displayNameFromIdentity(identity),
+      eligibility: identity.identity.eligibility,
+      availability: financialStatementsAvailabilityForIdentity(identity),
+    },
+    periodicity: query.periodicity,
+    range: query.range,
+    basisPolicy: {
+      requested: query.filingBasis,
+      selected: "policy_selected",
+      policyId: FINANCIAL_STATEMENT_DEFAULT_POLICY_ID,
+      fallbackApplied: false,
+    },
+    statements: query.statements,
+    metricSelection: query.metricSelection,
+    derivedMetricRequests: query.derivedMetrics,
+    coverage: {
+      status: "not_applicable",
+      requestedPeriodCount: financialStatementsRangeRequestedCount(query),
+      returnedPeriodCount: 0,
+    },
+    freshness: {
+      state: "not_applicable",
+      authoritativeAsOf: null,
+      latestAcceptedAt: null,
+    },
+    completeness: {
+      status: "not_applicable",
+      missingFactCount: 0,
+      missingMetricCount: 0,
+    },
+    confidence: {
+      status: "not_applicable",
+      reasonCodes: ["not_applicable_subject"],
+    },
+    readiness: {
+      status: "not_applicable",
+      reasonCodes: ["not_applicable_subject"],
+    },
+    periods: [],
+    derivedOutcomes: [],
+    gaps: [],
+    conflicts: [],
+    recovery: [],
+    provenanceIndex: [],
+    page: {
+      limit: query.page.limit,
+      order: query.page.order,
+      nextCursor: null,
+      recordCount: 0,
+      truncatedByBudget: false,
+    },
+  });
+}
+
+function selectedStatementFacts(
+  record: ResearchFinancialStatementRecord,
+  statements: readonly ResearchFinancialStatementsQuery["statements"][number][],
+): ResearchFinancialStatementFact[] {
+  const allowed = new Set(statements);
+  return record.statements
+    .filter((section) => allowed.has(section.kind))
+    .flatMap((section) => section.facts);
+}
+
+function metricIdsForGroups(groups: readonly ResearchFinancialStatementsQuery["metricSelection"]["groups"][number][]): Set<string> {
+  const selected = new Set<string>();
+  for (const group of groups) {
+    if (group === "profitability") ["revenue", "gross_profit", "operating_income", "net_income"].forEach((id) => selected.add(id));
+    if (group === "liquidity") ["current_assets", "current_liabilities", "cash_and_cash_equivalents"].forEach((id) => selected.add(id));
+    if (group === "leverage") ["liabilities", "equity", "interest_bearing_debt"].forEach((id) => selected.add(id));
+    if (group === "cash_flow") ["operating_cash_flow", "investing_cash_flow", "capital_expenditure"].forEach((id) => selected.add(id));
+    if (group === "returns") ["assets", "equity", "net_income"].forEach((id) => selected.add(id));
+    if (group === "growth") ["revenue", "gross_profit", "operating_income", "net_income"].forEach((id) => selected.add(id));
+  }
+  return selected;
+}
+
+function factMatchesMetricSelection(
+  fact: ResearchFinancialStatementFact,
+  selection: ResearchFinancialStatementsQuery["metricSelection"],
+): boolean {
+  const explicit = new Set(selection.explicitMetricIds);
+  if (selection.base === "required_core" && fact.metric.state === "mapped") return true;
+  if (fact.metric.state === "mapped" && metricIdsForGroups(selection.groups).has(fact.metric.metricId)) return true;
+  if (explicit.has(fact.concept.qname) || explicit.has(fact.concept.label)) return true;
+  if (fact.metric.state === "mapped" && explicit.has(fact.metric.metricId)) return true;
+  return false;
+}
+
+function selectedOutputFacts(
+  record: ResearchFinancialStatementRecord,
+  query: ResearchFinancialStatementsQuery,
+): ResearchFinancialStatementFact[] {
+  return selectedStatementFacts(record, query.statements).filter((fact) => factMatchesMetricSelection(fact, query.metricSelection));
+}
+
+function factDateRange(fact: ResearchFinancialStatementFact) {
+  if (fact.context.period.kind === "duration") {
+    return {
+      startDate: fact.context.period.startAt.slice(0, 10),
+      endDate: fact.context.period.endAt.slice(0, 10),
+    };
+  }
+  return {
+    startDate: null,
+    endDate: fact.context.period.instantAt.slice(0, 10),
+  };
+}
+
+function mapFinancialFact(
+  fact: ResearchFinancialStatementFact,
+  record: ResearchFinancialStatementRecord,
+): ResearchFinancialStatementPeriod["sourceFacts"][number] {
+  const period = factDateRange(fact);
+  return {
+    observationId: fact.id,
+    statement: fact.statementKind,
+    metricId: fact.metric.state === "mapped" ? fact.metric.metricId : "unmapped",
+    concept: {
+      raw: fact.concept.qname,
+      normalized: { state: "present", value: fact.concept.qname },
+    },
+    label: {
+      raw: fact.concept.label,
+      normalized: { state: "present", value: fact.concept.label },
+    },
+    value: fact.normalized.state === "present"
+      ? { state: "present", value: fact.normalized.value }
+      : { state: "missing", reasonCode: fact.normalized.reason },
+    unit: fact.unit.state === "known"
+      ? { raw: fact.unit.unitId, normalized: { state: "present", value: fact.unit.unitId } }
+      : { raw: fact.unit.rawUnitId, normalized: { state: "missing", reasonCode: "unknown_unit" } },
+    scale: fact.declaredScale
+      ? { raw: fact.declaredScale, normalized: { state: "present", value: fact.declaredScale } }
+      : { raw: null, normalized: { state: "missing", reasonCode: "not_reported" } },
+    precision: fact.declaredPrecision
+      ? { raw: fact.declaredPrecision, normalized: { state: "present", value: fact.declaredPrecision } }
+      : { raw: null, normalized: { state: "missing", reasonCode: "not_reported" } },
+    filingBasis: record.filingBasis === "consolidated" || record.filingBasis === "individual"
+      ? { raw: record.filingBasis, normalized: { state: "present", value: record.filingBasis } }
+      : { raw: record.filingBasis, normalized: { state: "missing", reasonCode: "unknown_basis" } },
+    period: {
+      startDate: period.startDate,
+      endDate: period.endDate,
+      fiscalYear: record.fiscalPeriod.fiscalYear,
+      fiscalQuarter: record.fiscalPeriod.fiscalQuarter,
+      durationMonths: record.periodicity === "annual" ? 12 : 3,
+    },
+    taxonomy: {
+      namespace: fact.concept.qname.split(":")[0] ?? "unknown",
+      conceptName: fact.concept.qname.split(":").at(1) ?? fact.concept.qname,
+      taxonomyVersion: record.provenance.taxonomyVersion,
+    },
+    provenanceId: record.provenance.id,
+    ambiguity: {
+      status: fact.ambiguityFlags.includes("duplicate_context")
+        ? "duplicate_context"
+        : fact.ambiguityFlags.includes("filing_basis_ambiguous")
+          ? "ambiguous_basis"
+          : fact.ambiguityFlags.includes("unmapped_concept")
+            ? "unmapped_concept"
+            : fact.ambiguityFlags.includes("unknown_unit")
+              ? "unknown_unit"
+              : "none",
+      relatedObservationIds: [],
+    },
+    relations: {
+      comparableObservationIds: [],
+      supersededByObservationIds: [],
+    },
+    revision: {
+      filingId: record.publicationContext.filingId,
+      accessionNumber: null,
+      amended: record.publicationContext.amendment,
+      restated: record.publicationContext.restatement,
+      revisionTag: record.publicationContext.revisionId,
+    },
+  };
+}
+
+function qualityStateForRecord(
+  record: ResearchFinancialStatementRecord,
+  facts: readonly ResearchFinancialStatementFact[],
+  kind: "taxonomyChanges" | "amendmentsRestatements" | "duplicateContexts" | "unmappedConcepts" | "unknownUnits" | "ambiguousBasis",
+): ResearchFinancialStatementPeriod["quality"]["taxonomyChanges"] {
+  const matched = facts.filter((fact) => {
+    switch (kind) {
+      case "taxonomyChanges":
+        return record.ambiguityFlags.includes("taxonomy_change") || fact.ambiguityFlags.includes("taxonomy_change");
+      case "amendmentsRestatements":
+        return record.publicationContext.amendment || record.publicationContext.restatement;
+      case "duplicateContexts":
+        return record.ambiguityFlags.includes("duplicate_context") || fact.ambiguityFlags.includes("duplicate_context");
+      case "unmappedConcepts":
+        return fact.ambiguityFlags.includes("unmapped_concept");
+      case "unknownUnits":
+        return fact.ambiguityFlags.includes("unknown_unit");
+      case "ambiguousBasis":
+        return record.filingBasis === "unknown" || record.ambiguityFlags.includes("filing_basis_ambiguous") || fact.ambiguityFlags.includes("filing_basis_ambiguous");
+    }
+  });
+  return {
+    status: matched.length > 0 ? "present" : "clear",
+    reasonCodes: matched.length > 0 ? [kind] : [],
+    observationIds: matched.map((fact) => fact.id),
+  };
+}
+
+function parseFactNumber(fact: ResearchFinancialStatementFact): number | null {
+  return fact.normalized.state === "present" ? Number(fact.normalized.value) : null;
+}
+
+function periodIdForRecord(record: ResearchFinancialStatementRecord): string {
+  return createHash("sha256")
+    .update([
+      record.publicationContext.filingId,
+      record.publicationContext.revisionId,
+      researchFinancialStatementPeriodKey(record),
+    ].join("\u001f"))
+    .digest("hex")
+    .slice(0, 32);
+}
+
+function deriveComparableMetricValue(
+  facts: readonly ResearchFinancialStatementFact[],
+  metricId: ResearchFinancialStatementMetricId,
+): FinancialMetricValue | { reason: FinancialMetricFailureReason } {
+  const matches = facts.filter((fact) => fact.metric.state === "mapped" && fact.metric.metricId === metricId);
+  if (matches.length === 0) return { reason: "missing_inputs" };
+  if (matches.some((fact) => fact.unit.state === "unknown")) return { reason: "unknown_unit" };
+  const present = matches.filter((fact) => fact.normalized.state === "present");
+  if (present.length !== 1) return { reason: present.length === 0 ? "missing_inputs" : "ambiguous_inputs" };
+  const value = parseFactNumber(present[0]);
+  if (value === null) return { reason: "missing_inputs" };
+  return { facts: [present[0]], value, unit: present[0].unit.state === "known" ? present[0].unit.unitId : "unknown" };
+}
+
+function quarterKeyFor(year: number, quarter: 1 | 2 | 3 | 4): string {
+  return `${year}-Q${quarter}`;
+}
+
+function priorQuarterKey(record: ResearchFinancialStatementRecord): string | null {
+  if (record.fiscalPeriod.fiscalQuarter === null) return null;
+  if (record.fiscalPeriod.fiscalQuarter === 1) return null;
+  return quarterKeyFor(record.fiscalPeriod.fiscalYear, (record.fiscalPeriod.fiscalQuarter - 1) as 1 | 2 | 3 | 4);
+}
+
+function periodToken(record: ResearchFinancialStatementRecord): string {
+  return researchFinancialStatementPeriodKey(record);
+}
+
+function previousAnnualToken(record: ResearchFinancialStatementRecord, years = 1): string | null {
+  return record.periodicity === "annual" ? String(record.fiscalPeriod.fiscalYear - years).padStart(4, "0") : null;
+}
+
+function previousChronologicalRecord(
+  record: ResearchFinancialStatementRecord,
+  recordsInOrder: readonly ResearchFinancialStatementRecord[],
+): ResearchFinancialStatementRecord | null {
+  const token = periodToken(record);
+  const index = recordsInOrder.findIndex((candidate) => periodToken(candidate) === token);
+  return index > 0 ? recordsInOrder[index - 1] : null;
+}
+
+function metricParameterMetricId(
+  parameters: Record<string, string | number | boolean>,
+): ResearchFinancialStatementMetricId | null {
+  const value = parameters.baseMetricId;
+  if (
+    value === "revenue"
+    || value === "gross_profit"
+    || value === "operating_income"
+    || value === "net_income"
+    || value === "assets"
+    || value === "liabilities"
+    || value === "equity"
+    || value === "current_assets"
+    || value === "current_liabilities"
+    || value === "cash_and_cash_equivalents"
+    || value === "interest_bearing_debt"
+    || value === "operating_cash_flow"
+    || value === "investing_cash_flow"
+    || value === "capital_expenditure"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function metricWindowPeriods(
+  parameters: Record<string, string | number | boolean>,
+  fallback: number,
+): number {
+  const raw = parameters.windowPeriods;
+  return typeof raw === "number" && Number.isInteger(raw) && raw > 1 ? raw : fallback;
+}
+
+function isCumulativeFact(fact: ResearchFinancialStatementFact): boolean {
+  return fact.context.valueKind === "cumulative" && fact.context.period.kind === "duration";
+}
+
+function isQ1DiscreteEligible(record: ResearchFinancialStatementRecord, fact: ResearchFinancialStatementFact): boolean {
+  return record.fiscalPeriod.fiscalQuarter === 1
+    && fact.context.period.kind === "duration"
+    && fact.context.period.startAt.slice(0, 10) === `${record.fiscalPeriod.fiscalYear}-01-01`;
+}
+
+function discreteMetricValueForRecord(
+  metricId: ResearchFinancialStatementMetricId,
+  record: ResearchFinancialStatementRecord,
+  recordFacts: readonly ResearchFinancialStatementFact[],
+  recordsByToken: ReadonlyMap<string, ResearchFinancialStatementRecord>,
+  factsByPeriodId: ReadonlyMap<string, ResearchFinancialStatementFact[]>,
+): FinancialMetricValue | { reason: FinancialMetricFailureReason | "zero_denominator" } {
+  const current = deriveComparableMetricValue(recordFacts, metricId);
+  if ("reason" in current) return current;
+  if (record.periodicity === "annual") return current;
+  const currentFact = current.facts[0]!;
+  if (currentFact.context.valueKind === "discrete") return current;
+  if (!isCumulativeFact(currentFact)) return current;
+  if (isQ1DiscreteEligible(record, currentFact)) return current;
+  const priorToken = priorQuarterKey(record);
+  if (!priorToken) return { reason: "missing_inputs" };
+  const priorRecord = recordsByToken.get(priorToken);
+  if (!priorRecord) return { reason: "missing_inputs" };
+  if (priorRecord.filingBasis !== record.filingBasis || priorRecord.provenance.taxonomyVersion !== record.provenance.taxonomyVersion) {
+    return { reason: "incomparable_inputs" };
+  }
+  const priorFacts = factsByPeriodId.get(periodIdForRecord(priorRecord)) ?? [];
+  const prior = deriveComparableMetricValue(priorFacts, metricId);
+  if ("reason" in prior) return prior;
+  if (prior.unit !== current.unit) return { reason: "incomparable_inputs" };
+  return { facts: [...current.facts, ...prior.facts], value: current.value - prior.value, unit: current.unit };
+}
+
+function averageBalanceMetricForRecord(
+  metricId: "equity" | "assets",
+  record: ResearchFinancialStatementRecord,
+  recordFacts: readonly ResearchFinancialStatementFact[],
+  recordsInOrder: readonly ResearchFinancialStatementRecord[],
+  factsByPeriodId: ReadonlyMap<string, ResearchFinancialStatementFact[]>,
+): FinancialMetricValue | { reason: FinancialMetricFailureReason | "zero_denominator" } {
+  const ending = deriveComparableMetricValue(recordFacts, metricId);
+  if ("reason" in ending) return ending;
+  const previous = previousChronologicalRecord(record, recordsInOrder);
+  if (!previous) return { reason: "missing_inputs" };
+  if (previous.filingBasis !== record.filingBasis || previous.provenance.taxonomyVersion !== record.provenance.taxonomyVersion) {
+    return { reason: "incomparable_inputs" };
+  }
+  const previousFacts = factsByPeriodId.get(periodIdForRecord(previous)) ?? [];
+  const beginning = deriveComparableMetricValue(previousFacts, metricId);
+  if ("reason" in beginning) return beginning;
+  if (beginning.unit !== ending.unit) return { reason: "incomparable_inputs" };
+  const average = (beginning.value + ending.value) / 2;
+  if (average === 0) return { reason: "zero_denominator" };
+  return { facts: [...beginning.facts, ...ending.facts], value: average, unit: ending.unit };
+}
+
+function deriveMetricForRecord(
+  metricId: ResearchFinancialStatementsQuery["derivedMetrics"][number]["metricId"],
+  record: ResearchFinancialStatementRecord,
+  recordFacts: readonly ResearchFinancialStatementFact[],
+  recordsByKey: ReadonlyMap<string, ResearchFinancialStatementRecord>,
+  factsByPeriodId: ReadonlyMap<string, ResearchFinancialStatementFact[]>,
+  parameters: Record<string, string | number | boolean>,
+  calculatedAt: string,
+): ResearchFinancialStatementDerivedOutcome {
+  const withholding = (
+    reasonCode: Extract<ResearchFinancialStatementDerivedOutcome, { status: "withheld" }>["reasonCode"],
+    observationIds: string[] = [],
+  ): ResearchFinancialStatementDerivedOutcome => ({
+    status: "withheld",
+    metricId,
+    reasonCode,
+    periodObservationIds: observationIds,
+    parameters,
+  });
+  const returned = (value: number, units: string, observationIds: string[], formulaId: string): ResearchFinancialStatementDerivedOutcome => ({
+    status: "returned",
+    metricId,
+    periodObservationIds: observationIds,
+    formulaId,
+    formulaVersion: "1.0.0",
+    parameters,
+    units,
+    value: Number.isInteger(value) ? String(value) : value.toFixed(6).replace(/0+$/, "").replace(/\.$/, ""),
+    calculatedAt,
+    rounding: "half_away_from_zero_6dp",
+  });
+  const recordsInOrder = [...recordsByKey.values()].sort((left, right) => (
+    left.fiscalPeriod.periodEnd.localeCompare(right.fiscalPeriod.periodEnd)
+      || left.publicationContext.publishedAt.localeCompare(right.publicationContext.publishedAt)
+  ));
+  const recordsByToken = new Map(recordsInOrder.map((candidate) => [periodToken(candidate), candidate] as const));
+  if (metricId === "gross_margin" || metricId === "operating_margin" || metricId === "net_margin") {
+    const numeratorMetric = metricId === "gross_margin" ? "gross_profit" : metricId === "operating_margin" ? "operating_income" : "net_income";
+    const numerator = discreteMetricValueForRecord(numeratorMetric, record, recordFacts, recordsByToken, factsByPeriodId);
+    const denominator = discreteMetricValueForRecord("revenue", record, recordFacts, recordsByToken, factsByPeriodId);
+    if ("reason" in numerator) return withholding(numerator.reason, []);
+    if ("reason" in denominator) return withholding(denominator.reason, []);
+    if (numerator.unit !== denominator.unit) return withholding("incomparable_inputs", [...numerator.facts, ...denominator.facts].map((fact) => fact.id));
+    if (denominator.value === 0) return withholding("zero_denominator", [...numerator.facts, ...denominator.facts].map((fact) => fact.id));
+    return returned(numerator.value / denominator.value, "ratio", [...numerator.facts, ...denominator.facts].map((fact) => fact.id), metricId);
+  }
+  if (metricId === "debt_to_equity" || metricId === "current_ratio") {
+    const leftMetric = metricId === "debt_to_equity" ? "interest_bearing_debt" : "current_assets";
+    const rightMetric = metricId === "debt_to_equity" ? "equity" : "current_liabilities";
+    const left = deriveComparableMetricValue(recordFacts, leftMetric);
+    const right = deriveComparableMetricValue(recordFacts, rightMetric);
+    if ("reason" in left) return withholding(left.reason, []);
+    if ("reason" in right) return withholding(right.reason, []);
+    if (left.unit !== right.unit) return withholding("incomparable_inputs", [...left.facts, ...right.facts].map((fact) => fact.id));
+    if (right.value === 0) return withholding("zero_denominator", [...left.facts, ...right.facts].map((fact) => fact.id));
+    return returned(left.value / right.value, "ratio", [...left.facts, ...right.facts].map((fact) => fact.id), metricId);
+  }
+  if (metricId === "free_cash_flow") {
+    const ocf = discreteMetricValueForRecord("operating_cash_flow", record, recordFacts, recordsByToken, factsByPeriodId);
+    const capex = discreteMetricValueForRecord("capital_expenditure", record, recordFacts, recordsByToken, factsByPeriodId);
+    if ("reason" in ocf) return withholding(ocf.reason, []);
+    if ("reason" in capex) return withholding(capex.reason, []);
+    if (ocf.unit !== capex.unit) return withholding("incomparable_inputs", [...ocf.facts, ...capex.facts].map((fact) => fact.id));
+    return returned(ocf.value - capex.value, ocf.unit, [...ocf.facts, ...capex.facts].map((fact) => fact.id), metricId);
+  }
+  if (metricId === "reconstructed_discrete_quarter") {
+    const baseMetricId = metricParameterMetricId(parameters);
+    if (!baseMetricId) return withholding("missing_inputs", []);
+    const value = discreteMetricValueForRecord(baseMetricId, record, recordFacts, recordsByToken, factsByPeriodId);
+    if ("reason" in value) return withholding(value.reason, []);
+    return returned(value.value, value.unit, value.facts.map((fact) => fact.id), "reconstructed_discrete_quarter");
+  }
+  if (metricId === "trailing_twelve_month") {
+    const baseMetricId = metricParameterMetricId(parameters);
+    if (!baseMetricId || record.periodicity !== "quarterly") return withholding("missing_inputs", []);
+    const quarter = record.fiscalPeriod.fiscalQuarter;
+    if (quarter === null) return withholding("missing_inputs", []);
+    const quarterTokens = [0, 1, 2, 3].map((offset) => {
+      let year = record.fiscalPeriod.fiscalYear;
+      let q = quarter - offset;
+      while (q <= 0) {
+        q += 4;
+        year -= 1;
+      }
+      return quarterKeyFor(year, q as 1 | 2 | 3 | 4);
+    });
+    const components = quarterTokens.map((token) => {
+      const componentRecord = recordsByToken.get(token);
+      if (!componentRecord) return { reason: "missing_inputs" as const };
+      const componentFacts = factsByPeriodId.get(periodIdForRecord(componentRecord)) ?? [];
+      return discreteMetricValueForRecord(baseMetricId, componentRecord, componentFacts, recordsByToken, factsByPeriodId);
+    });
+    if (components.some((component) => "reason" in component)) {
+      return withholding((components.find((component) => "reason" in component) as { reason: Extract<ResearchFinancialStatementDerivedOutcome, { status: "withheld" }>["reasonCode"] }).reason, []);
+    }
+    const resolved = components as FinancialMetricValue[];
+    if (new Set(resolved.map((item) => item.unit)).size !== 1) return withholding("incomparable_inputs", resolved.flatMap((item) => item.facts.map((fact) => fact.id)));
+    return returned(
+      resolved.reduce((sum, item) => sum + item.value, 0),
+      resolved[0]!.unit,
+      resolved.flatMap((item) => item.facts.map((fact) => fact.id)),
+      "trailing_twelve_month",
+    );
+  }
+  if (metricId === "period_over_period_change") {
+    const baseMetricId = metricParameterMetricId(parameters);
+    if (!baseMetricId) return withholding("missing_inputs", []);
+    const current = record.periodicity === "quarterly"
+      ? discreteMetricValueForRecord(baseMetricId, record, recordFacts, recordsByToken, factsByPeriodId)
+      : deriveComparableMetricValue(recordFacts, baseMetricId);
+    if ("reason" in current) return withholding(current.reason, []);
+    const priorToken = record.periodicity === "annual" ? previousAnnualToken(record) : priorQuarterKey(record);
+    if (!priorToken) return withholding("missing_inputs", []);
+    const priorRecord = recordsByToken.get(priorToken);
+    if (!priorRecord) return withholding("missing_inputs", []);
+    const priorFacts = factsByPeriodId.get(periodIdForRecord(priorRecord)) ?? [];
+    const prior = record.periodicity === "quarterly"
+      ? discreteMetricValueForRecord(baseMetricId, priorRecord, priorFacts, recordsByToken, factsByPeriodId)
+      : deriveComparableMetricValue(priorFacts, baseMetricId);
+    if ("reason" in prior) return withholding(prior.reason, []);
+    if (current.unit !== prior.unit) return withholding("incomparable_inputs", [...current.facts, ...prior.facts].map((fact) => fact.id));
+    if (prior.value === 0) return withholding("zero_denominator", [...current.facts, ...prior.facts].map((fact) => fact.id));
+    return returned((current.value - prior.value) / prior.value, "ratio", [...current.facts, ...prior.facts].map((fact) => fact.id), "period_over_period_change");
+  }
+  if (metricId === "compound_annual_growth_rate") {
+    const baseMetricId = metricParameterMetricId(parameters);
+    if (!baseMetricId || record.periodicity !== "annual") return withholding("missing_inputs", []);
+    const windowPeriods = metricWindowPeriods(parameters, 3);
+    const startToken = previousAnnualToken(record, windowPeriods - 1);
+    if (!startToken) return withholding("missing_inputs", []);
+    const startRecord = recordsByToken.get(startToken);
+    if (!startRecord) return withholding("missing_inputs", []);
+    const startFacts = factsByPeriodId.get(periodIdForRecord(startRecord)) ?? [];
+    const start = deriveComparableMetricValue(startFacts, baseMetricId);
+    const end = deriveComparableMetricValue(recordFacts, baseMetricId);
+    if ("reason" in start) return withholding(start.reason, []);
+    if ("reason" in end) return withholding(end.reason, []);
+    if (start.unit !== end.unit) return withholding("incomparable_inputs", [...start.facts, ...end.facts].map((fact) => fact.id));
+    if (start.value <= 0) return withholding("zero_denominator", [...start.facts, ...end.facts].map((fact) => fact.id));
+    const years = windowPeriods - 1;
+    return returned(Math.pow(end.value / start.value, 1 / years) - 1, "ratio", [...start.facts, ...end.facts].map((fact) => fact.id), "compound_annual_growth_rate");
+  }
+  if (metricId === "return_on_equity" || metricId === "return_on_assets") {
+    const numerator = record.periodicity === "quarterly"
+      ? discreteMetricValueForRecord("net_income", record, recordFacts, recordsByToken, factsByPeriodId)
+      : deriveComparableMetricValue(recordFacts, "net_income");
+    if ("reason" in numerator) return withholding(numerator.reason, []);
+    const denominator = averageBalanceMetricForRecord(metricId === "return_on_equity" ? "equity" : "assets", record, recordFacts, recordsInOrder, factsByPeriodId);
+    if ("reason" in denominator) return withholding(denominator.reason, []);
+    if (numerator.unit !== denominator.unit) return withholding("incomparable_inputs", [...numerator.facts, ...denominator.facts].map((fact) => fact.id));
+    return returned(numerator.value / denominator.value, "ratio", [...numerator.facts, ...denominator.facts].map((fact) => fact.id), metricId);
+  }
+  return withholding("missing_inputs", []);
+}
+
 export async function getResearchManifest(
   persistence: Persistence,
   query: ResearchQuery,
@@ -653,6 +1420,16 @@ export async function getResearchManifest(
   const hasPriceSeries = identity.identity.eligibility.state === "eligible"
     && identity.identity.eligibility.profile !== "identity_only"
     && listingSessions.length > 0;
+  const financialStatementsAvailable = financialStatementsAvailabilityForIdentity(identity).status === "eligible"
+    ? await hasFinancialStatementsAvailable(
+        persistence,
+        identity.selector.listingId,
+        researchFinancialStatementsQuerySchema.parse({
+          ...query,
+          periodicity: "annual",
+        }),
+      )
+    : false;
   return {
     contractVersion: "research-manifest/1.0.0" as const,
     selector: identity.selector,
@@ -700,9 +1477,232 @@ export async function getResearchManifest(
           ? { id, status: "available" as const }
           : { id, status: "unavailable" as const, reasonCode: "not_acquired" as const };
       }
+      if (id === "financial_statements") {
+        if (financialStatementsAvailabilityForIdentity(identity).status !== "eligible") {
+          return { id, status: "unavailable" as const, reasonCode: "not_applicable_subject" as const };
+        }
+        return financialStatementsAvailable
+          ? {
+              id,
+              status: "available" as const,
+              capabilities: {
+                periodicity: ["annual", "quarterly"],
+                filingBasis: ["policy_selected", "consolidated", "individual"],
+                statements: ["income", "balance_sheet", "cash_flow", "equity", "sector_extension"],
+                metricBase: "required_core",
+                metricGroups: [
+                  "profitability",
+                  "liquidity",
+                  "leverage",
+                  "cash_flow",
+                  "returns",
+                  "growth",
+                  "sector_extension",
+                ],
+                derivedMetrics: [
+                  "reconstructed_discrete_quarter",
+                  "trailing_twelve_month",
+                  "period_over_period_change",
+                  "compound_annual_growth_rate",
+                  "gross_margin",
+                  "operating_margin",
+                  "net_margin",
+                  "return_on_equity",
+                  "return_on_assets",
+                  "debt_to_equity",
+                  "current_ratio",
+                  "free_cash_flow",
+                ],
+                pageDefault: financialStatementsDefaultLimit("annual"),
+                pageMax: financialStatementsMaxLimit("quarterly"),
+                maxSpanYears: 10,
+                maxExplicitMetricIds: 100,
+              },
+            }
+          : { id, status: "unavailable" as const, reasonCode: "no_authoritative_filing" as const };
+      }
       return { id, status: "unavailable" as const, reasonCode: "identity_only_release" as const };
     })),
   };
+}
+
+export async function getFinancialStatements(
+  persistence: Persistence,
+  input: ResearchFinancialStatementsQueryInput,
+): Promise<ResearchFinancialStatementsOutput> {
+  const query = researchFinancialStatementsQuerySchema.parse(input);
+  const identity = await getResearchIdentity(persistence, {
+    subject: query.subject,
+    context: query.context,
+    history: { limit: 1 },
+  });
+  const availability = financialStatementsAvailabilityForIdentity(identity);
+  if (availability.status !== "eligible") {
+    return buildFinancialStatementsNotApplicableResult(identity, query);
+  }
+  const bounds = financialRangeToPeriodBounds(query);
+  const baseQuery = {
+    subject: { kind: "listing_id" as const, listingId: identity.selector.listingId },
+    knowledgeAt: identity.context.knowledgeAt,
+    effectiveAt: identity.context.effectiveAt,
+    periodicity: query.periodicity,
+    ...bounds,
+  };
+  const consolidated = query.filingBasis === "individual"
+    ? []
+    : await persistence.listLatestResearchFinancialStatementRecords({ ...baseQuery, filingBasis: "consolidated" });
+  const individual = query.filingBasis === "consolidated"
+    ? []
+    : await persistence.listLatestResearchFinancialStatementRecords({ ...baseQuery, filingBasis: "individual" });
+  const basisSelection = selectFinancialStatementBasis(consolidated, individual, query.filingBasis);
+  const orderedSelected = [...basisSelection.records]
+    .sort((left, right) => query.page.order === "desc" ? financialStatementSortOrder(left, right) : financialStatementSortOrder(right, left));
+  const outputRange = query.range.kind === "latest_periods"
+    ? orderedSelected.slice(0, financialStatementsRangeRequestedCount(query))
+    : orderedSelected;
+  const cursor = decodeFinancialStatementsCursor(identity.selector.listingId, query, query.page.cursor);
+  const remainingRecords = cursor === null
+    ? outputRange
+    : outputRange.filter((record) => (
+      query.page.order === "desc"
+        ? record.fiscalPeriod.periodEnd < cursor.periodEndDate
+          || (record.fiscalPeriod.periodEnd === cursor.periodEndDate && periodIdForRecord(record) < cursor.filingPeriodId)
+        : record.fiscalPeriod.periodEnd > cursor.periodEndDate
+          || (record.fiscalPeriod.periodEnd === cursor.periodEndDate && periodIdForRecord(record) > cursor.filingPeriodId)
+    ));
+  const pageRecords = remainingRecords.slice(0, query.page.limit);
+  const pageFacts = new Map(pageRecords.map((record) => [periodIdForRecord(record), selectedOutputFacts(record, query)] as const));
+  const periods = pageRecords.map((record) => {
+    const facts = pageFacts.get(periodIdForRecord(record)) ?? [];
+    const allStatementFacts = selectedStatementFacts(record, query.statements);
+    return {
+      filingPeriodId: periodIdForRecord(record),
+      fiscalYear: record.fiscalPeriod.fiscalYear,
+      fiscalQuarter: record.fiscalPeriod.fiscalQuarter,
+      periodStartDate: record.fiscalPeriod.periodStart,
+      periodEndDate: record.fiscalPeriod.periodEnd,
+      publishedAt: record.publicationContext.publishedAt.slice(0, 10),
+      filingDate: record.publicationContext.publishedAt.slice(0, 10),
+      acceptedAt: record.publicationContext.revisionPublishedAt ?? record.publicationContext.publishedAt,
+      filingBasis: basisSelection.selected === "policy_selected" ? "consolidated" : basisSelection.selected,
+      statements: record.statements.filter((section) => query.statements.includes(section.kind)).map((section) => section.kind),
+      sourceFacts: facts.map((fact) => mapFinancialFact(fact, record)),
+      quality: {
+        taxonomyChanges: qualityStateForRecord(record, allStatementFacts, "taxonomyChanges"),
+        amendmentsRestatements: qualityStateForRecord(record, allStatementFacts, "amendmentsRestatements"),
+        duplicateContexts: qualityStateForRecord(record, allStatementFacts, "duplicateContexts"),
+        unmappedConcepts: qualityStateForRecord(record, allStatementFacts, "unmappedConcepts"),
+        unknownUnits: qualityStateForRecord(record, allStatementFacts, "unknownUnits"),
+        ambiguousBasis: qualityStateForRecord(record, allStatementFacts, "ambiguousBasis"),
+      },
+    };
+  });
+  const recordsByKey = new Map(orderedSelected.map((record) => [periodIdForRecord(record), record] as const));
+  const factsByPeriodId = new Map(orderedSelected.map((record) => [periodIdForRecord(record), selectedStatementFacts(record, query.statements)] as const));
+  const derivedOutcomes = query.page.cursor
+    ? []
+    : pageRecords.flatMap((record) => query.derivedMetrics.map((request) => deriveMetricForRecord(
+        request.metricId,
+        record,
+        factsByPeriodId.get(periodIdForRecord(record)) ?? [],
+        recordsByKey,
+        factsByPeriodId,
+        request.parameters,
+        query.context.knowledgeAt,
+      )));
+  const provenanceIndex = dedupeByKey(pageRecords.map((record) => ({
+    provenanceId: record.provenance.id,
+    publisher: record.provenance.publisher,
+    accessProvider: record.provenance.accessProvider,
+    authorityRole: record.provenance.authorityRole,
+    publisherDataset: record.provenance.publisherDataset,
+    sourceUrl: record.provenance.sourceUrl,
+    contentHash: record.provenance.contentHash,
+    retrievedAt: record.provenance.retrievedAt,
+  })), (item) => item.provenanceId);
+  const gaps: ResearchFinancialStatementGap[] = [];
+  const conflicts: ResearchFinancialStatementConflict[] = [];
+  const recovery: ResearchFinancialStatementRecovery[] = [];
+  for (const record of pageRecords) {
+    const facts = factsByPeriodId.get(periodIdForRecord(record)) ?? [];
+    if (record.filingBasis === "unknown") {
+      gaps.push({ code: "ambiguous_basis", severity: "warning", message: "Filing basis is ambiguous", observationIds: facts.map((fact) => fact.id) });
+    }
+    if (record.ambiguityFlags.includes("duplicate_context")) {
+      conflicts.push({ code: "duplicate_context", status: "present", message: "Duplicate filing contexts remain in the selected revision", observationIds: facts.filter((fact) => fact.ambiguityFlags.includes("duplicate_context")).map((fact) => fact.id) });
+    }
+    if (record.ambiguityFlags.includes("taxonomy_change")) {
+      recovery.push({ action: "taxonomy_review", status: "unavailable", message: "Taxonomy change requires manual mapping review." });
+    }
+  }
+  const missingFactCount = periods.reduce((count, period) => count + period.sourceFacts.filter((fact) => fact.value.state === "missing").length, 0);
+  const missingMetricCount = derivedOutcomes.filter((metric) => metric.status !== "returned").length;
+  const readinessReasonCodes = dedupeByKey([
+    ...(basisSelection.records.length === 0 ? ["no_authoritative_filing"] : []),
+    ...(basisSelection.selected === "policy_selected" ? ["ambiguous_basis"] : []),
+    ...gaps.map((gap) => gap.code),
+    ...conflicts.map((conflict) => conflict.code),
+  ], (value) => value);
+  return researchFinancialStatementsOutputSchema.parse({
+    contractVersion: RESEARCH_FINANCIAL_STATEMENTS_CONTRACT_VERSION,
+    selector: identity.selector,
+    context: identity.context,
+    identity: {
+      issuer: identity.identity.issuer,
+      security: identity.identity.security,
+      listing: identity.identity.listing,
+      displayName: displayNameFromIdentity(identity),
+      eligibility: identity.identity.eligibility,
+      availability: periods.length === 0 ? { status: "withheld", reasonCode: "no_authoritative_filing" } : availability,
+    },
+    periodicity: query.periodicity,
+    range: query.range,
+    basisPolicy: {
+      requested: query.filingBasis,
+      selected: basisSelection.selected,
+      policyId: FINANCIAL_STATEMENT_DEFAULT_POLICY_ID,
+      fallbackApplied: basisSelection.fallbackApplied,
+    },
+    statements: query.statements,
+    metricSelection: query.metricSelection,
+    derivedMetricRequests: query.derivedMetrics,
+    coverage: {
+      status: periods.length === 0 ? "none" : periods.length < financialStatementsRangeRequestedCount(query) ? "partial" : "complete",
+      requestedPeriodCount: financialStatementsRangeRequestedCount(query),
+      returnedPeriodCount: periods.length,
+    },
+    freshness: {
+      state: periods.length === 0 ? "unknown" : "current",
+      authoritativeAsOf: periods[0]?.filingDate ?? null,
+      latestAcceptedAt: periods[0]?.acceptedAt ?? null,
+    },
+    completeness: {
+      status: periods.length === 0 ? "withheld" : missingFactCount > 0 || missingMetricCount > 0 ? "partial" : "complete",
+      missingFactCount,
+      missingMetricCount,
+    },
+    confidence: {
+      status: periods.length === 0 ? "low" : readinessReasonCodes.length > 0 ? "mixed" : "high",
+      reasonCodes: readinessReasonCodes,
+    },
+    readiness: {
+      status: periods.length === 0 ? "withheld" : readinessReasonCodes.length > 0 ? "usable_with_gaps" : "ready",
+      reasonCodes: readinessReasonCodes,
+    },
+    periods,
+    derivedOutcomes,
+    gaps: dedupeByKey(gaps, (item) => JSON.stringify(item)),
+    conflicts: dedupeByKey(conflicts, (item) => JSON.stringify(item)),
+    recovery: dedupeByKey(recovery, (item) => JSON.stringify(item)),
+    provenanceIndex,
+    page: {
+      limit: query.page.limit,
+      order: query.page.order,
+      nextCursor: remainingRecords.length > query.page.limit ? encodeFinancialStatementsCursor(identity.selector.listingId, query, periods.at(-1) ?? periods[periods.length - 1]!) : null,
+      recordCount: periods.length,
+      truncatedByBudget: false,
+    },
+  });
 }
 
 function priceSeriesCursorBinding(listingId: string, query: ResearchPriceSeriesQuery): string {

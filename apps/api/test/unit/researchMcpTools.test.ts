@@ -13,13 +13,14 @@ describe("Taiwan research MCP tool contracts", () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true, mcpExposureEnabled: true });
 
     const tools = listMcpToolDefinitions();
-    expect(tools.slice(0, 4).map((tool) => tool.name)).toEqual([
+    expect(tools.slice(0, 5).map((tool) => tool.name)).toEqual([
       "get_research_manifest",
       "get_research_identity",
       "get_price_series",
       "get_monthly_revenue",
+      "get_financial_statements",
     ]);
-    for (const toolName of ["get_research_manifest", "get_research_identity", "get_price_series", "get_monthly_revenue"] as const) {
+    for (const toolName of ["get_research_manifest", "get_research_identity", "get_price_series", "get_monthly_revenue", "get_financial_statements"] as const) {
       const tool = tools.find((item) => item.name === toolName)!;
       expect(tool.scope).toBe("research:read");
       expect(tool.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });

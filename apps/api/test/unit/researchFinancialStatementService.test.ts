@@ -1,0 +1,640 @@
+import { describe, expect, it, vi } from "vitest";
+import { MemoryPersistence } from "../../src/persistence/memory.js";
+import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import {
+  normalizeResearchFinancialStatementFact,
+  researchFinancialStatementPeriodKey,
+  type ResearchFinancialStatementMetricId,
+  type ResearchFinancialStatementRecord,
+} from "../../src/services/research/financialStatements.js";
+import { getFinancialStatements, ResearchServiceError } from "../../src/services/research/service.js";
+
+type Identity = ReturnType<typeof makeIdentity>;
+
+type StatementKind = "income" | "balance_sheet" | "cash_flow";
+
+const metricDefinitions: Record<ResearchFinancialStatementMetricId, {
+  statementKind: StatementKind;
+  qname: string;
+  label: string;
+  period: "duration" | "instant";
+  defaultValueKind: "cumulative" | "discrete" | "instant";
+}> = {
+  revenue: { statementKind: "income", qname: "ifrs-full:Revenue", label: "Revenue", period: "duration", defaultValueKind: "cumulative" },
+  gross_profit: { statementKind: "income", qname: "ifrs-full:GrossProfit", label: "Gross profit", period: "duration", defaultValueKind: "cumulative" },
+  operating_income: { statementKind: "income", qname: "ifrs-full:OperatingIncomeLoss", label: "Operating income", period: "duration", defaultValueKind: "cumulative" },
+  net_income: { statementKind: "income", qname: "ifrs-full:ProfitLoss", label: "Net income", period: "duration", defaultValueKind: "cumulative" },
+  assets: { statementKind: "balance_sheet", qname: "ifrs-full:Assets", label: "Assets", period: "instant", defaultValueKind: "instant" },
+  liabilities: { statementKind: "balance_sheet", qname: "ifrs-full:Liabilities", label: "Liabilities", period: "instant", defaultValueKind: "instant" },
+  equity: { statementKind: "balance_sheet", qname: "ifrs-full:Equity", label: "Equity", period: "instant", defaultValueKind: "instant" },
+  current_assets: { statementKind: "balance_sheet", qname: "ifrs-full:CurrentAssets", label: "Current assets", period: "instant", defaultValueKind: "instant" },
+  current_liabilities: { statementKind: "balance_sheet", qname: "ifrs-full:CurrentLiabilities", label: "Current liabilities", period: "instant", defaultValueKind: "instant" },
+  cash_and_cash_equivalents: { statementKind: "balance_sheet", qname: "ifrs-full:CashAndCashEquivalents", label: "Cash and cash equivalents", period: "instant", defaultValueKind: "instant" },
+  interest_bearing_debt: { statementKind: "balance_sheet", qname: "ifrs-full:InterestBearingBorrowings", label: "Interest-bearing debt", period: "instant", defaultValueKind: "instant" },
+  operating_cash_flow: { statementKind: "cash_flow", qname: "ifrs-full:NetCashFlowsFromUsedInOperatingActivities", label: "Operating cash flow", period: "duration", defaultValueKind: "cumulative" },
+  investing_cash_flow: { statementKind: "cash_flow", qname: "ifrs-full:NetCashFlowsFromUsedInInvestingActivities", label: "Investing cash flow", period: "duration", defaultValueKind: "cumulative" },
+  capital_expenditure: { statementKind: "cash_flow", qname: "ifrs-full:PurchaseOfPropertyPlantAndEquipment", label: "Capex", period: "duration", defaultValueKind: "cumulative" },
+};
+
+function makeIdentity() {
+  return canonicalizeOfficialIdentityRow({
+    venue: "TWSE",
+    snapshotDate: "2026-08-31",
+    retrievedAt: "2026-08-31T02:00:00.000Z",
+    artifact: { contentHash: "sha256:fs-service-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+    row: {
+      kind: "company",
+      ticker: "2330",
+      legalName: "台灣積體電路製造股份有限公司",
+      displayName: "台積電",
+      unifiedBusinessNumber: "22099131",
+      industryCode: "24",
+      listedAt: "1994-09-05",
+    },
+  });
+}
+
+function makeRecord(overrides: Partial<ResearchFinancialStatementRecord> = {}): ResearchFinancialStatementRecord {
+  const filingId = overrides.publicationContext?.filingId ?? "mops-2026q2";
+  const revisionId = overrides.publicationContext?.revisionId ?? "mops-2026q2:r0";
+  const listingId = overrides.listingId ?? "lst_2330";
+  const issuerId = overrides.issuerId ?? "iss_2330";
+  return {
+    listingId,
+    issuerId,
+    ticker: "2330",
+    venue: "TWSE",
+    periodicity: "quarterly",
+    fiscalPeriod: {
+      fiscalYear: 2026,
+      fiscalQuarter: 2,
+      periodStart: "2026-04-01",
+      periodEnd: "2026-06-30",
+    },
+    filingBasis: "consolidated",
+    publicationContext: {
+      filingId,
+      revisionId,
+      publishedAt: "2026-08-14T10:00:00.000Z",
+      revisionPublishedAt: null,
+      filingSequence: 1,
+      revisionSequence: 0,
+      processingId: "proc-1",
+      processingSequence: 1,
+      restatement: false,
+      amendment: false,
+      ...overrides.publicationContext,
+    },
+    statements: [
+      { kind: "income", facts: [] },
+      { kind: "balance_sheet", facts: [] },
+      { kind: "cash_flow", facts: [] },
+    ],
+    relations: [],
+    ambiguityFlags: [],
+    provenance: {
+      id: `prv-${filingId}`,
+      publisher: "MOPS",
+      accessProvider: "MOPS_XBRL",
+      authorityRole: "authoritative",
+      canonicalDatasetId: "financial_statements",
+      publisherDataset: "mops_xbrl",
+      sourceUrl: "https://mops.twse.com.tw/mops/web/ajax_t164sb03",
+      contentHash: `sha256:${filingId}`,
+      acquisitionPath: "scheduled_official_snapshot",
+      acquisitionRunId: `run-${filingId}`,
+      retrievedAt: "2026-08-14T11:00:00.000Z",
+      processedAt: "2026-08-14T11:05:00.000Z",
+      parserVersion: "research-financial-statements-parser/1.0.0",
+      taxonomyVersion: "ifrs-full-2026",
+      usagePolicyVersion: "taiwan-open-data/1.0.0",
+      retentionStatus: "retained",
+      contentExposure: "allowed",
+    },
+    ...overrides,
+  };
+}
+
+function quarterBounds(fiscalYear: number, fiscalQuarter: 1 | 2 | 3 | 4) {
+  if (fiscalQuarter === 1) return { periodStart: `${fiscalYear}-01-01`, periodEnd: `${fiscalYear}-03-31` };
+  if (fiscalQuarter === 2) return { periodStart: `${fiscalYear}-04-01`, periodEnd: `${fiscalYear}-06-30` };
+  if (fiscalQuarter === 3) return { periodStart: `${fiscalYear}-07-01`, periodEnd: `${fiscalYear}-09-30` };
+  return { periodStart: `${fiscalYear}-10-01`, periodEnd: `${fiscalYear}-12-31` };
+}
+
+function metricFact(
+  record: ResearchFinancialStatementRecord,
+  metricId: ResearchFinancialStatementMetricId,
+  rawValue: string,
+  overrides?: {
+    valueKind?: "cumulative" | "discrete" | "instant";
+    unitId?: string;
+  },
+) {
+  const definition = metricDefinitions[metricId];
+  return normalizeResearchFinancialStatementFact({
+    listingId: record.listingId,
+    issuerId: record.issuerId,
+    filingId: record.publicationContext.filingId,
+    revisionId: record.publicationContext.revisionId,
+    statementKind: definition.statementKind,
+    concept: { qname: definition.qname, label: definition.label },
+    metric: { state: "mapped", metricId },
+    contextId: `${researchFinancialStatementPeriodKey(record)}:${metricId}`,
+    period: definition.period === "instant"
+      ? { kind: "instant", instantAt: `${record.fiscalPeriod.periodEnd}T23:59:59.999Z` }
+      : {
+          kind: "duration",
+          startAt: `${record.fiscalPeriod.periodStart}T00:00:00.000Z`,
+          endAt: `${record.fiscalPeriod.periodEnd}T23:59:59.999Z`,
+        },
+    valueKind: overrides?.valueKind ?? definition.defaultValueKind,
+    rawValue,
+    unit: { state: "known", unitId: overrides?.unitId ?? "TWD" },
+  });
+}
+
+function assembleStatements(
+  record: ResearchFinancialStatementRecord,
+  values: Partial<Record<ResearchFinancialStatementMetricId, string>>,
+  overrides: Partial<Record<ResearchFinancialStatementMetricId, { valueKind?: "cumulative" | "discrete" | "instant"; unitId?: string }>> = {},
+) {
+  const statements: Record<StatementKind, ReturnType<typeof metricFact>[]> = {
+    income: [],
+    balance_sheet: [],
+    cash_flow: [],
+  };
+  for (const [metricId, rawValue] of Object.entries(values) as [ResearchFinancialStatementMetricId, string][]) {
+    statements[metricDefinitions[metricId].statementKind].push(metricFact(record, metricId, rawValue, overrides[metricId]));
+  }
+  return [
+    { kind: "income" as const, facts: statements.income },
+    { kind: "balance_sheet" as const, facts: statements.balance_sheet },
+    { kind: "cash_flow" as const, facts: statements.cash_flow },
+  ];
+}
+
+function makeQuarterRecord(
+  identity: Identity,
+  fiscalYear: number,
+  fiscalQuarter: 1 | 2 | 3 | 4,
+  values: Partial<Record<ResearchFinancialStatementMetricId, string>>,
+  options: {
+    filingBasis?: "consolidated" | "individual";
+    valueKinds?: Partial<Record<ResearchFinancialStatementMetricId, { valueKind?: "cumulative" | "discrete" | "instant"; unitId?: string }>>;
+    publicationContext?: Partial<ResearchFinancialStatementRecord["publicationContext"]>;
+    ambiguityFlags?: ResearchFinancialStatementRecord["ambiguityFlags"];
+    extraFacts?: ResearchFinancialStatementRecord["statements"][number]["facts"];
+  } = {},
+): ResearchFinancialStatementRecord {
+  const { periodStart, periodEnd } = quarterBounds(fiscalYear, fiscalQuarter);
+  const record = makeRecord({
+    listingId: identity.listing.id,
+    issuerId: identity.issuer.id,
+    filingBasis: options.filingBasis ?? "consolidated",
+    fiscalPeriod: { fiscalYear, fiscalQuarter, periodStart, periodEnd },
+    publicationContext: {
+      filingId: `mops-${fiscalYear}-q${fiscalQuarter}-${options.filingBasis ?? "consolidated"}`,
+      revisionId: `mops-${fiscalYear}-q${fiscalQuarter}-${options.filingBasis ?? "consolidated"}-r0`,
+      publishedAt: `${fiscalQuarter === 4 ? fiscalYear + 1 : fiscalYear}-${fiscalQuarter === 1 ? "05" : fiscalQuarter === 2 ? "08" : fiscalQuarter === 3 ? "11" : "03"}-15T10:00:00.000Z`,
+      revisionPublishedAt: null,
+      filingSequence: 1,
+      revisionSequence: 0,
+      processingId: `proc-${fiscalYear}-q${fiscalQuarter}-${options.filingBasis ?? "consolidated"}`,
+      processingSequence: 1,
+      restatement: false,
+      amendment: false,
+      ...options.publicationContext,
+    },
+    ambiguityFlags: options.ambiguityFlags ?? [],
+  });
+  const statements = assembleStatements(record, values, options.valueKinds);
+  if (options.extraFacts?.length) statements[0]!.facts.push(...options.extraFacts);
+  return { ...record, statements };
+}
+
+function makeAnnualRecord(
+  identity: Identity,
+  fiscalYear: number,
+  values: Partial<Record<ResearchFinancialStatementMetricId, string>>,
+  options: {
+    filingBasis?: "consolidated" | "individual";
+    publicationContext?: Partial<ResearchFinancialStatementRecord["publicationContext"]>;
+  } = {},
+): ResearchFinancialStatementRecord {
+  const record = makeRecord({
+    listingId: identity.listing.id,
+    issuerId: identity.issuer.id,
+    periodicity: "annual",
+    filingBasis: options.filingBasis ?? "consolidated",
+    fiscalPeriod: { fiscalYear, fiscalQuarter: null, periodStart: `${fiscalYear}-01-01`, periodEnd: `${fiscalYear}-12-31` },
+    publicationContext: {
+      filingId: `mops-${fiscalYear}-annual-${options.filingBasis ?? "consolidated"}`,
+      revisionId: `mops-${fiscalYear}-annual-${options.filingBasis ?? "consolidated"}-r0`,
+      publishedAt: `${fiscalYear + 1}-03-15T10:00:00.000Z`,
+      revisionPublishedAt: null,
+      filingSequence: 1,
+      revisionSequence: 0,
+      processingId: `proc-${fiscalYear}-annual-${options.filingBasis ?? "consolidated"}`,
+      processingSequence: 1,
+      restatement: false,
+      amendment: false,
+      ...options.publicationContext,
+    },
+  });
+  return { ...record, statements: assembleStatements(record, values) };
+}
+
+describe("research financial-statement service", () => {
+  it("maps canonical records to paged periods and derives ratios from source facts only", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    const record = makeRecord({ listingId: identity.listing.id, issuerId: identity.issuer.id });
+    record.statements = assembleStatements(record, {
+      revenue: "100",
+      gross_profit: "40",
+      current_assets: "120",
+      current_liabilities: "60",
+      operating_cash_flow: "25",
+      capital_expenditure: "10",
+    }, {
+      revenue: { valueKind: "discrete" },
+      gross_profit: { valueKind: "discrete" },
+      operating_cash_flow: { valueKind: "discrete" },
+      capital_expenditure: { valueKind: "discrete" },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([record]);
+    const appendIdentitySpy = vi.spyOn(persistence, "appendResearchIdentityRecords");
+    const appendStatementsSpy = vi.spyOn(persistence, "appendResearchFinancialStatementRecords");
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 4 },
+      page: { limit: 1, order: "desc" },
+      derivedMetrics: [
+        { metricId: "gross_margin", parameters: {} },
+        { metricId: "current_ratio", parameters: {} },
+        { metricId: "free_cash_flow", parameters: {} },
+      ],
+    });
+
+    expect(result.identity.availability).toEqual({ status: "eligible", reasonCode: "operating_company" });
+    expect(result.periods).toHaveLength(1);
+    expect(result.periods[0]?.sourceFacts.some((fact) => fact.value.state === "present" && fact.value.value === "0")).toBe(false);
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),
+      expect.objectContaining({ status: "returned", metricId: "current_ratio", value: "2" }),
+      expect.objectContaining({ status: "returned", metricId: "free_cash_flow", value: "15" }),
+    ]);
+    expect(appendIdentitySpy).not.toHaveBeenCalled();
+    expect(appendStatementsSpy).not.toHaveBeenCalled();
+  });
+
+  it("derives all quarterly metric families from stored source facts across the selected range", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2025, 3, {
+        revenue: "35",
+        gross_profit: "14",
+        operating_income: "10.5",
+        net_income: "7",
+        assets: "180",
+        equity: "90",
+        current_assets: "70",
+        current_liabilities: "35",
+        interest_bearing_debt: "45",
+        operating_cash_flow: "9",
+        capital_expenditure: "3",
+      }, { valueKinds: { revenue: { valueKind: "discrete" }, gross_profit: { valueKind: "discrete" }, operating_income: { valueKind: "discrete" }, net_income: { valueKind: "discrete" }, operating_cash_flow: { valueKind: "discrete" }, capital_expenditure: { valueKind: "discrete" } } }),
+      makeQuarterRecord(identity, 2025, 4, {
+        revenue: "40",
+        gross_profit: "16",
+        operating_income: "12",
+        net_income: "8",
+        assets: "185",
+        equity: "92",
+        current_assets: "74",
+        current_liabilities: "37",
+        interest_bearing_debt: "46",
+        operating_cash_flow: "10",
+        capital_expenditure: "4",
+      }, { valueKinds: { revenue: { valueKind: "discrete" }, gross_profit: { valueKind: "discrete" }, operating_income: { valueKind: "discrete" }, net_income: { valueKind: "discrete" }, operating_cash_flow: { valueKind: "discrete" }, capital_expenditure: { valueKind: "discrete" } } }),
+      makeQuarterRecord(identity, 2026, 1, {
+        revenue: "28",
+        gross_profit: "11.2",
+        operating_income: "8.4",
+        net_income: "5.6",
+        assets: "190",
+        equity: "95",
+        current_assets: "78",
+        current_liabilities: "39",
+        interest_bearing_debt: "48",
+        operating_cash_flow: "7",
+        capital_expenditure: "2",
+      }),
+      makeQuarterRecord(identity, 2026, 2, {
+        revenue: "60",
+        gross_profit: "24",
+        operating_income: "18",
+        net_income: "12",
+        assets: "210",
+        equity: "105",
+        current_assets: "84",
+        current_liabilities: "42",
+        interest_bearing_debt: "52",
+        operating_cash_flow: "15",
+        capital_expenditure: "5",
+      }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [
+        { metricId: "reconstructed_discrete_quarter", parameters: { baseMetricId: "revenue" } },
+        { metricId: "trailing_twelve_month", parameters: { baseMetricId: "revenue" } },
+        { metricId: "period_over_period_change", parameters: { baseMetricId: "revenue" } },
+        { metricId: "gross_margin", parameters: {} },
+        { metricId: "operating_margin", parameters: {} },
+        { metricId: "net_margin", parameters: {} },
+        { metricId: "debt_to_equity", parameters: {} },
+        { metricId: "current_ratio", parameters: {} },
+        { metricId: "free_cash_flow", parameters: {} },
+        { metricId: "return_on_equity", parameters: {} },
+        { metricId: "return_on_assets", parameters: {} },
+      ],
+    });
+
+    expect(result.periods).toHaveLength(1);
+    expect(result.periods[0]).toMatchObject({ fiscalYear: 2026, fiscalQuarter: 2 });
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "reconstructed_discrete_quarter", value: "32" }),
+      expect.objectContaining({ status: "returned", metricId: "trailing_twelve_month", value: "135" }),
+      expect.objectContaining({ status: "returned", metricId: "period_over_period_change", value: "0.142857" }),
+      expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),
+      expect.objectContaining({ status: "returned", metricId: "operating_margin", value: "0.3" }),
+      expect.objectContaining({ status: "returned", metricId: "net_margin", value: "0.2" }),
+      expect.objectContaining({ status: "returned", metricId: "debt_to_equity", value: "0.495238" }),
+      expect.objectContaining({ status: "returned", metricId: "current_ratio", value: "2" }),
+      expect.objectContaining({ status: "returned", metricId: "free_cash_flow", value: "5" }),
+      expect.objectContaining({ status: "returned", metricId: "return_on_equity", value: "0.064" }),
+      expect.objectContaining({ status: "returned", metricId: "return_on_assets", value: "0.032" }),
+    ]);
+    expect(result.derivedOutcomes[1]?.periodObservationIds.length).toBe(5);
+    expect(result.derivedOutcomes.every((metric) => metric.status === "returned" && metric.calculatedAt === "2026-09-01T00:00:00.000Z")).toBe(true);
+  });
+
+  it("derives annual CAGR and isolates annual from quarterly records", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeAnnualRecord(identity, 2023, { revenue: "100", net_income: "10", assets: "150", equity: "70" }),
+      makeAnnualRecord(identity, 2024, { revenue: "121", net_income: "12", assets: "180", equity: "80" }),
+      makeAnnualRecord(identity, 2025, { revenue: "144", net_income: "18", assets: "210", equity: "90" }),
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60", net_income: "12", assets: "210", equity: "105" }),
+    ]);
+
+    const annual = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "annual",
+      range: { kind: "latest_periods", count: 3 },
+      page: { limit: 1, order: "desc" },
+      derivedMetrics: [
+        { metricId: "compound_annual_growth_rate", parameters: { baseMetricId: "revenue", windowPeriods: 3 } },
+        { metricId: "return_on_equity", parameters: {} },
+        { metricId: "return_on_assets", parameters: {} },
+      ],
+    });
+    const quarterly = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [],
+    });
+
+    expect(annual.periods).toHaveLength(1);
+    expect(annual.periods[0]).toMatchObject({ fiscalYear: 2025, fiscalQuarter: null });
+    expect(annual.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "compound_annual_growth_rate", value: "0.2" }),
+      expect.objectContaining({ status: "returned", metricId: "return_on_equity", value: "0.211765" }),
+      expect.objectContaining({ status: "returned", metricId: "return_on_assets", value: "0.092308" }),
+    ]);
+    expect(quarterly.periods[0]).toMatchObject({ fiscalYear: 2026, fiscalQuarter: 2 });
+  });
+
+  it("recomputes from the latest amended revision without mutating historical source rows", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const q1 = makeQuarterRecord(identity, 2026, 1, { revenue: "28", gross_profit: "11.2" });
+    const original = makeQuarterRecord(identity, 2026, 2, { revenue: "50", gross_profit: "20" });
+    const amended = makeQuarterRecord(identity, 2026, 2, { revenue: "60", gross_profit: "24" }, {
+      publicationContext: {
+        revisionId: "mops-2026-q2-consolidated-r1",
+        revisionPublishedAt: "2026-08-20T08:00:00.000Z",
+        publishedAt: "2026-08-20T08:00:00.000Z",
+        revisionSequence: 1,
+        amendment: true,
+      },
+    });
+    await persistence.appendResearchFinancialStatementRecords([q1, original, amended]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 2 },
+      page: { limit: 1, order: "desc" },
+      derivedMetrics: [
+        { metricId: "reconstructed_discrete_quarter", parameters: { baseMetricId: "revenue" } },
+        { metricId: "gross_margin", parameters: {} },
+      ],
+    });
+
+    expect(result.periods[0]).toMatchObject({
+      publishedAt: "2026-08-20",
+      acceptedAt: "2026-08-20T08:00:00.000Z",
+      quality: {
+        amendmentsRestatements: { status: "present", reasonCodes: ["amendmentsRestatements"] },
+      },
+    });
+    expect(result.periods[0]?.sourceFacts.every((fact) => fact.revision.revisionTag === "mops-2026-q2-consolidated-r1")).toBe(true);
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "reconstructed_discrete_quarter", value: "32" }),
+      expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),
+    ]);
+  });
+
+  it("does not fallback across explicit bases and prefers a complete policy-selected basis without merging", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 1, { revenue: "28", equity: "95" }, { filingBasis: "consolidated" }),
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60", equity: "105" }, { filingBasis: "consolidated" }),
+      makeQuarterRecord(identity, 2026, 2, { revenue: "58", equity: "104" }, { filingBasis: "individual" }),
+    ]);
+
+    const policySelected = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 2 },
+      derivedMetrics: [],
+    });
+    const explicitIndividual = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      filingBasis: "individual",
+      range: { kind: "period_end_range", startDate: "2026-01-01", endDate: "2026-03-31" },
+      derivedMetrics: [],
+    });
+
+    expect(policySelected.basisPolicy.selected).toBe("consolidated");
+    expect(policySelected.periods.map((period) => period.filingBasis)).toEqual(["consolidated", "consolidated"]);
+    expect(explicitIndividual.basisPolicy.selected).toBe("individual");
+    expect(explicitIndividual.periods).toEqual([]);
+    expect(explicitIndividual.readiness).toEqual({ status: "withheld", reasonCodes: ["no_authoritative_filing"] });
+  });
+
+  it("filters output facts by metric selection, preserves quality flags, and withholds missing derived inputs without zero fill", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const record = makeQuarterRecord(identity, 2026, 2, {
+      revenue: "60",
+      current_assets: "84",
+    }, {
+      extraFacts: [normalizeResearchFinancialStatementFact({
+        listingId: identity.listing.id,
+        issuerId: identity.issuer.id,
+        filingId: "mops-2026-q2-consolidated",
+        revisionId: "mops-2026-q2-consolidated-r0",
+        statementKind: "income",
+        concept: { qname: "vakwen:CustomMetric", label: "Custom metric" },
+        metric: { state: "unmapped", reason: "no_core_metric_mapping" },
+        contextId: "custom-metric",
+        period: { kind: "duration", startAt: "2026-04-01T00:00:00.000Z", endAt: "2026-06-30T23:59:59.999Z" },
+        valueKind: "discrete",
+        rawValue: "777",
+        unit: { state: "unknown", rawUnitId: "mystery" },
+      })],
+    });
+    await persistence.appendResearchFinancialStatementRecords([record]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "current_ratio", parameters: {} }],
+    });
+
+    expect(result.periods[0]?.sourceFacts.map((fact) => fact.metricId)).toEqual(expect.arrayContaining(["revenue", "current_assets"]));
+    expect(result.periods[0]?.sourceFacts.some((fact) => fact.metricId === "unmapped")).toBe(false);
+    expect(result.periods[0]?.quality.unmappedConcepts.status).toBe("present");
+    expect(result.periods[0]?.quality.unknownUnits.status).toBe("present");
+    expect(result.periods[0]?.sourceFacts.some((fact) => fact.value.state === "present" && fact.value.value === "0")).toBe(false);
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "withheld", metricId: "current_ratio", reasonCode: "missing_inputs" }),
+    ]);
+  });
+
+  it("returns derived metrics only on the first page and rejects bound-cursor mutations", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 1, { revenue: "28", gross_profit: "11.2" }),
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60", gross_profit: "24" }),
+    ]);
+
+    const firstPage = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 2 },
+      page: { limit: 1, order: "desc" },
+      derivedMetrics: [{ metricId: "gross_margin", parameters: {} }],
+    });
+    const secondPage = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 2 },
+      page: { limit: 1, order: "desc", cursor: firstPage.page.nextCursor ?? undefined },
+      derivedMetrics: [{ metricId: "gross_margin", parameters: {} }],
+    });
+
+    expect(firstPage.page.nextCursor).toBeTruthy();
+    expect(firstPage.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),
+    ]);
+    expect(secondPage.periods).toHaveLength(1);
+    expect(secondPage.derivedOutcomes).toEqual([]);
+
+    await expect(getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 2 },
+      page: { limit: 2, order: "desc", cursor: firstPage.page.nextCursor ?? undefined },
+      derivedMetrics: [{ metricId: "gross_margin", parameters: {} }],
+    })).rejects.toMatchObject({ code: "research_cursor_invalid" } satisfies Partial<ResearchServiceError>);
+  });
+});

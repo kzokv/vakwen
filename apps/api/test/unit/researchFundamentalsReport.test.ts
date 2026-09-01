@@ -1,0 +1,287 @@
+import { describe, expect, it } from "vitest";
+import { MemoryPersistence } from "../../src/persistence/memory.js";
+import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import {
+  buildFinancialStatementFundamentalsResearchReport,
+  renderFinancialStatementFundamentalsResearchReportMarkdown,
+} from "../../src/services/research/report.js";
+import type { ResearchFinancialStatementsOutput, ResearchFinancialStatementsQueryInput } from "../../src/services/research/contracts.js";
+
+function makeIdentity() {
+  return canonicalizeOfficialIdentityRow({
+    venue: "TWSE",
+    snapshotDate: "2026-08-31",
+    retrievedAt: "2026-08-31T02:00:00.000Z",
+    artifact: { contentHash: "sha256:financial-report", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+    row: {
+      kind: "company",
+      ticker: "2330",
+      legalName: "台灣積體電路製造股份有限公司",
+      displayName: "台積電",
+      unifiedBusinessNumber: "22099131",
+      industryCode: "24",
+      listedAt: "1994-09-05",
+    },
+  });
+}
+
+function makeFact(periodEndDate: string, fiscalYear: number, fiscalQuarter: 1 | 2 | 3 | 4 | null, metricId: string, value: string, statement: "income" | "balance_sheet" | "cash_flow") {
+  return {
+    observationId: `obs_${metricId}_${fiscalYear}_${fiscalQuarter ?? "annual"}`,
+    statement,
+    metricId,
+    concept: { raw: `ifrs-full:${metricId}`, normalized: { state: "present" as const, value: `ifrs-full:${metricId}` } },
+    label: { raw: metricId, normalized: { state: "present" as const, value: metricId } },
+    value: { state: "present" as const, value },
+    unit: { raw: "iso4217:TWD", normalized: { state: "present" as const, value: "iso4217:TWD" } },
+    scale: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
+    precision: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
+    filingBasis: { raw: "consolidated", normalized: { state: "present" as const, value: "consolidated" as const } },
+    period: {
+      startDate: fiscalQuarter === null ? `${fiscalYear}-01-01` : `${fiscalYear}-${String(((fiscalQuarter - 1) * 3) + 1).padStart(2, "0")}-01`,
+      endDate: periodEndDate,
+      fiscalYear,
+      fiscalQuarter,
+      durationMonths: fiscalQuarter === null ? 12 : 3,
+    },
+    taxonomy: { namespace: "ifrs-full", conceptName: metricId, taxonomyVersion: "2026" },
+    provenanceId: `prv_${fiscalYear}_${fiscalQuarter ?? "annual"}`,
+    ambiguity: { status: "none" as const, relatedObservationIds: [] },
+    relations: { comparableObservationIds: [], supersededByObservationIds: [] },
+    revision: {
+      filingId: `filing_${fiscalYear}_${fiscalQuarter ?? "annual"}`,
+      accessionNumber: null,
+      amended: false,
+      restated: false,
+      revisionTag: `r0`,
+    },
+  };
+}
+
+function makePeriod(fiscalYear: number, fiscalQuarter: 1 | 2 | 3 | 4 | null, revenue: string): ResearchFinancialStatementsOutput["periods"][number] {
+  const periodEndDate = fiscalQuarter === null
+    ? `${fiscalYear}-12-31`
+    : `${fiscalYear}-${String(fiscalQuarter * 3).padStart(2, "0")}-${fiscalQuarter === 1 ? "31" : fiscalQuarter === 2 ? "30" : fiscalQuarter === 3 ? "30" : "31"}`;
+  return {
+    filingPeriodId: `period_${fiscalYear}_${fiscalQuarter ?? "annual"}`,
+    fiscalYear,
+    fiscalQuarter,
+    periodStartDate: fiscalQuarter === null ? `${fiscalYear}-01-01` : `${fiscalYear}-${String(((fiscalQuarter - 1) * 3) + 1).padStart(2, "0")}-01`,
+    periodEndDate,
+    publishedAt: periodEndDate,
+    filingDate: periodEndDate,
+    acceptedAt: `${periodEndDate}T12:00:00.000Z`,
+    filingBasis: "consolidated",
+    statements: ["income", "balance_sheet", "cash_flow"],
+    sourceFacts: [
+      makeFact(periodEndDate, fiscalYear, fiscalQuarter, "revenue", revenue, "income"),
+      makeFact(periodEndDate, fiscalYear, fiscalQuarter, "assets", "100", "balance_sheet"),
+      makeFact(periodEndDate, fiscalYear, fiscalQuarter, "operating_cash_flow", "10", "cash_flow"),
+    ],
+    quality: {
+      taxonomyChanges: { status: "clear", reasonCodes: [], observationIds: [] },
+      amendmentsRestatements: { status: "clear", reasonCodes: [], observationIds: [] },
+      duplicateContexts: { status: "clear", reasonCodes: [], observationIds: [] },
+      unmappedConcepts: { status: "clear", reasonCodes: [], observationIds: [] },
+      unknownUnits: { status: "clear", reasonCodes: [], observationIds: [] },
+      ambiguousBasis: { status: "clear", reasonCodes: [], observationIds: [] },
+    },
+  };
+}
+
+function buildStatementsOutput(
+  listingId: string,
+  periodicity: "annual" | "quarterly",
+  periods: ResearchFinancialStatementsOutput["periods"],
+  classification: "operating_company" | "financial_institution" = "operating_company",
+): ResearchFinancialStatementsOutput {
+  return {
+    contractVersion: "research-financial-statements/1.0.0",
+    selector: { kind: "listing_id", listingId },
+    context: {
+      knowledgeAt: "2026-09-01T00:00:00.000Z",
+      effectiveAt: "2026-09-01T00:00:00.000Z",
+      assessmentMode: "effective",
+    },
+    identity: {
+      issuer: { id: "iss_2330", classification },
+      security: { id: "sec_2330", issuerId: "iss_2330", type: "common_equity", rights: "common_shares" },
+      listing: { id: listingId, securityId: "sec_2330", venue: "TWSE", ticker: "2330", listedAt: "1994-09-05", status: "active" },
+      displayName: "台積電",
+      eligibility: { profile: "operating_company", state: "eligible", reasonCode: "supported_common_equity" },
+      availability: { status: "eligible", reasonCode: "operating_company" },
+    },
+    periodicity,
+    range: { kind: "latest_periods", count: periodicity === "annual" ? 3 : 8 },
+    basisPolicy: {
+      requested: "policy_selected",
+      selected: "consolidated",
+      policyId: "mops-xbrl-basis-selection/1.0.0",
+      fallbackApplied: false,
+    },
+    statements: ["income", "balance_sheet", "cash_flow"],
+    metricSelection: { base: "required_core", groups: [], explicitMetricIds: [] },
+    derivedMetricRequests: [],
+    coverage: { status: "complete", requestedPeriodCount: periodicity === "annual" ? 3 : 8, returnedPeriodCount: periods.length },
+    freshness: { state: "current", authoritativeAsOf: periods[0]?.filingDate ?? null, latestAcceptedAt: periods[0]?.acceptedAt ?? null },
+    completeness: { status: "complete", missingFactCount: 0, missingMetricCount: 0 },
+    confidence: { status: "high", reasonCodes: [] },
+    readiness: { status: "ready", reasonCodes: [] },
+    periods,
+    derivedOutcomes: [],
+    gaps: [],
+    conflicts: [],
+    recovery: [],
+    provenanceIndex: periods.map((period) => ({
+      provenanceId: period.sourceFacts[0]!.provenanceId,
+      publisher: "MOPS" as const,
+      accessProvider: "MOPS_XBRL" as const,
+      authorityRole: "authoritative" as const,
+      publisherDataset: "mops_xbrl",
+      sourceUrl: "https://mops.twse.com.tw/server-java/t164sb01",
+      contentHash: `sha256:${period.filingPeriodId}`,
+      retrievedAt: "2026-09-01T00:00:00.000Z",
+    })),
+    page: { limit: periodicity === "annual" ? 3 : 8, order: "desc", nextCursor: null, recordCount: periods.length, truncatedByBudget: false },
+  };
+}
+
+describe("financial statement fundamentals report", () => {
+  it("operating company fixture: support YoY, annual trend, and quarterly trend from canonical statements only", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      {
+        subject: { kind: "listing_id", listingId: identity.listing.id },
+        context: {
+          knowledgeAt: "2026-09-01T00:00:00.000Z",
+          effectiveAt: "2026-09-01T00:00:00.000Z",
+          assessmentMode: "effective",
+        },
+      },
+      {
+        getResearchManifestImpl: async () => ({
+          contractVersion: "research-manifest/1.0.0",
+          selector: { kind: "listing_id", listingId: identity.listing.id },
+          context: {
+            knowledgeAt: "2026-09-01T00:00:00.000Z",
+            effectiveAt: "2026-09-01T00:00:00.000Z",
+            assessmentMode: "effective",
+          },
+          eligibility: identity.eligibility,
+          orchestration: { skillExposure: "enabled" as const },
+          datasets: [
+            { id: "research_identity", status: "available" as const },
+            { id: "price_series", status: "unavailable" as const, reasonCode: "no_authoritative_price_history" },
+            { id: "exchange_valuation_references", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "monthly_revenue", status: "unavailable" as const, reasonCode: "not_acquired" },
+            { id: "financial_statements", status: "available" as const },
+            { id: "institutional_trading", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "foreign_ownership", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "margin_and_short_balances", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "dividend_events", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "material_announcements", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "investor_materials", status: "unavailable" as const, reasonCode: "identity_only_release" },
+          ],
+        }) as never,
+        getFinancialStatementsImpl: async (_persistence, financialQuery: ResearchFinancialStatementsQueryInput) => (
+          financialQuery.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", [
+                makePeriod(2023, null, "140"),
+                makePeriod(2024, null, "160"),
+                makePeriod(2025, null, "200"),
+              ])
+            : buildStatementsOutput(identity.listing.id, "quarterly", [
+                makePeriod(2024, 1, "35"),
+                makePeriod(2024, 2, "38"),
+                makePeriod(2024, 3, "39"),
+                makePeriod(2024, 4, "48"),
+                makePeriod(2025, 1, "46"),
+                makePeriod(2025, 2, "49"),
+                makePeriod(2025, 3, "50"),
+                makePeriod(2025, 4, "55"),
+              ])
+        ),
+      },
+    );
+
+    expect(report.conclusions.map((item) => item.status)).toEqual(["supported", "supported", "supported"]);
+    expect(report.conclusions[0]?.statement).toContain("2025 changed 25%");
+    expect(report.conclusions[1]?.statement).toContain("3 complete periods");
+    expect(report.conclusions[2]?.statement).toContain("8 comparable discrete quarters");
+    const markdown = renderFinancialStatementFundamentalsResearchReportMarkdown(report);
+    expect(markdown).toContain("# Taiwan Financial Statement Fundamentals: 台積電");
+    expect(markdown).toContain("- latest_revenue_yoy: supported");
+  });
+
+  it("unsupported sector fixture: withhold every conclusion explicitly", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      {
+        subject: { kind: "listing_id", listingId: identity.listing.id },
+        context: {
+          knowledgeAt: "2026-09-01T00:00:00.000Z",
+          effectiveAt: "2026-09-01T00:00:00.000Z",
+          assessmentMode: "effective",
+        },
+      },
+      {
+        getResearchManifestImpl: async () => ({
+          contractVersion: "research-manifest/1.0.0",
+          selector: { kind: "listing_id", listingId: identity.listing.id },
+          context: {
+            knowledgeAt: "2026-09-01T00:00:00.000Z",
+            effectiveAt: "2026-09-01T00:00:00.000Z",
+            assessmentMode: "effective",
+          },
+          eligibility: identity.eligibility,
+          orchestration: { skillExposure: "enabled" as const },
+          datasets: [
+            { id: "research_identity", status: "available" as const },
+            { id: "price_series", status: "unavailable" as const, reasonCode: "no_authoritative_price_history" },
+            { id: "exchange_valuation_references", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "monthly_revenue", status: "unavailable" as const, reasonCode: "not_acquired" },
+            { id: "financial_statements", status: "available" as const },
+            { id: "institutional_trading", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "foreign_ownership", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "margin_and_short_balances", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "dividend_events", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "material_announcements", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "investor_materials", status: "unavailable" as const, reasonCode: "identity_only_release" },
+          ],
+        }) as never,
+        getFinancialStatementsImpl: async (_persistence, financialQuery: ResearchFinancialStatementsQueryInput) => (
+          financialQuery.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", [
+                makePeriod(2023, null, "140"),
+                makePeriod(2024, null, "160"),
+                makePeriod(2025, null, "200"),
+              ], "financial_institution")
+            : buildStatementsOutput(identity.listing.id, "quarterly", [
+                makePeriod(2024, 1, "35"),
+                makePeriod(2024, 2, "38"),
+                makePeriod(2024, 3, "39"),
+                makePeriod(2024, 4, "48"),
+                makePeriod(2025, 1, "46"),
+                makePeriod(2025, 2, "49"),
+                makePeriod(2025, 3, "50"),
+                makePeriod(2025, 4, "55"),
+              ], "financial_institution")
+        ),
+      },
+    );
+
+    expect(report.conclusions).toEqual([
+      expect.objectContaining({ id: "latest_revenue_yoy", status: "withheld", reasonCodes: ["unsupported_sector"] }),
+      expect.objectContaining({ id: "multi_year_revenue_trend", status: "withheld", reasonCodes: ["unsupported_sector"] }),
+      expect.objectContaining({ id: "quarterly_revenue_trend", status: "withheld", reasonCodes: ["unsupported_sector"] }),
+    ]);
+  });
+});

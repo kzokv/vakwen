@@ -22,6 +22,11 @@ import {
   parseOfficialMonthlyRevenueSnapshot,
   type RevenueIdentityLookup,
 } from "./providers/monthlyRevenue.js";
+import {
+  parseMopsFinancialStatementArtifact,
+  type MopsFinancialStatementArtifact,
+  type MopsFinancialStatementDescriptor,
+} from "./providers/mopsXbrl.js";
 import { researchAcquisitionEnabled } from "./rollout.js";
 import {
   parseOfficialSecuritiesFirmDirectory,
@@ -50,6 +55,14 @@ import {
   parseTwseSuspensionSnapshot,
 } from "./providers/twsePrice.js";
 import type { ResearchMonthlyRevenueRecord } from "./monthlyRevenue.js";
+import {
+  normalizeResearchFinancialStatementFact,
+  type ResearchFinancialStatementAmbiguityFlag,
+  type ResearchFinancialStatementFact,
+  type ResearchFinancialStatementKind,
+  type ResearchFinancialStatementRecord,
+  researchFinancialStatementRecordKey,
+} from "./financialStatements.js";
 
 export const OFFICIAL_IDENTITY_SOURCES = {
   twseCompanies: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
@@ -78,6 +91,8 @@ export const OFFICIAL_PRICE_SOURCES = {
   tpexSuspensionsHistory: "https://www.tpex.org.tw/openapi/v1/tpex_spendi_history",
 } as const;
 
+export const OFFICIAL_FINANCIAL_STATEMENT_BASE_URL = "https://mops.twse.com.tw/server-java/t164sb01";
+
 const TPEX_DELISTING_FIRST_YEAR = 2021;
 const ETF_ABSENCE_COMPLETENESS_GUARD_PERCENT = 1;
 const MONTHLY_REVENUE_MINIMUM_COVERAGE_PERCENT = 80;
@@ -102,6 +117,11 @@ interface IdentityAcquisitionOptions extends AcquisitionOptions {
   recordEtfAbsenceEvidence?: boolean;
 }
 
+interface FinancialStatementAcquisitionOptions extends AcquisitionOptions {
+  descriptors?: readonly MopsFinancialStatementDescriptor[];
+  resolveDescriptors?: () => Promise<readonly MopsFinancialStatementDescriptor[]>;
+}
+
 async function fetchArtifact(fetchImpl: typeof fetch, sourceUrl: string, init?: RequestInit) {
   const response = await fetchImpl(sourceUrl, {
     ...init,
@@ -117,6 +137,249 @@ async function fetchArtifact(fetchImpl: typeof fetch, sourceUrl: string, init?: 
     metadata: {
       sourceUrl,
       contentHash: `sha256:${createHash("sha256").update(body).digest("hex")}`,
+    },
+  };
+}
+
+async function fetchRawArtifact(fetchImpl: typeof fetch, sourceUrl: string, init?: RequestInit) {
+  const response = await fetchImpl(sourceUrl, {
+    ...init,
+    headers: { accept: "application/xhtml+xml,application/xml,text/xml,text/html;q=0.9,*/*;q=0.8" },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) {
+    throw new Error(`Official MOPS financial statement source ${sourceUrl} returned HTTP ${response.status}`);
+  }
+  const body = await response.text();
+  return {
+    body,
+    metadata: {
+      sourceUrl,
+      contentHash: `sha256:${createHash("sha256").update(body).digest("hex")}`,
+    },
+  };
+}
+
+function statementKindForMopsRole(role: MopsFinancialStatementArtifact["facts"][number]["statementRole"]): ResearchFinancialStatementKind | null {
+  switch (role) {
+    case "income_statement":
+      return "income";
+    case "balance_sheet":
+      return "balance_sheet";
+    case "cash_flow_statement":
+      return "cash_flow";
+    case "equity_statement":
+      return "equity";
+    case "unknown":
+      return "sector_extension";
+    default:
+      return null;
+  }
+}
+
+function metricIdForLocalName(localName: string): ResearchFinancialStatementFact["metric"] {
+  switch (localName) {
+    case "RevenueFromContractsWithCustomers":
+    case "Revenue":
+      return { state: "mapped", metricId: "revenue" };
+    case "GrossProfit":
+      return { state: "mapped", metricId: "gross_profit" };
+    case "OperatingIncomeLoss":
+      return { state: "mapped", metricId: "operating_income" };
+    case "ProfitLoss":
+      return { state: "mapped", metricId: "net_income" };
+    case "Assets":
+      return { state: "mapped", metricId: "assets" };
+    case "Liabilities":
+      return { state: "mapped", metricId: "liabilities" };
+    case "EquityAttributableToOwnersOfParent":
+    case "Equity":
+      return { state: "mapped", metricId: "equity" };
+    case "CurrentAssets":
+      return { state: "mapped", metricId: "current_assets" };
+    case "CurrentLiabilities":
+      return { state: "mapped", metricId: "current_liabilities" };
+    case "CashAndCashEquivalents":
+      return { state: "mapped", metricId: "cash_and_cash_equivalents" };
+    case "InterestBearingBorrowings":
+      return { state: "mapped", metricId: "interest_bearing_debt" };
+    case "CashFlowsFromUsedInOperatingActivities":
+    case "NetCashFlowsFromUsedInOperatingActivities":
+      return { state: "mapped", metricId: "operating_cash_flow" };
+    case "CashFlowsFromUsedInInvestingActivities":
+    case "NetCashFlowsFromUsedInInvestingActivities":
+      return { state: "mapped", metricId: "investing_cash_flow" };
+    case "PurchaseOfPropertyPlantAndEquipment":
+    case "AcquisitionOfPropertyPlantAndEquipment":
+      return { state: "mapped", metricId: "capital_expenditure" };
+    default:
+      return { state: "unmapped", reason: "no_core_metric_mapping" };
+  }
+}
+
+function timestampAtEndOfDay(date: string): string {
+  return `${date}T23:59:59.999Z`;
+}
+
+function timestampAtStartOfDay(date: string): string {
+  return `${date}T00:00:00.000Z`;
+}
+
+function valueKindForArtifactFact(
+  fact: MopsFinancialStatementArtifact["facts"][number],
+): ResearchFinancialStatementFact["context"]["valueKind"] {
+  if (!fact.periodStart) return "instant";
+  return "cumulative";
+}
+
+function artifactAmbiguityFlags(
+  artifact: MopsFinancialStatementArtifact,
+): ResearchFinancialStatementAmbiguityFlag[] {
+  return [
+    ...(artifact.issues.contextAmbiguity ? ["duplicate_context" as const] : []),
+    ...(artifact.issues.unmappedConcepts.length > 0 ? ["unmapped_concept" as const] : []),
+    ...(artifact.issues.unknownUnitIds.length > 0 ? ["unknown_unit" as const] : []),
+    ...(artifact.issues.basisAmbiguity ? ["filing_basis_ambiguous" as const] : []),
+    ...(artifact.issues.taxonomyAmbiguity ? ["taxonomy_change" as const] : []),
+  ];
+}
+
+async function canonicalizeFinancialStatementArtifact(
+  persistence: Persistence,
+  artifact: MopsFinancialStatementArtifact,
+): Promise<ResearchFinancialStatementRecord> {
+  const unitsById = new Map(artifact.units.map((unit) => [unit.id, unit] as const));
+  const duplicateContextIds = new Set(
+    artifact.issues.duplicateContextGroups.flatMap((group) => group.contextIds),
+  );
+  const statementFacts = new Map<ResearchFinancialStatementKind, ResearchFinancialStatementFact[]>();
+  const pushFact = (statementKind: ResearchFinancialStatementKind, fact: ResearchFinancialStatementFact) => {
+    const current = statementFacts.get(statementKind) ?? [];
+    current.push(fact);
+    statementFacts.set(statementKind, current);
+  };
+  for (const fact of artifact.facts) {
+    const statementKind = statementKindForMopsRole(fact.statementRole);
+    if (!statementKind) continue;
+    const unit = fact.unitRef ? unitsById.get(fact.unitRef) : undefined;
+    pushFact(statementKind, normalizeResearchFinancialStatementFact({
+      listingId: artifact.listingId,
+      issuerId: artifact.issuerId,
+      filingId: artifact.filing.filingId,
+      revisionId: `${artifact.filing.filingId}:r${artifact.filing.revision}`,
+      statementKind,
+      concept: {
+        qname: fact.concept.qname,
+        label: fact.concept.localName,
+      },
+      metric: metricIdForLocalName(fact.concept.localName),
+      contextId: fact.contextRef,
+      dimensions: Object.fromEntries(fact.contextDimensions.map((dimension) => [dimension.dimension, dimension.member] as const)),
+      period: fact.periodStart
+        ? {
+            kind: "duration",
+            startAt: timestampAtStartOfDay(fact.periodStart),
+            endAt: timestampAtEndOfDay(fact.periodEnd ?? artifact.filing.periodEnd),
+          }
+        : {
+            kind: "instant",
+            instantAt: timestampAtEndOfDay(fact.periodEnd ?? artifact.filing.periodEnd),
+          },
+      valueKind: valueKindForArtifactFact(fact),
+      rawValue: fact.rawValue,
+      unit: unit
+        ? { state: "known", unitId: unit.measures[0] ?? fact.unitRef ?? "unknown" }
+        : { state: "unknown", rawUnitId: fact.unitRef },
+      declaredScale: fact.scale,
+      declaredPrecision: fact.decimals,
+      ambiguityFlags: [
+        ...(duplicateContextIds.has(fact.contextRef) ? ["duplicate_context" as const] : []),
+        ...(artifact.issues.basisAmbiguity ? ["filing_basis_ambiguous" as const] : []),
+        ...(artifact.issues.taxonomyAmbiguity ? ["taxonomy_change" as const] : []),
+      ],
+    }));
+  }
+  const revisionId = `${artifact.filing.filingId}:r${artifact.filing.revision}`;
+  const statements: ResearchFinancialStatementRecord["statements"] = [
+    { kind: "income", facts: statementFacts.get("income") ?? [] },
+    { kind: "balance_sheet", facts: statementFacts.get("balance_sheet") ?? [] },
+    { kind: "cash_flow", facts: statementFacts.get("cash_flow") ?? [] },
+    ...(statementFacts.has("equity") ? [{ kind: "equity" as const, facts: statementFacts.get("equity") ?? [] }] : []),
+    ...(statementFacts.has("sector_extension")
+      ? [{ kind: "sector_extension" as const, facts: statementFacts.get("sector_extension") ?? [], metadata: { sector: artifact.sector } }]
+      : []),
+  ];
+  const periodToken = artifact.filing.fiscalPeriod === "annual"
+    ? String(artifact.filing.fiscalYear).padStart(4, "0")
+    : `${String(artifact.filing.fiscalYear).padStart(4, "0")}-Q${artifact.filing.fiscalPeriod.slice(1)}`;
+  const predecessorCandidates = artifact.filing.revision > 0
+    ? await persistence.listLatestResearchFinancialStatementRecords({
+        subject: { kind: "listing_id", listingId: artifact.listingId },
+        effectiveAt: timestampAtEndOfDay(artifact.filing.publishedAt),
+        knowledgeAt: artifact.artifact.retrievedAt,
+        periodicity: artifact.filing.fiscalPeriod === "annual" ? "annual" : "quarterly",
+        filingBasis: artifact.filing.filingBasis,
+        startPeriod: periodToken,
+        endPeriod: periodToken,
+      })
+    : [];
+  const predecessor = predecessorCandidates
+    .filter((candidate) => candidate.publicationContext.revisionSequence < artifact.filing.revision)
+    .sort((left, right) => right.publicationContext.revisionSequence - left.publicationContext.revisionSequence)[0];
+  const relations: ResearchFinancialStatementRecord["relations"] = predecessor
+    ? [{
+        kind: "supersedes",
+        targetRecordKey: researchFinancialStatementRecordKey(predecessor),
+      }]
+    : [];
+  return {
+    listingId: artifact.listingId,
+    issuerId: artifact.issuerId,
+    ticker: artifact.ticker,
+    venue: artifact.venue,
+    periodicity: artifact.filing.fiscalPeriod === "annual" ? "annual" : "quarterly",
+    fiscalPeriod: {
+      fiscalYear: artifact.filing.fiscalYear,
+      fiscalQuarter: artifact.filing.fiscalPeriod === "annual" ? null : Number(artifact.filing.fiscalPeriod.slice(1)) as 1 | 2 | 3 | 4,
+      periodStart: artifact.filing.periodStart,
+      periodEnd: artifact.filing.periodEnd,
+    },
+    filingBasis: artifact.filing.filingBasis,
+    publicationContext: {
+      filingId: artifact.filing.filingId,
+      revisionId,
+      publishedAt: new Date(`${artifact.filing.publishedAt}T00:00:00+08:00`).toISOString(),
+      revisionPublishedAt: artifact.filing.revision > 0
+        ? new Date(`${artifact.filing.publishedAt}T00:00:00+08:00`).toISOString()
+        : null,
+      filingSequence: 0,
+      revisionSequence: artifact.filing.revision,
+      processingId: artifact.artifact.contentHash,
+      processingSequence: 0,
+      restatement: artifact.filing.amendmentType === "restatement",
+      amendment: artifact.filing.amendmentType === "amendment",
+    },
+    statements,
+    relations,
+    ambiguityFlags: artifactAmbiguityFlags(artifact),
+    provenance: {
+      id: `prv_${createHash("sha256").update([artifact.listingId, artifact.filing.filingId, artifact.artifact.contentHash].join("\u001f")).digest("hex").slice(0, 32)}`,
+      publisher: "MOPS",
+      accessProvider: "MOPS_XBRL",
+      authorityRole: "authoritative",
+      canonicalDatasetId: "financial_statements",
+      publisherDataset: artifact.artifact.artifactKind === "ixbrl" ? "mops_ixbrl" : "mops_xbrl",
+      sourceUrl: artifact.artifact.sourceUrl,
+      contentHash: artifact.artifact.contentHash,
+      acquisitionPath: "scheduled_official_snapshot",
+      acquisitionRunId: artifact.artifact.acquisitionRunId,
+      retrievedAt: artifact.artifact.retrievedAt,
+      processedAt: artifact.artifact.retrievedAt,
+      parserVersion: "research-financial-statements-parser/1.0.0",
+      taxonomyVersion: artifact.artifact.taxonomyVersions[0] ?? artifact.artifact.primaryNamespace ?? "unknown",
+      usagePolicyVersion: "taiwan-open-data/1.0.0",
+      retentionStatus: "retained",
+      contentExposure: "allowed",
     },
   };
 }
@@ -996,5 +1259,36 @@ export async function runOfficialMonthlyRevenueAcquisition(
     recordCount: records.length,
     retrievedAt,
     months: [...new Set(records.map((record) => record.revenueMonth))].sort(),
+  };
+}
+
+export async function runOfficialFinancialStatementAcquisition(
+  persistence: Persistence,
+  options: FinancialStatementAcquisitionOptions = {},
+) {
+  if (!researchAcquisitionEnabled()) {
+    throw new ResearchAcquisitionDisabledError();
+  }
+  const descriptors = options.descriptors ?? await options.resolveDescriptors?.() ?? [];
+  if (descriptors.length === 0) {
+    throw new Error("Official MOPS financial statement acquisition requires at least one descriptor");
+  }
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const retrievedAt = options.retrievedAt ?? new Date().toISOString();
+  const acquisitionRunId = options.acquisitionRunId ?? `research-financial-statements-${retrievedAt}`;
+  const records = await Promise.all(descriptors.map(async (descriptor) => {
+    const artifact = await fetchRawArtifact(fetchImpl, descriptor.sourceUrl);
+    return canonicalizeFinancialStatementArtifact(persistence, parseMopsFinancialStatementArtifact(artifact.body, descriptor, {
+      retrievedAt,
+      acquisitionRunId,
+      contentHash: artifact.metadata.contentHash,
+    }));
+  }));
+  await persistence.appendResearchFinancialStatementRecords(records);
+  return {
+    acquisitionRunId,
+    sourceCount: descriptors.length,
+    recordCount: records.length,
+    retrievedAt,
   };
 }

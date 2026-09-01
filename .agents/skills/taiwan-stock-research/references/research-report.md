@@ -183,3 +183,78 @@ Include:
 - every provenance ID
 
 Do not add forecasts, recommendations, valuation claims, or any conclusion that is stronger than the returned `conclusion` object.
+
+## Financial-statement fundamentals contract
+
+Use this shape when the user asked for financial-statement fundamentals and the manifest marks `financial_statements` as `available`. The source of record is the canonical store populated only from official MOPS XBRL or iXBRL artifacts.
+
+```json
+{
+  "contractVersion": "research-report/3.0.0",
+  "profile": "financial_statement_fundamentals",
+  "selector": { "kind": "listing_id", "listingId": "..." },
+  "context": {
+    "knowledgeAt": "ISO-8601 timestamp",
+    "effectiveAt": "ISO-8601 timestamp",
+    "assessmentMode": "effective | as_recorded | re_evaluate",
+    "policySetVersion": "present only for re_evaluate"
+  },
+  "generatedAt": "the fixed knowledgeAt timestamp",
+  "sections": [
+    {
+      "id": "identity",
+      "issuer": "canonical issuer object",
+      "security": "canonical security object",
+      "listing": "canonical listing object",
+      "displayName": "latest effective normalized value or null"
+    },
+    {
+      "id": "minimum_windows",
+      "windows": {
+        "latestYearOverYear": "latest due filing plus prior-year comparable",
+        "multiYearTrendAnnualPeriods": 3,
+        "quarterlyTrendDiscreteQuarters": 8
+      }
+    },
+    {
+      "id": "independent_facts",
+      "sector": "returned sector classification",
+      "periods": [
+        {
+          "fiscalYear": 2025,
+          "fiscalPeriod": "annual | q1 | q2 | q3 | q4",
+          "basis": "consolidated | individual | unknown",
+          "taxonomyVersion": "returned taxonomy version or null",
+          "requiredStatementsPresent": true,
+          "issues": {
+            "basisAmbiguity": false,
+            "taxonomyAmbiguity": false,
+            "contextAmbiguity": false,
+            "unknownUnitIds": []
+          },
+          "facts": ["selected independent source facts already carried by the stored artifact"]
+        }
+      ]
+    }
+  ],
+  "conclusions": [
+    {
+      "id": "latest_revenue_yoy | multi_year_revenue_trend | quarterly_revenue_trend",
+      "status": "supported | withheld",
+      "statement": "exact canonical statement",
+      "reasonCodes": ["exact canonical withholding reasons when present"]
+    }
+  ],
+  "evidence": {
+    "provenanceIds": ["each distinct financial-statement provenance record used by the report"]
+  }
+}
+```
+
+### Financial-statement guardrails
+
+- Treat official MOPS iXBRL or XBRL only as authoritative for financial-statement coverage.
+- Preserve filing revisions, amendments, restatements, taxonomy version, unit metadata, context metadata, duplicate contexts, unknown units, and unmapped concepts explicitly.
+- Distinguish cumulative Source Facts from any discrete-quarter derived output; never claim a synthetic quarter as a source fact.
+- Withhold conclusions for unsupported sectors, missing required statements, unresolved basis or taxonomy or context ambiguity, unknown units, or insufficient windows.
+- Do not forecast, value, recommend, or rank securities from this artifact.

@@ -1,0 +1,120 @@
+import { describe, expect, it } from "vitest";
+import {
+  parseMopsFinancialStatementArtifact,
+  type MopsFinancialStatementDescriptor,
+} from "../../src/services/research/providers/mopsXbrl.js";
+
+const xbrlDescriptor: MopsFinancialStatementDescriptor = {
+  listingId: "lst_2330_twse",
+  issuerId: "iss_22099131",
+  ticker: "2330",
+  venue: "TWSE",
+  sector: "operating_company",
+  sourceUrl: "https://mops.twse.com.tw/server-java/t164sb01?co_id=2330&year=2026&season=2",
+  filing: {
+    filingId: "mops:2330:2026:q2:r2",
+    fiscalYear: 2026,
+    fiscalPeriod: "q2",
+    periodStart: "2026-01-01",
+    periodEnd: "2026-06-30",
+    filingBasis: "consolidated",
+    publishedAt: "2026-08-14",
+    revision: 2,
+    amendmentType: "restatement",
+  },
+};
+
+describe("MOPS XBRL provider parser", () => {
+  it("xbrl parser: preserve authoritative artifact metadata and explicit ambiguity flags → no convenience-summary synthesis", () => {
+    const artifact = parseMopsFinancialStatementArtifact(
+      `<?xml version="1.0" encoding="utf-8"?>
+      <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+        xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+        xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full"
+        xmlns:tifrs-bsci-ci="https://mops.twse.com.tw/taxonomy/2026/tifrs-bsci-ci"
+        xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
+        <xbrli:context id="ctx_consolidated">
+          <xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity>
+          <xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period>
+          <xbrli:scenario>
+            <xbrldi:explicitMember dimension="tifrs-bsci-ci:StatementBasisAxis">tifrs-bsci-ci:ConsolidatedEntitiesMember</xbrldi:explicitMember>
+          </xbrli:scenario>
+        </xbrli:context>
+        <xbrli:context id="ctx_consolidated_dup">
+          <xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity>
+          <xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period>
+          <xbrli:scenario>
+            <xbrldi:explicitMember dimension="tifrs-bsci-ci:StatementBasisAxis">tifrs-bsci-ci:ConsolidatedEntitiesMember</xbrldi:explicitMember>
+          </xbrli:scenario>
+        </xbrli:context>
+        <xbrli:context id="ctx_individual">
+          <xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity>
+          <xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period>
+          <xbrli:scenario>
+            <xbrldi:explicitMember dimension="tifrs-bsci-ci:StatementBasisAxis">tifrs-bsci-ci:SeparateFinancialStatementsMember</xbrldi:explicitMember>
+          </xbrli:scenario>
+        </xbrli:context>
+        <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
+        <ifrs-full:Assets contextRef="ctx_consolidated" unitRef="twd">3450000</ifrs-full:Assets>
+        <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_consolidated" unitRef="twd">1234000</ifrs-full:RevenueFromContractsWithCustomers>
+        <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_individual" unitRef="twd">1111000</ifrs-full:RevenueFromContractsWithCustomers>
+        <ifrs-full:CashFlowsFromUsedInOperatingActivities contextRef="ctx_consolidated" unitRef="unknown_unit">88000</ifrs-full:CashFlowsFromUsedInOperatingActivities>
+        <custom:UnmappedMetric contextRef="ctx_consolidated" unitRef="twd">42</custom:UnmappedMetric>
+      </xbrli:xbrl>`,
+      xbrlDescriptor,
+      {
+        retrievedAt: "2026-08-15T00:00:00.000Z",
+        acquisitionRunId: "financial-statements-test",
+      },
+    );
+
+    expect(artifact.artifact.publisher).toBe("MOPS");
+    expect(artifact.artifact.accessProvider).toBe("MOPS_XBRL");
+    expect(artifact.filing.amendmentType).toBe("restatement");
+    expect(artifact.issues.duplicateContextGroups).toHaveLength(1);
+    expect(artifact.issues.unknownUnitIds).toEqual(["unknown_unit"]);
+    expect(artifact.issues.unmappedConcepts).toEqual(["custom:UnmappedMetric"]);
+    expect(artifact.issues.basisAmbiguity).toBe(true);
+    expect(artifact.issues.contextAmbiguity).toBe(true);
+    expect(artifact.facts.map((fact) => fact.concept.localName)).toContain("RevenueFromContractsWithCustomers");
+    expect(artifact.contexts).toHaveLength(3);
+    expect(artifact.units).toHaveLength(1);
+  });
+
+  it("ixbrl parser: preserve inline facts, scale, and taxonomy lineage → no quarter synthesis during parsing", () => {
+    const artifact = parseMopsFinancialStatementArtifact(
+      `<!DOCTYPE html>
+      <html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
+        xmlns:xbrli="http://www.xbrl.org/2003/instance"
+        xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+        xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full"
+        xmlns:tifrs-bsci-ci="https://mops.twse.com.tw/taxonomy/2026/tifrs-bsci-ci">
+        <body>
+          <xbrli:context id="ctx_q2">
+            <xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity>
+            <xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period>
+          </xbrli:context>
+          <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
+          <ix:nonFraction name="ifrs-full:RevenueFromContractsWithCustomers" contextRef="ctx_q2" unitRef="twd" scale="3">1,234</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:ProfitLoss" contextRef="ctx_q2" unitRef="twd">88</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:CashFlowsFromUsedInOperatingActivities" contextRef="ctx_q2" unitRef="twd">66</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:Assets" contextRef="ctx_q2" unitRef="twd">999</ix:nonFraction>
+        </body>
+      </html>`,
+      {
+        ...xbrlDescriptor,
+        sourceUrl: "https://mops.twse.com.tw/server-java/t164sb01?co_id=2330&year=2026&season=2&step=ix",
+      },
+      {
+        retrievedAt: "2026-08-15T00:00:00.000Z",
+        acquisitionRunId: "financial-statements-test",
+      },
+    );
+
+    expect(artifact.artifact.artifactKind).toBe("ixbrl");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "RevenueFromContractsWithCustomers")?.normalizedValue)
+      .toBe("1234000");
+    expect(artifact.issues.missingStatementRoles).toEqual([]);
+    expect(artifact.issues.taxonomyAmbiguity).toBe(true);
+  });
+});

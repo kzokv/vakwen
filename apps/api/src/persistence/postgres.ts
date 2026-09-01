@@ -47,6 +47,17 @@ import {
   type ResearchMonthlyRevenueRecord,
   type ResearchMonthlyRevenueRecordQuery,
 } from "../services/research/monthlyRevenue.js";
+import {
+  materializeResearchFinancialStatementRecord,
+  type ResearchFinancialStatementAppendInput,
+  researchFinancialStatementRecordKey,
+  researchFinancialStatementRecordSortOrder,
+  resolveLatestResearchFinancialStatementRecords,
+  validateResearchFinancialStatementQuery,
+  validateResearchFinancialStatementRecord,
+  type ResearchFinancialStatementRecord,
+  type ResearchFinancialStatementRecordQuery,
+} from "../services/research/financialStatements.js";
 import { buildRedisSocketOptions } from "../lib/redisClientOptions.js";
 import { loadMigrationManifest } from "./migrationManifest.js";
 import {
@@ -1645,6 +1656,100 @@ export class PostgresPersistence implements Persistence {
     );
     return resolveLatestMonthlyRevenueRecords(result.rows.map(({ record }) => record))
       .sort(researchMonthlyRevenueRecordSortOrder);
+  }
+
+  async appendResearchFinancialStatementRecords(
+    records: readonly ResearchFinancialStatementAppendInput[],
+  ): Promise<void> {
+    if (records.length === 0) return;
+    const materialized = records.map((record) => materializeResearchFinancialStatementRecord(record));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of materialized) {
+        validateResearchFinancialStatementRecord(record);
+        await client.query(
+          `INSERT INTO research.financial_statement_records (
+             record_key, listing_id, issuer_id, ticker, venue, periodicity, period_key,
+             period_end, filing_basis, filing_published_at, filing_sequence,
+             revision_published_at, revision_sequence, processing_id, processing_sequence,
+             retrieved_at, record
+           ) VALUES (
+             $1, $2, $3, $4, $5, $6, $7, $8::date, $9, $10::timestamptz, $11,
+             $12::timestamptz, $13, $14, $15, $16::timestamptz, $17::jsonb
+           )
+           ON CONFLICT (record_key) DO NOTHING`,
+          [
+            researchFinancialStatementRecordKey(record),
+            record.listingId,
+            record.issuerId,
+            record.ticker,
+            record.venue,
+            record.periodicity,
+            record.periodicity === "annual"
+              ? String(record.fiscalPeriod.fiscalYear).padStart(4, "0")
+              : `${String(record.fiscalPeriod.fiscalYear).padStart(4, "0")}-Q${record.fiscalPeriod.fiscalQuarter}`,
+            record.fiscalPeriod.periodEnd,
+            record.filingBasis,
+            record.publicationContext.publishedAt,
+            record.publicationContext.filingSequence,
+            record.publicationContext.revisionPublishedAt,
+            record.publicationContext.revisionSequence,
+            record.publicationContext.processingId,
+            record.publicationContext.processingSequence,
+            record.provenance.retrievedAt,
+            JSON.stringify(record),
+          ],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listResearchFinancialStatementRecords(
+    query: ResearchFinancialStatementRecordQuery,
+  ): Promise<ResearchFinancialStatementRecord[]> {
+    validateResearchFinancialStatementQuery(query);
+    const selectorSql = query.subject.kind === "listing_id" ? "listing_id = $1" : "issuer_id = $1";
+    const selectorValue = query.subject.kind === "listing_id" ? query.subject.listingId : query.subject.issuerId;
+    const result = await this.pool.query<{ record: ResearchFinancialStatementRecord }>(
+      `SELECT record
+       FROM research.financial_statement_records
+       WHERE ${selectorSql}
+         AND periodicity = $2
+         AND filing_published_at <= $3::timestamptz
+         AND retrieved_at <= $4::timestamptz
+         AND ($5::text IS NULL OR period_key >= $5::text)
+         AND ($6::text IS NULL OR period_key <= $6::text)
+         AND ($7::text IS NULL OR filing_basis = $7::text)
+       ORDER BY period_key ASC, filing_basis ASC, filing_published_at ASC, filing_sequence ASC,
+                COALESCE(revision_published_at, filing_published_at) ASC, revision_sequence ASC,
+                processing_sequence ASC, record_key ASC`,
+      [
+        selectorValue,
+        query.periodicity,
+        query.effectiveAt,
+        query.knowledgeAt,
+        query.startPeriod ?? null,
+        query.endPeriod ?? null,
+        query.filingBasis ?? null,
+      ],
+    );
+    return result.rows.map(({ record }) => record);
+  }
+
+  async listLatestResearchFinancialStatementRecords(
+    query: ResearchFinancialStatementRecordQuery,
+  ): Promise<ResearchFinancialStatementRecord[]> {
+    return resolveLatestResearchFinancialStatementRecords(
+      await this.listResearchFinancialStatementRecords(query),
+    )
+      .sort(researchFinancialStatementRecordSortOrder);
   }
 
   private async getLatestQuoteFallbackSnapshotsForPolicyIds(

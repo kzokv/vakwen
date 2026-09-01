@@ -1,11 +1,11 @@
 ---
 name: taiwan-stock-research
-description: Produce canonical TWSE and TPEx identity, settled-market, or monthly-revenue research through Vakwen research MCP tools.
+description: Produce canonical TWSE and TPEx identity, settled-market, monthly-revenue, or MOPS financial-statement research through Vakwen research MCP tools.
 ---
 
 # Taiwan Stock Research
 
-Use this skill when a Taiwan-listed company, ETF, or ETN must be researched from Vakwen's canonical, effective-dated identity, settled-price, and monthly-revenue stores.
+Use this skill when a Taiwan-listed company, ETF, or ETN must be researched from Vakwen's canonical, effective-dated identity, settled-price, monthly-revenue, and MOPS financial-statement stores.
 
 Read `references/research-report.md` before producing a report.
 
@@ -28,9 +28,11 @@ Read `references/research-report.md` before producing a report.
 6. Choose the report path from the user request and manifest:
    - Always call `get_research_identity` with the frozen selector and context so every report carries the canonical issuer, security, listing, and eligibility objects. Request and page identity history only when relevant.
    - Then call `get_monthly_revenue` for requested revenue research only when `monthly_revenue` is available.
+   - Then call `get_financial_statements` for requested fundamentals research only when `financial_statements` is available. Treat official MOPS iXBRL/XBRL as authoritative, preserve cumulative Source Facts versus discrete derived statements, and keep filing basis, taxonomy, context, and unit ambiguity explicit.
    - Then call `get_price_series` for requested market context only when `price_series` is available. Keep scope, basis, metrics, and page settings within manifest capabilities. Preserve bounded-lineage counts and digest.
 7. Construct the canonical artifact from `references/research-report.md`:
    - `research-report/2.0.0` with profile `monthly_revenue` for supported revenue research;
+   - `research-report/3.0.0` with profile `financial_statement_fundamentals` for supported or withheld financial-statement fundamentals;
    - `research-report/1.0.0` with profile `focused_market` for supported settled-market context;
    - `research-report/1.0.0` with profile `identity_only` otherwise.
 8. Render Markdown only as a faithful projection of the artifact.
@@ -50,6 +52,9 @@ Treat every unavailable manifest dataset as unsupported. Do not use web search, 
 - Preserve raw and normalized values, explicit missingness, effective and knowledge times, provenance IDs, and contract versions.
 - Distinguish settled, intraday, and indicative prices exactly; `focused_market` covers authoritative settled context only.
 - Treat monthly-revenue publisher comparisons as Source Facts and preserve derived-metric lineage and withholding reasons.
+- Treat financial-statement filing facts as MOPS-authoritative only. Never substitute MOPS convenience summaries, FinMind, or synthetic quarters for financial-statement coverage.
+- Financial-statement minimum windows are fixed: latest due YoY needs the latest due filing plus the prior-year comparable, multi-year trend needs 3 complete annual periods, and quarterly trend/seasonality needs 8 comparable discrete quarters.
+- Withhold unsupported financial-statement claims when required statements are missing, basis/taxonomy/context ambiguity remains unresolved, units are unknown, the sector is unsupported, or the required window is incomplete.
 - Do not merge issuers, securities, or listings based only on names or ticker similarity.
 - Do not make forecasts, target-price, buy/sell/hold, suitability, tax, or legal claims.
 - Do not add prose claims during rendering; scope and conclusion statements must already exist in the canonical artifact.

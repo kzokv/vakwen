@@ -5652,4 +5652,52 @@ describePostgres("postgres migrations", () => {
       rows: [{ id: trade.id, fees_source: "SOURCE_PROVIDED" }],
     });
   });
+
+  it("KZO-249: research financial statement history migration is additive and rerunnable", async () => {
+    await applyNumberedMigrations();
+    await applyMigrationFiles(["123_research_financial_statement_history.sql"]);
+
+    const columns = await pool.query<{ column_name: string }>(
+      `SELECT column_name
+         FROM information_schema.columns
+        WHERE table_schema = 'research'
+          AND table_name = 'financial_statement_records'
+        ORDER BY ordinal_position`,
+    );
+    expect(columns.rows.map((row) => row.column_name)).toEqual([
+      "record_key",
+      "listing_id",
+      "issuer_id",
+      "ticker",
+      "venue",
+      "periodicity",
+      "period_key",
+      "period_end",
+      "filing_basis",
+      "filing_published_at",
+      "filing_sequence",
+      "revision_published_at",
+      "revision_sequence",
+      "processing_id",
+      "processing_sequence",
+      "retrieved_at",
+      "record",
+      "created_at",
+    ]);
+
+    const indexes = await pool.query<{ indexname: string }>(
+      `SELECT indexname
+         FROM pg_indexes
+        WHERE schemaname = 'research'
+          AND tablename = 'financial_statement_records'
+        ORDER BY indexname`,
+    );
+    expect(indexes.rows.map((row) => row.indexname)).toEqual([
+      "financial_statement_records_pkey",
+      "research_financial_statement_records_issuer_latest_idx",
+      "research_financial_statement_records_issuer_temporal_idx",
+      "research_financial_statement_records_listing_latest_idx",
+      "research_financial_statement_records_listing_temporal_idx",
+    ]);
+  });
 });

@@ -256,13 +256,41 @@ export const researchManifestOutputSchema = z.object({
     status: z.enum(["available", "unavailable"]),
     reasonCode: z.string().min(1).max(120).optional(),
     capabilities: z.object({
-      scopeKinds: z.array(z.enum(["latest", "latest_sessions", "date_range"])).min(1),
-      basis: z.array(z.enum(["raw", "corporate_action_adjusted"])).min(1),
-      metrics: z.array(researchMetricSchema.shape.id).min(1),
-      pageDefault: z.number().int().min(1).max(260),
-      pageMax: z.number().int().min(1).max(260),
-      maxWindowSessions: z.number().int().min(1).max(1260),
-      maxSpanYears: z.number().int().min(1).max(5),
+      scopeKinds: z.array(z.enum(["latest", "latest_sessions", "date_range"])).min(1).optional(),
+      basis: z.array(z.enum(["raw", "corporate_action_adjusted"])).min(1).optional(),
+      metrics: z.array(researchMetricSchema.shape.id).min(1).optional(),
+      pageDefault: z.number().int().min(1).max(260).optional(),
+      pageMax: z.number().int().min(1).max(260).optional(),
+      maxWindowSessions: z.number().int().min(1).max(1260).optional(),
+      maxSpanYears: z.number().int().min(1).max(10).optional(),
+      periodicity: z.array(z.enum(["annual", "quarterly"])).min(1).optional(),
+      filingBasis: z.array(z.enum(["policy_selected", "consolidated", "individual"])).min(1).optional(),
+      statements: z.array(z.enum(["income", "balance_sheet", "cash_flow", "equity", "sector_extension"])).min(1).optional(),
+      metricBase: z.literal("required_core").optional(),
+      metricGroups: z.array(z.enum([
+        "profitability",
+        "liquidity",
+        "leverage",
+        "cash_flow",
+        "returns",
+        "growth",
+        "sector_extension",
+      ])).min(1).optional(),
+      derivedMetrics: z.array(z.enum([
+        "reconstructed_discrete_quarter",
+        "trailing_twelve_month",
+        "period_over_period_change",
+        "compound_annual_growth_rate",
+        "gross_margin",
+        "operating_margin",
+        "net_margin",
+        "return_on_equity",
+        "return_on_assets",
+        "debt_to_equity",
+        "current_ratio",
+        "free_cash_flow",
+      ])).min(1).optional(),
+      maxExplicitMetricIds: z.number().int().min(1).max(100).optional(),
     }).optional(),
   }).strict()).length(11),
 }).strict();
@@ -562,6 +590,378 @@ export const researchMonthlyRevenueToolOutputSchema = z.object({
   ]),
 }).strict();
 
+const financialStatementPeriodicitySchema = z.enum(["annual", "quarterly"]);
+const financialStatementFilingBasisSchema = z.enum(["policy_selected", "consolidated", "individual"]);
+const financialStatementStatementSchema = z.enum(["income", "balance_sheet", "cash_flow", "equity", "sector_extension"]);
+const financialStatementMetricGroupSchema = z.enum([
+  "profitability",
+  "liquidity",
+  "leverage",
+  "cash_flow",
+  "returns",
+  "growth",
+  "sector_extension",
+]);
+const financialStatementDerivedMetricIdSchema = z.enum([
+  "reconstructed_discrete_quarter",
+  "trailing_twelve_month",
+  "period_over_period_change",
+  "compound_annual_growth_rate",
+  "gross_margin",
+  "operating_margin",
+  "net_margin",
+  "return_on_equity",
+  "return_on_assets",
+  "debt_to_equity",
+  "current_ratio",
+  "free_cash_flow",
+]);
+const financialStatementScalarParameterSchema = z.union([z.string(), z.number(), z.boolean()]);
+const financialStatementMetricSelectionSchema = z.object({
+  base: z.literal("required_core").default("required_core"),
+  groups: z.array(financialStatementMetricGroupSchema).max(20).default([]),
+  explicitMetricIds: z.array(z.string().min(1).max(120)).max(100).default([]),
+}).strict().superRefine((selection, refinement) => {
+  if (new Set(selection.groups).size !== selection.groups.length) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["groups"],
+      message: "Metric groups must be unique",
+    });
+  }
+  if (new Set(selection.explicitMetricIds).size !== selection.explicitMetricIds.length) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["explicitMetricIds"],
+      message: "Explicit metric IDs must be unique",
+    });
+  }
+});
+const financialStatementDerivedMetricRequestSchema = z.object({
+  metricId: financialStatementDerivedMetricIdSchema,
+  parameters: z.record(z.string().min(1).max(120), financialStatementScalarParameterSchema).default({}),
+}).strict();
+const financialStatementRangeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("latest_periods"),
+    count: z.number().int().min(1).max(20).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("period_end_range"),
+    startDate: isoDateSchema,
+    endDate: isoDateSchema,
+  }).strict(),
+]).superRefine((range, refinement) => {
+  if (range.kind !== "period_end_range") return;
+  if (range.startDate > range.endDate) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endDate"],
+      message: "endDate must be on or after startDate",
+    });
+  }
+  const startYear = Number(range.startDate.slice(0, 4));
+  const endYear = Number(range.endDate.slice(0, 4));
+  if ((endYear - startYear) > 10) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endDate"],
+      message: "period_end_range must not exceed ten fiscal years",
+    });
+  }
+});
+const financialStatementPageSchema = z.object({
+  cursor: z.string().min(1).max(1024).optional(),
+  limit: z.number().int().min(1).max(20).optional(),
+  order: z.enum(["asc", "desc"]).default("desc"),
+}).strict();
+
+export const researchFinancialStatementsQuerySchema = researchQuerySchema.extend({
+  periodicity: financialStatementPeriodicitySchema.default("annual"),
+  range: financialStatementRangeSchema.optional(),
+  filingBasis: financialStatementFilingBasisSchema.default("policy_selected"),
+  statements: z.array(financialStatementStatementSchema).max(5).default(["income", "balance_sheet", "cash_flow"]),
+  metricSelection: financialStatementMetricSelectionSchema.default({}),
+  derivedMetrics: z.array(financialStatementDerivedMetricRequestSchema).max(20).default([]),
+  page: financialStatementPageSchema.default({ order: "desc" }),
+}).strict().superRefine((query, refinement) => {
+  if (new Set(query.statements).size !== query.statements.length) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["statements"],
+      message: "Statements must be unique",
+    });
+  }
+  const maxPageLimit = query.periodicity === "annual" ? 10 : 20;
+  if (query.page.limit !== undefined && query.page.limit > maxPageLimit) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["page", "limit"],
+      message: `page.limit must be at most ${maxPageLimit} for ${query.periodicity} requests`,
+    });
+  }
+  if (query.range?.kind === "latest_periods") {
+    const count = query.range.count ?? (query.periodicity === "annual" ? 3 : 8);
+    if (count > maxPageLimit) {
+      refinement.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["range", "count"],
+        message: `latest_periods.count must be at most ${maxPageLimit} for ${query.periodicity} requests`,
+      });
+    }
+  }
+  const derivedKeys = query.derivedMetrics.map((metric) => JSON.stringify([metric.metricId, metric.parameters]));
+  if (new Set(derivedKeys).size !== derivedKeys.length) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["derivedMetrics"],
+      message: "Derived metrics must be unique by metricId and parameters",
+    });
+  }
+}).transform((query) => {
+  const defaultCount = query.periodicity === "annual" ? 3 : 8;
+  const defaultLimit = query.periodicity === "annual" ? 3 : 8;
+  return {
+    ...query,
+    range: query.range ?? { kind: "latest_periods" as const, count: defaultCount },
+    page: {
+      ...query.page,
+      limit: query.page.limit ?? defaultLimit,
+    },
+  };
+});
+
+const financialStatementAvailabilitySchema = z.object({
+  status: z.enum(["eligible", "not_applicable", "withheld"]),
+  reasonCode: z.string().min(1).max(120),
+}).strict();
+const financialStatementValueStateSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("present"), value: z.string() }).strict(),
+  z.object({ state: z.literal("missing"), reasonCode: z.string().min(1).max(120) }).strict(),
+]);
+const financialStatementFactSchema = z.object({
+  observationId: canonicalIdSchema,
+  statement: financialStatementStatementSchema,
+  metricId: z.string().min(1).max(120),
+  concept: z.object({
+    raw: z.string().min(1),
+    normalized: financialStatementValueStateSchema,
+  }).strict(),
+  label: z.object({
+    raw: z.string().min(1),
+    normalized: financialStatementValueStateSchema,
+  }).strict(),
+  value: financialStatementValueStateSchema,
+  unit: z.object({
+    raw: z.string().nullable(),
+    normalized: financialStatementValueStateSchema,
+  }).strict(),
+  scale: z.object({
+    raw: z.string().nullable(),
+    normalized: financialStatementValueStateSchema,
+  }).strict(),
+  precision: z.object({
+    raw: z.string().nullable(),
+    normalized: financialStatementValueStateSchema,
+  }).strict(),
+  filingBasis: z.object({
+    raw: z.string().nullable(),
+    normalized: z.discriminatedUnion("state", [
+      z.object({ state: z.literal("present"), value: z.enum(["consolidated", "individual"]) }).strict(),
+      z.object({ state: z.literal("missing"), reasonCode: z.string().min(1).max(120) }).strict(),
+    ]),
+  }).strict(),
+  period: z.object({
+    startDate: isoDateSchema.nullable(),
+    endDate: isoDateSchema,
+    fiscalYear: z.number().int().min(1900).max(9999),
+    fiscalQuarter: z.number().int().min(1).max(4).nullable(),
+    durationMonths: z.number().int().min(1).max(24),
+  }).strict(),
+  taxonomy: z.object({
+    namespace: z.string().min(1).max(120),
+    conceptName: z.string().min(1).max(120),
+    taxonomyVersion: z.string().min(1).max(120),
+  }).strict(),
+  provenanceId: canonicalIdSchema,
+  ambiguity: z.object({
+    status: z.enum(["none", "duplicate_context", "ambiguous_basis", "unmapped_concept", "unknown_unit"]),
+    relatedObservationIds: z.array(canonicalIdSchema).max(20),
+  }).strict(),
+  relations: z.object({
+    comparableObservationIds: z.array(canonicalIdSchema).max(64),
+    supersededByObservationIds: z.array(canonicalIdSchema).max(20),
+  }).strict(),
+  revision: z.object({
+    filingId: canonicalIdSchema,
+    accessionNumber: z.string().min(1).max(120).nullable(),
+    amended: z.boolean(),
+    restated: z.boolean(),
+    revisionTag: z.string().min(1).max(120),
+  }).strict(),
+}).strict();
+const financialStatementDerivedMetricStatusSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("returned"),
+    metricId: financialStatementDerivedMetricIdSchema,
+    periodObservationIds: z.array(canonicalIdSchema).min(1).max(100),
+    formulaId: z.string().min(1).max(120),
+    formulaVersion: z.string().min(1).max(120),
+    parameters: z.record(z.string().min(1).max(120), financialStatementScalarParameterSchema),
+    units: z.string().min(1).max(40),
+    value: z.string().min(1),
+    calculatedAt: z.string().datetime({ offset: true }),
+    rounding: z.string().min(1).max(120),
+  }).strict(),
+  z.object({
+    status: z.literal("withheld"),
+    metricId: financialStatementDerivedMetricIdSchema,
+    reasonCode: z.enum([
+      "missing_inputs",
+      "unknown_unit",
+      "incomparable_inputs",
+      "zero_denominator",
+      "ambiguous_inputs",
+      "restated_inputs",
+    ]),
+    periodObservationIds: z.array(canonicalIdSchema).max(100),
+    parameters: z.record(z.string().min(1).max(120), financialStatementScalarParameterSchema),
+  }).strict(),
+  z.object({
+    status: z.literal("not_applicable"),
+    metricId: financialStatementDerivedMetricIdSchema,
+    reasonCode: z.enum(["not_applicable_subject", "unsupported_sector_extension"]),
+    periodObservationIds: z.array(canonicalIdSchema).max(100),
+    parameters: z.record(z.string().min(1).max(120), financialStatementScalarParameterSchema),
+  }).strict(),
+]);
+const financialStatementQualityStateSchema = z.object({
+  status: z.enum(["clear", "present", "withheld", "not_applicable"]),
+  reasonCodes: z.array(z.string().min(1).max(120)).max(20),
+  observationIds: z.array(canonicalIdSchema).max(100),
+}).strict();
+const financialStatementPeriodSchema = z.object({
+  filingPeriodId: canonicalIdSchema,
+  fiscalYear: z.number().int().min(1900).max(9999),
+  fiscalQuarter: z.number().int().min(1).max(4).nullable(),
+  periodStartDate: isoDateSchema.nullable(),
+  periodEndDate: isoDateSchema,
+  publishedAt: isoDateSchema,
+  filingDate: isoDateSchema,
+  acceptedAt: z.string().datetime({ offset: true }).nullable(),
+  filingBasis: z.enum(["consolidated", "individual"]),
+  statements: z.array(financialStatementStatementSchema).min(1).max(5),
+  sourceFacts: z.array(financialStatementFactSchema).max(400),
+  quality: z.object({
+    taxonomyChanges: financialStatementQualityStateSchema,
+    amendmentsRestatements: financialStatementQualityStateSchema,
+    duplicateContexts: financialStatementQualityStateSchema,
+    unmappedConcepts: financialStatementQualityStateSchema,
+    unknownUnits: financialStatementQualityStateSchema,
+    ambiguousBasis: financialStatementQualityStateSchema,
+  }).strict(),
+}).strict();
+const financialStatementCoverageSchema = z.object({
+  status: z.enum(["complete", "partial", "none", "not_applicable"]),
+  requestedPeriodCount: z.number().int().min(0).max(20),
+  returnedPeriodCount: z.number().int().min(0).max(20),
+}).strict();
+const financialStatementFreshnessSchema = z.object({
+  state: z.enum(["current", "stale", "not_applicable", "unknown"]),
+  authoritativeAsOf: isoDateSchema.nullable(),
+  latestAcceptedAt: z.string().datetime({ offset: true }).nullable(),
+}).strict();
+const financialStatementCompletenessSchema = z.object({
+  status: z.enum(["complete", "partial", "withheld", "not_applicable"]),
+  missingFactCount: z.number().int().min(0),
+  missingMetricCount: z.number().int().min(0),
+}).strict();
+const financialStatementConfidenceSchema = z.object({
+  status: z.enum(["high", "mixed", "low", "not_applicable"]),
+  reasonCodes: z.array(z.string().min(1).max(120)).max(20),
+}).strict();
+const financialStatementReadinessSchema = z.object({
+  status: z.enum(["ready", "usable_with_gaps", "withheld", "not_applicable"]),
+  reasonCodes: z.array(z.string().min(1).max(120)).max(20),
+}).strict();
+const financialStatementGapSchema = z.object({
+  code: z.string().min(1).max(120),
+  severity: z.enum(["info", "warning", "blocking"]),
+  message: z.string().min(1).max(500),
+  observationIds: z.array(canonicalIdSchema).max(100).optional(),
+}).strict();
+const financialStatementConflictSchema = z.object({
+  code: z.string().min(1).max(120),
+  status: z.enum(["present", "resolved", "withheld"]),
+  message: z.string().min(1).max(500),
+  observationIds: z.array(canonicalIdSchema).max(100),
+}).strict();
+const financialStatementRecoverySchema = z.object({
+  action: z.string().min(1).max(120),
+  status: z.enum(["applied", "not_needed", "unavailable"]),
+  message: z.string().min(1).max(500),
+}).strict();
+const financialStatementProvenanceIndexSchema = z.object({
+  provenanceId: canonicalIdSchema,
+  publisher: z.literal("MOPS"),
+  accessProvider: z.enum(["MOPS_XBRL"]),
+  authorityRole: z.literal("authoritative"),
+  publisherDataset: z.string().min(1).max(120),
+  sourceUrl: z.string().url(),
+  contentHash: z.string().min(1).max(200),
+  retrievedAt: z.string().datetime({ offset: true }),
+}).strict();
+
+export const researchFinancialStatementsOutputSchema = z.object({
+  contractVersion: z.literal("research-financial-statements/1.0.0"),
+  selector: immutableListingSelectorSchema,
+  context: fixedResearchContextSchema,
+  identity: z.object({
+    issuer: issuerSchema,
+    security: securitySchema,
+    listing: listingSchema,
+    displayName: z.string().nullable(),
+    eligibility: eligibilitySchema,
+    availability: financialStatementAvailabilitySchema,
+  }).strict(),
+  periodicity: financialStatementPeriodicitySchema,
+  range: financialStatementRangeSchema,
+  basisPolicy: z.object({
+    requested: financialStatementFilingBasisSchema,
+    selected: z.enum(["consolidated", "individual", "policy_selected"]),
+    policyId: z.string().min(1).max(120),
+    fallbackApplied: z.boolean(),
+  }).strict(),
+  statements: z.array(financialStatementStatementSchema).min(1).max(5),
+  metricSelection: financialStatementMetricSelectionSchema,
+  derivedMetricRequests: z.array(financialStatementDerivedMetricRequestSchema).max(20),
+  coverage: financialStatementCoverageSchema,
+  freshness: financialStatementFreshnessSchema,
+  completeness: financialStatementCompletenessSchema,
+  confidence: financialStatementConfidenceSchema,
+  readiness: financialStatementReadinessSchema,
+  periods: z.array(financialStatementPeriodSchema).max(20),
+  derivedOutcomes: z.array(financialStatementDerivedMetricStatusSchema).max(200),
+  gaps: z.array(financialStatementGapSchema).max(50),
+  conflicts: z.array(financialStatementConflictSchema).max(50),
+  recovery: z.array(financialStatementRecoverySchema).max(20),
+  provenanceIndex: z.array(financialStatementProvenanceIndexSchema).max(200),
+  page: z.object({
+    limit: z.number().int().min(1).max(20),
+    order: z.enum(["asc", "desc"]),
+    nextCursor: z.string().nullable(),
+    recordCount: z.number().int().min(0).max(20),
+    truncatedByBudget: z.boolean(),
+  }).strict(),
+}).strict();
+
+export const researchFinancialStatementsToolOutputSchema = z.object({
+  result: z.union([
+    researchFinancialStatementsOutputSchema,
+    researchToolErrorOutputSchema,
+  ]),
+}).strict();
+
 export const IDENTITY_ONLY_SCOPE_STATEMENT =
   "This release supports canonical identity research only; market, financial, ownership, trading, dividend, announcement, and investor-material claims are not included.";
 
@@ -697,6 +1097,9 @@ export type ResearchPriceSeriesQuery = z.infer<typeof researchPriceSeriesQuerySc
 export type ResearchPriceSeriesOutput = z.infer<typeof researchPriceSeriesOutputSchema>;
 export type ResearchPriceSession = ResearchPriceSeriesOutput["sessions"][number];
 export type ResearchPriceMetricResult = ResearchPriceSeriesOutput["metrics"][number];
+export type ResearchFinancialStatementsQuery = z.infer<typeof researchFinancialStatementsQuerySchema>;
+export type ResearchFinancialStatementsQueryInput = z.input<typeof researchFinancialStatementsQuerySchema>;
+export type ResearchFinancialStatementsOutput = z.infer<typeof researchFinancialStatementsOutputSchema>;
 export type ResearchIdentityOnlyReport = z.infer<typeof researchIdentityOnlyReportSchema>;
 export type ResearchFocusedMarketReport = z.infer<typeof researchFocusedMarketReportSchema>;
 export type ResearchMonthlyRevenueQuery = z.infer<typeof researchMonthlyRevenueQuerySchema>;

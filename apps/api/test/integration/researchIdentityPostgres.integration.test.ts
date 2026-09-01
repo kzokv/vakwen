@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { PostgresPersistence } from "../../src/persistence/postgres.js";
+import type { Persistence } from "../../src/persistence/types.js";
 import {
   appendOfficialListingAbsenceObservation,
   appendOfficialListingStatusRevision,
@@ -20,6 +21,33 @@ if (runPostgresIntegration && !managedCiStack) {
 }
 
 const describePostgres = runPostgresIntegration && databaseUrl && redisUrl ? describe : describe.skip;
+
+async function seedTaiwanCalendar2026(persistence: Persistence, previewToken: string): Promise<void> {
+  await persistence.saveMarketCalendarPreview({
+    previewToken,
+    importOperationId: `${previewToken}-import`,
+    marketCode: "TW",
+    calendarYear: 2026,
+    sourceId: null,
+    sourceType: "official_source",
+    label: "TWSE 2026 calendar fixture",
+    sourceUrl: "https://www.twse.com.tw/holidaySchedule/holidaySchedule",
+    retrievedAt: "2025-12-31T00:00:00.000Z",
+    coverage: { scope: "full_year", evidence: "Deterministic integration fixture" },
+    replaceConfirmedRequired: false,
+    warnings: [],
+    diff: { addedExceptions: [], removedExceptions: [], changedExceptions: [] },
+    annualCounts: {
+      tradingDayCount: 261,
+      nonTradingDayCount: 104,
+      weekdayClosedCount: 0,
+      weekendOpenCount: 0,
+    },
+    exceptions: [],
+    createdAt: "2025-12-31T00:00:00.000Z",
+  });
+  await persistence.confirmMarketCalendarPreview({ previewToken });
+}
 
 describePostgres("research identity memory/Postgres parity", () => {
   let pool: Pool;
@@ -410,6 +438,8 @@ describePostgres("research identity memory/Postgres parity", () => {
     });
     await memory.appendResearchMonthlyRevenueRecords([...records, julyCorrection, julyLateBackfill]);
     await postgres.appendResearchMonthlyRevenueRecords([...records, julyCorrection, julyLateBackfill]);
+    await seedTaiwanCalendar2026(memory, "research-monthly-revenue-memory-2026");
+    await seedTaiwanCalendar2026(postgres, "research-monthly-revenue-postgres-2026");
 
     const query = {
       subject: { kind: "listing_id" as const, listingId: identity.listing.id },
@@ -446,7 +476,7 @@ describePostgres("research identity memory/Postgres parity", () => {
       subject: { kind: "listing_id" as const, listingId: identity.listing.id },
       context: {
         effectiveAt: "2026-08-28T00:00:00.000Z",
-        knowledgeAt: "2026-08-28T00:00:00.000Z",
+        knowledgeAt: "2026-09-01T23:59:59.999Z",
         assessmentMode: "effective" as const,
       },
       page: { limit: 2, order: "desc" as const },
@@ -458,7 +488,7 @@ describePostgres("research identity memory/Postgres parity", () => {
       ...serviceQuery,
       context: {
         effectiveAt: "2026-08-09T00:00:00.000Z",
-        knowledgeAt: "2026-08-20T00:00:00.000Z",
+        knowledgeAt: "2026-09-01T23:59:59.999Z",
         assessmentMode: "effective" as const,
       },
       page: { limit: 24, order: "desc" as const },
@@ -467,6 +497,7 @@ describePostgres("research identity memory/Postgres parity", () => {
       await getMonthlyRevenue(memory, cutoffQuery),
     );
     expect((await getMonthlyRevenue(postgres, cutoffQuery)).items.map((item) => item.revenueMonth)).toEqual([
+      "2026-07",
       "2026-06",
       "2026-05",
       "2026-04",
