@@ -672,6 +672,9 @@ export function normalizeResearchFinancialStatementFact(input: {
       input.concept.qname,
       input.contextId,
       input.rawValue,
+      input.unit.state === "known"
+        ? `known:${input.unit.unitId}`
+        : `unknown:${input.unit.rawUnitId ?? ""}`,
     ),
     kind: "source_fact",
     listingId: input.listingId,

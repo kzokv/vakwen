@@ -179,6 +179,36 @@ describe("research financial statements", () => {
     expect(zero.normalized).toEqual({ state: "present", value: "0" });
   });
 
+  it("fact identity distinguishes otherwise identical observations reported in different units", () => {
+    const baseInput = {
+      listingId: "lst_2330",
+      issuerId: "iss_2330",
+      filingId: "mops-2026q2",
+      revisionId: "mops-2026q2-r0",
+      statementKind: "income" as const,
+      concept: { qname: "ifrs-full:Revenue", label: "Revenue" },
+      metric: { state: "mapped" as const, metricId: "revenue" as const },
+      contextId: "ctx-duration",
+      period: {
+        kind: "duration" as const,
+        startAt: "2026-04-01T00:00:00.000Z",
+        endAt: "2026-06-30T23:59:59.999Z",
+      },
+      valueKind: "cumulative" as const,
+      rawValue: "1",
+    };
+    const twd = normalizeResearchFinancialStatementFact({
+      ...baseInput,
+      unit: { state: "known", unitId: "TWD" },
+    });
+    const usd = normalizeResearchFinancialStatementFact({
+      ...baseInput,
+      unit: { state: "known", unitId: "USD" },
+    });
+
+    expect(twd.id).not.toBe(usd.id);
+  });
+
   it("latest revision selection follows explicit publication and revision sequence instead of retrieval order", () => {
     const original = makeRecord();
     const amendment = makeRecord({
