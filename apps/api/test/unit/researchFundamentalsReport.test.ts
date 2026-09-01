@@ -37,6 +37,7 @@ function makeFact(periodEndDate: string, fiscalYear: number, fiscalQuarter: 1 | 
     scale: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
     precision: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
     filingBasis: { raw: "consolidated", normalized: { state: "present" as const, value: "consolidated" as const } },
+    dimensions: {},
     period: {
       startDate: fiscalQuarter === null ? `${fiscalYear}-01-01` : `${fiscalYear}-${String(((fiscalQuarter - 1) * 3) + 1).padStart(2, "0")}-01`,
       endDate: periodEndDate,
@@ -250,7 +251,9 @@ describe("financial statement fundamentals report", () => {
     await persistence.appendResearchIdentityRecords([identity]);
     const latestAnnual = makePeriod(2025, null, "200");
     const comparativeRevenue = makeFact("2024-12-31", 2024, null, "revenue", "999", "income");
-    latestAnnual.sourceFacts.unshift(comparativeRevenue);
+    const segmentRevenue = makeFact("2025-12-31", 2025, null, "revenue", "777", "income");
+    segmentRevenue.dimensions = { OperatingSegmentsAxis: "FoundryMember" };
+    latestAnnual.sourceFacts.unshift(segmentRevenue, comparativeRevenue);
     const quarters = [
       makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
       makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
@@ -305,6 +308,30 @@ describe("financial statement fundamentals report", () => {
       status: "withheld",
       reasonCodes: ["stale_financial_statements"],
     });
+  });
+
+  it("annual YoY: withholds revenue values with mismatched known units", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const priorRevenue = annuals[1]!.sourceFacts.find((fact) => fact.metricId === "revenue")!;
+    priorRevenue.unit = { raw: "iso4217:USD", normalized: { state: "present", value: "iso4217:USD" } };
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", [])
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.status).toBe("withheld");
   });
 
   it("quarterly trend: withholds nonconsecutive or cumulative-only quarter windows", async () => {

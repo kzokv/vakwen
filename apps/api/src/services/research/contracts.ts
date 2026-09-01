@@ -779,6 +779,7 @@ const financialStatementFactSchema = z.object({
       z.object({ state: z.literal("missing"), reasonCode: z.string().min(1).max(120) }).strict(),
     ]),
   }).strict(),
+  dimensions: z.record(z.string().min(1).max(200), z.string().min(1).max(200)).default({}),
   period: z.object({
     startDate: isoDateSchema.nullable(),
     endDate: isoDateSchema,

@@ -991,6 +991,36 @@ function metricIdsForGroups(groups: readonly ResearchFinancialStatementsQuery["m
   return selected;
 }
 
+const CORE_METRICS_BY_STATEMENT = {
+  income: ["revenue", "gross_profit", "operating_income", "net_income"],
+  balance_sheet: ["assets", "liabilities", "equity", "current_assets", "current_liabilities", "cash_and_cash_equivalents", "interest_bearing_debt"],
+  cash_flow: ["operating_cash_flow", "investing_cash_flow", "capital_expenditure"],
+  equity: [],
+  sector_extension: [],
+} as const;
+
+function missingRequestedFactCount(
+  period: ResearchFinancialStatementPeriod,
+  query: ResearchFinancialStatementsQuery,
+): number {
+  const expected = new Set<string>();
+  if (query.metricSelection.base === "required_core") {
+    for (const statement of query.statements) {
+      CORE_METRICS_BY_STATEMENT[statement].forEach((metricId) => expected.add(metricId));
+    }
+  }
+  metricIdsForGroups(query.metricSelection.groups).forEach((metricId) => expected.add(metricId));
+  const returnedMetricIds = new Set(period.sourceFacts.map((fact) => fact.metricId));
+  let missing = [...expected].filter((metricId) => !returnedMetricIds.has(metricId)).length;
+  for (const explicit of query.metricSelection.explicitMetricIds) {
+    if (expected.has(explicit)) continue;
+    if (!period.sourceFacts.some((fact) => fact.metricId === explicit || fact.concept.raw === explicit || fact.label.raw === explicit)) {
+      missing += 1;
+    }
+  }
+  return missing;
+}
+
 function factMatchesMetricSelection(
   fact: ResearchFinancialStatementFact,
   selection: ResearchFinancialStatementsQuery["metricSelection"],
@@ -1055,6 +1085,7 @@ function mapFinancialFact(
     filingBasis: record.filingBasis === "consolidated" || record.filingBasis === "individual"
       ? { raw: record.filingBasis, normalized: { state: "present", value: record.filingBasis } }
       : { raw: record.filingBasis, normalized: { state: "missing", reasonCode: "unknown_basis" } },
+    dimensions: fact.context.dimensions,
     period: {
       startDate: period.startDate,
       endDate: period.endDate,
@@ -1632,10 +1663,13 @@ export async function getFinancialStatements(
       && record.fiscalPeriod.periodEnd <= endDate
     ));
   })();
-  const orderedSelected = [...selectedRecordsWithinRange]
+  const selectedRecordsWithRequestedStatements = selectedRecordsWithinRange.filter((record) => (
+    record.statements.some((section) => query.statements.includes(section.kind))
+  ));
+  const orderedSelected = [...selectedRecordsWithRequestedStatements]
     .sort((left, right) => query.page.order === "desc" ? financialStatementSortOrder(left, right) : financialStatementSortOrder(right, left));
   const outputRange = query.range.kind === "latest_periods"
-    ? [...selectedRecordsWithinRange]
+    ? [...selectedRecordsWithRequestedStatements]
         .sort(financialStatementSortOrder)
         .slice(0, financialStatementsRangeRequestedCount(query))
         .sort((left, right) => query.page.order === "desc" ? financialStatementSortOrder(left, right) : financialStatementSortOrder(right, left))
@@ -1716,10 +1750,14 @@ export async function getFinancialStatements(
       recovery.push({ action: "taxonomy_review", status: "unavailable", message: "Taxonomy change requires manual mapping review." });
     }
   }
-  const missingFactCount = periods.reduce((count, period) => count + period.sourceFacts.filter((fact) => fact.value.state === "missing").length, 0);
+  const missingFactCount = periods.reduce((count, period) => (
+    count
+    + period.sourceFacts.filter((fact) => fact.value.state === "missing").length
+    + missingRequestedFactCount(period, query)
+  ), 0);
   const missingMetricCount = derivedOutcomes.filter((metric) => metric.status !== "returned").length;
   const readinessReasonCodes = dedupeByKey([
-    ...(selectedRecordsWithinRange.length === 0 ? ["no_authoritative_filing"] : []),
+    ...(selectedRecordsWithRequestedStatements.length === 0 ? ["no_authoritative_filing"] : []),
     ...(basisSelection.selected === "policy_selected" ? ["ambiguous_basis"] : []),
     ...gaps.map((gap) => gap.code),
     ...conflicts.map((conflict) => conflict.code),

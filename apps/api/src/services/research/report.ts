@@ -279,6 +279,7 @@ function findFact(
     : `${period.fiscalYear}-${String(((period.fiscalQuarter - 1) * 3) + 1).padStart(2, "0")}-01`;
   return period.sourceFacts.find((fact) => (
     fact.metricId === metricId
+    && Object.keys(fact.dimensions).length === 0
     && fact.period.endDate === period.periodEndDate
     && (fact.period.startDate === null || fact.period.startDate === expectedStartDate)
   ));
@@ -304,6 +305,7 @@ function quarterlyRevenueObservation(
   if (period.fiscalQuarter !== 4) return null;
   const cumulative = period.sourceFacts.find((fact) => (
     fact.metricId === "revenue"
+    && Object.keys(fact.dimensions).length === 0
     && fact.period.startDate === `${period.fiscalYear}-01-01`
     && fact.period.endDate === period.periodEndDate
     && fact.value.state === "present"
@@ -312,6 +314,7 @@ function quarterlyRevenueObservation(
   const thirdQuarter = periods.find((candidate) => candidate.fiscalYear === period.fiscalYear && candidate.fiscalQuarter === 3);
   const priorCumulative = thirdQuarter?.sourceFacts.find((fact) => (
     fact.metricId === "revenue"
+    && Object.keys(fact.dimensions).length === 0
     && fact.period.startDate === `${period.fiscalYear}-01-01`
     && fact.period.endDate === thirdQuarter.periodEndDate
     && fact.value.state === "present"
@@ -366,7 +369,12 @@ function buildSupportedOrWithheldConclusions(
     : undefined;
   const latestAnnualRevenue = latestAnnual ? numericFact(latestAnnual, "revenue") : null;
   const priorAnnualRevenue = priorAnnual ? numericFact(priorAnnual, "revenue") : null;
-  const yoyConclusion = !annualReason && annualFreshness !== "stale" && latestAnnual && priorAnnual && latestAnnualRevenue !== null && priorAnnualRevenue !== null && priorAnnualRevenue !== 0
+  const latestAnnualRevenueFact = latestAnnual ? findFact(latestAnnual, "revenue") : undefined;
+  const priorAnnualRevenueFact = priorAnnual ? findFact(priorAnnual, "revenue") : undefined;
+  const annualRevenueUnitsMatch = latestAnnualRevenueFact?.unit.normalized.state === "present"
+    && priorAnnualRevenueFact?.unit.normalized.state === "present"
+    && latestAnnualRevenueFact.unit.normalized.value === priorAnnualRevenueFact.unit.normalized.value;
+  const yoyConclusion = !annualReason && annualFreshness !== "stale" && annualRevenueUnitsMatch && latestAnnual && priorAnnual && latestAnnualRevenue !== null && priorAnnualRevenue !== null && priorAnnualRevenue !== 0
     ? {
         id: "latest_revenue_yoy" as const,
         status: "supported" as const,

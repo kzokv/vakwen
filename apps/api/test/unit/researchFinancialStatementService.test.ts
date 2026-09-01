@@ -844,6 +844,59 @@ describe("research financial-statement service", () => {
     expect(result.readiness).toEqual({ status: "withheld", reasonCodes: ["no_authoritative_filing"] });
   });
 
+  it("optional statement section: returns no periods when the selected filing has no requested section", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      statements: ["equity"],
+      derivedMetrics: [],
+    });
+
+    expect(result.periods).toEqual([]);
+    expect(result.readiness).toEqual({ status: "withheld", reasonCodes: ["no_authoritative_filing"] });
+  });
+
+  it("completeness: counts required requested facts that are absent from a returned period", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      statements: ["income"],
+      derivedMetrics: [],
+    });
+
+    expect(result.periods).toHaveLength(1);
+    expect(result.completeness).toMatchObject({
+      status: "partial",
+      missingFactCount: 3,
+    });
+  });
+
   it("filters output facts by metric selection, preserves quality flags, and withholds missing derived inputs without zero fill", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
