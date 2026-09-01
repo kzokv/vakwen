@@ -1063,7 +1063,9 @@ function mapFinancialFact(
     },
     value: fact.normalized.state === "present"
       ? { state: "present", value: fact.normalized.value }
-      : { state: "missing", reasonCode: fact.normalized.reason },
+      : fact.statementKind === "sector_extension" && fact.raw.value.trim() !== ""
+        ? { state: "present", value: fact.raw.value }
+        : { state: "missing", reasonCode: fact.normalized.reason },
     unit: fact.unit.state === "known"
       ? { raw: fact.unit.unitId, normalized: { state: "present", value: fact.unit.unitId } }
       : { raw: fact.unit.rawUnitId, normalized: { state: "missing", reasonCode: "unknown_unit" } },
@@ -1090,9 +1092,9 @@ function mapFinancialFact(
           + 1,
     },
     taxonomy: {
-      namespace: fact.concept.qname.split(":")[0] ?? "unknown",
+      namespace: fact.taxonomy?.namespaceUri ?? fact.concept.qname.split(":")[0] ?? "unknown",
       conceptName: fact.concept.qname.split(":").at(1) ?? fact.concept.qname,
-      taxonomyVersion: record.provenance.taxonomyVersion,
+      taxonomyVersion: fact.taxonomy?.version ?? record.provenance.taxonomyVersion,
     },
     provenanceId: record.provenance.id,
     ambiguity: {

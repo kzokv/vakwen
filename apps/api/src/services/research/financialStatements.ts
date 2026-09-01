@@ -68,6 +68,10 @@ export interface ResearchFinancialStatementFact {
   revisionId: string;
   statementKind: ResearchFinancialStatementKind;
   concept: ResearchFinancialStatementConceptRef;
+  taxonomy?: {
+    namespaceUri: string | null;
+    version: string;
+  };
   metric: ResearchFinancialStatementMetricRef;
   context: {
     contextId: string;
@@ -346,6 +350,11 @@ export function resolveMopsArtifactFilingBasis(
   return consolidated ? "consolidated" : "unknown";
 }
 
+export function researchFinancialStatementTaxonomyVersion(namespaceUri: string | null): string {
+  if (!namespaceUri) return "unknown";
+  return /\b(20\d{2}(?:[-/](?:Q?[1-4]|0[1-9]|1[0-2]))?)\b/.exec(namespaceUri)?.[1] ?? namespaceUri;
+}
+
 export function materializeResearchFinancialStatementRecord(
   input: ResearchFinancialStatementAppendInput,
 ): ResearchFinancialStatementRecord {
@@ -392,6 +401,10 @@ export function materializeResearchFinancialStatementRecord(
       concept: {
         qname: fact.concept.qname,
         label: fact.concept.localName,
+      },
+      taxonomy: {
+        namespaceUri: fact.concept.namespaceUri,
+        version: researchFinancialStatementTaxonomyVersion(fact.concept.namespaceUri),
       },
       metric: metricForConcept(fact.concept.localName),
       contextId: fact.contextRef,
@@ -607,6 +620,10 @@ export function normalizeResearchFinancialStatementFact(input: {
   revisionId: string;
   statementKind: ResearchFinancialStatementKind;
   concept: ResearchFinancialStatementConceptRef;
+  taxonomy?: {
+    namespaceUri: string | null;
+    version: string;
+  };
   metric: ResearchFinancialStatementMetricRef;
   contextId: string;
   dimensions?: Record<string, string>;
@@ -642,6 +659,7 @@ export function normalizeResearchFinancialStatementFact(input: {
     revisionId: input.revisionId,
     statementKind: input.statementKind,
     concept: input.concept,
+    ...(input.taxonomy ? { taxonomy: input.taxonomy } : {}),
     metric: input.metric,
     context: {
       contextId: input.contextId,

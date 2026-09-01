@@ -57,6 +57,7 @@ import {
 import type { ResearchMonthlyRevenueRecord } from "./monthlyRevenue.js";
 import {
   normalizeResearchFinancialStatementFact,
+  researchFinancialStatementTaxonomyVersion,
   resolveMopsArtifactFilingBasis,
   type ResearchFinancialStatementAmbiguityFlag,
   type ResearchFinancialStatementFact,
@@ -303,6 +304,10 @@ async function canonicalizeFinancialStatementArtifact(
       concept: {
         qname: fact.concept.qname,
         label: fact.concept.localName,
+      },
+      taxonomy: {
+        namespaceUri: fact.concept.namespaceUri,
+        version: researchFinancialStatementTaxonomyVersion(fact.concept.namespaceUri),
       },
       metric: metricIdForLocalName(fact.concept.localName),
       contextId: fact.contextRef,

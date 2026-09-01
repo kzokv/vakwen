@@ -375,6 +375,25 @@ describe("financial statement fundamentals report", () => {
     );
 
     expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.status).toBe("withheld");
+
+    priorRevenue.unit = { raw: "iso4217:TWD", normalized: { state: "present", value: "iso4217:TWD" } };
+    priorRevenue.taxonomy.taxonomyVersion = "2025";
+    const taxonomyReport = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", [])
+        ),
+      },
+    );
+    expect(taxonomyReport.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["taxonomy_ambiguity"],
+    });
   });
 
   it("quarterly trend: withholds nonconsecutive or cumulative-only quarter windows", async () => {

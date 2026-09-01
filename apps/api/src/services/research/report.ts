@@ -380,6 +380,14 @@ function firstAmbiguityReason(periods: readonly ResearchFinancialStatementsOutpu
   if (revenueFacts.some((fact) => fact.unit.normalized.state === "missing")) return "unknown_unit";
   if (periods.some((period) => period.quality.ambiguousBasis.status === "present")) return "basis_ambiguity";
   if (periods.some((period) => period.quality.taxonomyChanges.status === "present")) return "taxonomy_ambiguity";
+  const revenueTaxonomyVersions = new Set(periods.flatMap((period) => period.sourceFacts
+    .filter((fact) => (
+      fact.metricId === "revenue"
+      && factMatchesSelectedBasis(fact)
+      && fact.period.endDate === period.periodEndDate
+    ))
+    .map((fact) => fact.taxonomy.taxonomyVersion)));
+  if (revenueTaxonomyVersions.size > 1) return "taxonomy_ambiguity";
   if (revenueFacts.some((fact) => fact.ambiguity.status === "duplicate_context")) return "context_ambiguity";
   if (periods.some((period) => !periodHasRequiredStatements(period))) return "missing_required_statement";
   return null;

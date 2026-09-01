@@ -270,6 +270,10 @@ describe("research financial statement acquisition", () => {
       .find((fact) => fact.metric.state === "mapped" && fact.metric.metricId === "revenue");
     expect(transformedRevenue?.raw).toEqual({ state: "present", value: "32" });
     expect(transformedRevenue?.normalized).toEqual({ state: "present", value: "32000" });
+    expect(transformedRevenue?.taxonomy).toEqual({
+      namespaceUri: "http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full",
+      version: "2026-03",
+    });
 
     const predecessor = q2Records.find((record) => record.publicationContext.revisionSequence === 1);
     expect(predecessor).toBeDefined();
@@ -354,7 +358,7 @@ describe("research financial statement acquisition", () => {
           fiscalPeriod: "q2",
           periodStart: "2026-04-01",
           periodEnd: "2026-06-30",
-          filingBasis: "unknown",
+          filingBasis: "consolidated",
           publishedAt: "2026-09-01",
         }),
       }),

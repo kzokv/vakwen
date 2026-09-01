@@ -788,7 +788,7 @@ const financialStatementFactSchema = z.object({
     durationMonths: z.number().int().min(1).max(24),
   }).strict(),
   taxonomy: z.object({
-    namespace: z.string().min(1).max(120),
+    namespace: z.string().min(1).max(500),
     conceptName: z.string().min(1).max(120),
     taxonomyVersion: z.string().min(1).max(120),
   }).strict(),

@@ -136,7 +136,7 @@ export function buildCurrentMopsFinancialStatementDescriptors(
           fiscalPeriod: target.fiscalPeriod,
           periodStart: target.periodStart,
           periodEnd: target.periodEnd,
-          filingBasis: "unknown" as const,
+          filingBasis: "consolidated" as const,
           // The direct artifact endpoint does not expose a filing timestamp in
           // its URL contract. Use the first observation date conservatively;
           // never backdate it to the statutory due date.

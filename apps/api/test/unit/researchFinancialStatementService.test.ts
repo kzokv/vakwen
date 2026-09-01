@@ -1066,7 +1066,10 @@ describe("research financial-statement service", () => {
       contextId: `sector-extension-${index}`,
       period: { kind: "instant", instantAt: "2026-06-30T23:59:59.999Z" },
       valueKind: "instant",
-      rawValue: String(13.4 + index),
+      rawValue: index === 0 ? "Tier 1 capital disclosure" : String(13.4 + index),
+      taxonomy: index === 0
+        ? { namespaceUri: "https://mops.twse.com.tw/taxonomy/2025/tifrs-bank", version: "2025" }
+        : { namespaceUri: "https://mops.twse.com.tw/taxonomy/2026/tifrs-bank", version: "2026" },
       unit: { state: "known", unitId: "pure" },
     }));
     record.statements.push({ kind: "sector_extension", facts: extensionFacts, metadata: { sector: "financial_institution" } });
@@ -1088,7 +1091,16 @@ describe("research financial-statement service", () => {
 
     expect(result.periods[0]?.sourceFacts).toHaveLength(100);
     expect(result.periods[0]?.sourceFacts[0]).toEqual(
-      expect.objectContaining({ statement: "sector_extension", concept: expect.objectContaining({ raw: "tifrs:BankCapitalAdequacyRatio0" }) }),
+      expect.objectContaining({
+        statement: "sector_extension",
+        concept: expect.objectContaining({ raw: "tifrs:BankCapitalAdequacyRatio0" }),
+        value: { state: "present", value: "Tier 1 capital disclosure" },
+        taxonomy: {
+          namespace: "https://mops.twse.com.tw/taxonomy/2025/tifrs-bank",
+          conceptName: "BankCapitalAdequacyRatio0",
+          taxonomyVersion: "2025",
+        },
+      }),
     );
     expect(result.periods[0]?.quality.unmappedConcepts.observationIds).toHaveLength(100);
     expect(result.page.truncatedByBudget).toBe(true);
