@@ -385,18 +385,8 @@ export function materializeResearchFinancialStatementRecord(
   }
   const periodicity = input.filing.fiscalPeriod === "annual" ? "annual" : "quarterly";
   const fiscalQuarter = quarterForFilingPeriod(input.filing.fiscalPeriod);
-  const periodEnd = input.facts.map((fact) => fact.periodEnd).find((value): value is string => value !== null)
-    ?? `${input.filing.fiscalYear}-12-31`;
-  const periodStart = input.facts.map((fact) => fact.periodStart).find((value): value is string => value !== null)
-    ?? (periodicity === "annual"
-      ? `${input.filing.fiscalYear}-01-01`
-      : fiscalQuarter === 1
-        ? `${input.filing.fiscalYear}-01-01`
-        : fiscalQuarter === 2
-          ? `${input.filing.fiscalYear}-04-01`
-          : fiscalQuarter === 3
-            ? `${input.filing.fiscalYear}-07-01`
-            : `${input.filing.fiscalYear}-10-01`);
+  const periodStart = input.filing.periodStart;
+  const periodEnd = input.filing.periodEnd;
   const filingBasis = resolveMopsArtifactFilingBasis(input);
   const publishedAt = financialStatementPublishedAtTimestamp(input.filing.publishedAt);
   const issuesByContextSignature = new Set(

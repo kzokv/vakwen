@@ -287,12 +287,9 @@ function statementRoleForConcept(
 ): MopsStatementRole {
   const knownRole = KNOWN_STATEMENT_ROLE_BY_CONCEPT.get(localName);
   if (knownRole) return knownRole;
-  if (
-    namespaceUri
-    && /^https?:\/\/xbrl\.ifrs\.org\/taxonomy\/.+\/ifrs-full\/?$/i.test(namespaceUri)
-    && context?.periodType === "instant"
-  ) {
-    return "balance_sheet";
+  if (namespaceUri && /^https?:\/\/xbrl\.ifrs\.org\/taxonomy\/.+\/ifrs-full\/?$/i.test(namespaceUri)) {
+    if (context?.periodType === "instant") return "balance_sheet";
+    if (context?.periodType === "duration") return "income_statement";
   }
   return "unknown";
 }

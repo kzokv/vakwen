@@ -70,10 +70,16 @@ describe("MOPS XBRL provider parser", () => {
           <xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity>
           <xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period>
         </xbrli:context>
+        <xbrli:context id="ctx_comparative">
+          <xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity>
+          <xbrli:period><xbrli:instant>2025-12-31</xbrli:instant></xbrli:period>
+        </xbrli:context>
         <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
         <xbrli:unit id="twd_alias"><xbrli:measure>currency:TWD</xbrli:measure></xbrli:unit>
+        <ifrs-full:Inventories contextRef="ctx_comparative" unitRef="twd">190000</ifrs-full:Inventories>
         <ifrs-full:Assets contextRef="ctx_consolidated" unitRef="twd">3450000</ifrs-full:Assets>
         <ifrs-full:Inventories contextRef="ctx_instant" unitRef="twd">210000</ifrs-full:Inventories>
+        <ifrs-full:BasicEarningsLossPerShare contextRef="ctx_consolidated" unitRef="twd">12.5</ifrs-full:BasicEarningsLossPerShare>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_consolidated" unitRef="twd">1234000</ifrs-full:RevenueFromContractsWithCustomers>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_individual" unitRef="twd">1111000</ifrs-full:RevenueFromContractsWithCustomers>
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_typed_segment" unitRef="twd">222000</ifrs-full:RevenueFromContractsWithCustomers>
@@ -99,9 +105,11 @@ describe("MOPS XBRL provider parser", () => {
     expect(artifact.issues.taxonomyAmbiguity).toBe(false);
     expect(artifact.facts.map((fact) => fact.concept.localName)).toContain("RevenueFromContractsWithCustomers");
     expect(artifact.facts.find((fact) => fact.concept.localName === "GrossProfit")?.normalizedValue).toBe("");
-    expect(artifact.contexts).toHaveLength(5);
+    expect(artifact.contexts).toHaveLength(6);
     expect(artifact.facts.find((fact) => fact.concept.localName === "Inventories")?.statementRole)
       .toBe("balance_sheet");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "BasicEarningsLossPerShare")?.statementRole)
+      .toBe("income_statement");
     expect(artifact.contexts.find((context) => context.id === "ctx_typed_segment")?.dimensions).toEqual([
       { dimension: "custom:OperatingSegmentAxis", member: "custom:SegmentName:Foundry" },
     ]);
@@ -115,12 +123,20 @@ describe("MOPS XBRL provider parser", () => {
     ]);
     const record = materializeResearchFinancialStatementRecord(artifact);
     expect(record.issuerId).toBe(xbrlDescriptor.issuerId);
+    expect(record.fiscalPeriod).toMatchObject({
+      periodStart: xbrlDescriptor.filing.periodStart,
+      periodEnd: xbrlDescriptor.filing.periodEnd,
+    });
     expect(record.statements.find((statement) => statement.kind === "balance_sheet")?.facts)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({
           issuerId: xbrlDescriptor.issuerId,
           concept: expect.objectContaining({ qname: "ifrs-full:Inventories" }),
         }),
+      ]));
+    expect(record.statements.find((statement) => statement.kind === "income")?.facts)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ concept: expect.objectContaining({ qname: "ifrs-full:BasicEarningsLossPerShare" }) }),
       ]));
   });
 
