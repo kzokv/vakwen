@@ -864,6 +864,31 @@ describe("research financial-statement service", () => {
     expect(result.derivedOutcomes.every((metric) => metric.status === "returned" && metric.calculatedAt === "2026-09-01T00:00:00.000Z")).toBe(true);
   });
 
+  it("trailing-twelve-month: withholds instant balance-sheet metrics", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 2, { assets: "210" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "trailing_twelve_month", parameters: { baseMetricId: "assets" } }],
+    });
+
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "withheld", metricId: "trailing_twelve_month", reasonCode: "incomparable_inputs" }),
+    ]);
+  });
+
   it("derives annual CAGR and isolates annual from quarterly records", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
@@ -1177,9 +1202,15 @@ describe("research financial-statement service", () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
     await persistence.appendResearchIdentityRecords([identity]);
-    await persistence.appendResearchFinancialStatementRecords([
-      makeQuarterRecord(identity, 2026, 2, { revenue: "60" }),
-    ]);
+    const record = makeQuarterRecord(identity, 2026, 2, { revenue: "60" });
+    const comparativeGrossProfit = metricFact(record, "gross_profit", "20", { valueKind: "discrete" });
+    comparativeGrossProfit.context = {
+      ...comparativeGrossProfit.context,
+      contextId: "2025-Q2:gross-profit",
+      period: { kind: "duration", startAt: "2025-04-01T00:00:00.000Z", endAt: "2025-06-30T23:59:59.999Z" },
+    };
+    record.statements[0]!.facts.push(comparativeGrossProfit);
+    await persistence.appendResearchFinancialStatementRecords([record]);
 
     const result = await getFinancialStatements(persistence, {
       subject: { kind: "listing_id", listingId: identity.listing.id },
@@ -1199,6 +1230,7 @@ describe("research financial-statement service", () => {
       status: "partial",
       missingFactCount: 3,
     });
+    expect(result.periods[0]?.sourceFacts.some((fact) => fact.observationId === comparativeGrossProfit.id)).toBe(true);
   });
 
   it("sector-extension group: returns unmapped extension facts from the requested section", async () => {

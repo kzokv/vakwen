@@ -986,6 +986,19 @@ const CORE_METRICS_BY_STATEMENT = {
   sector_extension: [],
 } as const;
 
+function sourceFactIsCurrentIssuerWide(
+  fact: ResearchFinancialStatementPeriod["sourceFacts"][number],
+  period: ResearchFinancialStatementPeriod,
+): boolean {
+  if (fact.period.endDate !== period.periodEndDate) return false;
+  return Object.entries(fact.dimensions).every(([dimension, member]) => {
+    if (!/consolidated|separate|individual/i.test(`${dimension}:${member}`)) return false;
+    if (period.filingBasis === "consolidated") return !/separate|individual/i.test(member);
+    if (period.filingBasis === "individual") return !/consolidated/i.test(member);
+    return false;
+  });
+}
+
 function missingRequestedFactCount(
   period: ResearchFinancialStatementPeriod,
   query: ResearchFinancialStatementsQuery,
@@ -997,11 +1010,12 @@ function missingRequestedFactCount(
     }
   }
   metricIdsForGroups(query.metricSelection.groups).forEach((metricId) => expected.add(metricId));
-  const returnedMetricIds = new Set(period.sourceFacts.map((fact) => fact.metricId));
+  const currentIssuerWideFacts = period.sourceFacts.filter((fact) => sourceFactIsCurrentIssuerWide(fact, period));
+  const returnedMetricIds = new Set(currentIssuerWideFacts.map((fact) => fact.metricId));
   let missing = [...expected].filter((metricId) => !returnedMetricIds.has(metricId)).length;
   for (const explicit of query.metricSelection.explicitMetricIds) {
     if (expected.has(explicit)) continue;
-    if (!period.sourceFacts.some((fact) => fact.metricId === explicit || fact.concept.raw === explicit || fact.label.raw === explicit)) {
+    if (!currentIssuerWideFacts.some((fact) => fact.metricId === explicit || fact.concept.raw === explicit || fact.label.raw === explicit)) {
       missing += 1;
     }
   }
@@ -1290,6 +1304,16 @@ function metricWindowPeriods(
   return typeof raw === "number" && Number.isInteger(raw) && raw > 1 ? raw : fallback;
 }
 
+function isDurationMetric(metricId: ResearchFinancialStatementMetricId): boolean {
+  return metricId === "revenue"
+    || metricId === "gross_profit"
+    || metricId === "operating_income"
+    || metricId === "net_income"
+    || metricId === "operating_cash_flow"
+    || metricId === "investing_cash_flow"
+    || metricId === "capital_expenditure";
+}
+
 function isCumulativeFact(fact: ResearchFinancialStatementFact): boolean {
   return fact.context.valueKind === "cumulative" && fact.context.period.kind === "duration";
 }
@@ -1443,6 +1467,7 @@ function deriveMetricForRecord(
   if (metricId === "trailing_twelve_month") {
     const baseMetricId = metricParameterMetricId(parameters);
     if (!baseMetricId || record.periodicity !== "quarterly") return withholding("missing_inputs", []);
+    if (!isDurationMetric(baseMetricId)) return withholding("incomparable_inputs", []);
     const quarter = record.fiscalPeriod.fiscalQuarter;
     if (quarter === null) return withholding("missing_inputs", []);
     const quarterTokens = [0, 1, 2, 3].map((offset) => {
@@ -1844,7 +1869,7 @@ export async function getFinancialStatements(
   }
   const missingFactCount = periods.reduce((count, period) => (
     count
-    + period.sourceFacts.filter((fact) => fact.value.state === "missing").length
+    + period.sourceFacts.filter((fact) => sourceFactIsCurrentIssuerWide(fact, period) && fact.value.state === "missing").length
     + missingRequestedFactCount(period, query)
   ), 0);
   const missingMetricCount = derivedOutcomes.filter((metric) => metric.status !== "returned").length;
