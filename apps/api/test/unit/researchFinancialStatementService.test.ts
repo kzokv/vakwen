@@ -526,6 +526,39 @@ describe("research financial-statement service", () => {
     ]);
   });
 
+  it("period-over-period change: withholds facts from different taxonomy versions", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const prior = makeQuarterRecord(identity, 2025, 4, { revenue: "40" }, { valueKinds: { revenue: { valueKind: "discrete" } } });
+    const current = makeQuarterRecord(identity, 2026, 1, { revenue: "50" }, { valueKinds: { revenue: { valueKind: "discrete" } } });
+    prior.statements.flatMap((section) => section.facts).find((fact) => fact.metric.state === "mapped" && fact.metric.metricId === "revenue")!.taxonomy = {
+      namespaceUri: "http://xbrl.ifrs.org/taxonomy/2025/ifrs-full",
+      version: "2025",
+    };
+    current.statements.flatMap((section) => section.facts).find((fact) => fact.metric.state === "mapped" && fact.metric.metricId === "revenue")!.taxonomy = {
+      namespaceUri: "http://xbrl.ifrs.org/taxonomy/2026/ifrs-full",
+      version: "2026",
+    };
+    await persistence.appendResearchFinancialStatementRecords([prior, current]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "period_over_period_change", parameters: { baseMetricId: "revenue" } }],
+    });
+
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "withheld", metricId: "period_over_period_change", reasonCode: "incomparable_inputs" }),
+    ]);
+  });
+
   it("negative CAGR endpoint: withholds instead of returning NaN", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

@@ -352,7 +352,7 @@ describe("research financial statement acquisition", () => {
       new Date("2026-09-01T00:00:00.000Z"),
     );
 
-    expect(descriptors).toHaveLength(11);
+    expect(descriptors).toHaveLength(22);
     expect(descriptors).toContainEqual(
       expect.objectContaining({
         listingId: identity.listing.id,
@@ -371,9 +371,19 @@ describe("research financial statement acquisition", () => {
         }),
       }),
     );
+    expect(descriptors).toContainEqual(
+      expect.objectContaining({
+        sourceUrl: expect.stringMatching(/step=1&CO_ID=2330&SYEAR=2026&SSEASON=2&REPORT_ID=A/),
+        filing: expect.objectContaining({
+          fiscalYear: 2026,
+          fiscalPeriod: "q2",
+          filingBasis: "individual",
+        }),
+      }),
+    );
     expect(descriptors.filter((descriptor) => descriptor.filing.fiscalPeriod === "annual")
-      .map((descriptor) => descriptor.filing.fiscalYear)).toEqual([2023, 2024, 2025]);
-    expect(descriptors.filter((descriptor) => descriptor.filing.fiscalPeriod !== "annual")).toHaveLength(8);
+      .map((descriptor) => descriptor.filing.fiscalYear)).toEqual([2023, 2023, 2024, 2024, 2025, 2025]);
+    expect(descriptors.filter((descriptor) => descriptor.filing.fiscalPeriod !== "annual")).toHaveLength(16);
 
     const postAnnualDue = buildCurrentMopsFinancialStatementDescriptors(
       [identity],

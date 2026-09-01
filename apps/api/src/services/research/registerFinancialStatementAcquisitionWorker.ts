@@ -116,13 +116,16 @@ export function buildCurrentMopsFinancialStatementDescriptors(
       && identity.security.type === "common_equity"
       && identity.eligibility.profile === "operating_company"
     ))
-    .flatMap((identity) => targets.map((target) => {
+    .flatMap((identity) => targets.flatMap((target) => ([
+      { reportId: "C", filingBasis: "consolidated" as const },
+      { reportId: "A", filingBasis: "individual" as const },
+    ]).map(({ reportId, filingBasis }) => {
       const sourceUrl = new URL(OFFICIAL_FINANCIAL_STATEMENT_BASE_URL);
       sourceUrl.searchParams.set("step", "1");
       sourceUrl.searchParams.set("CO_ID", identity.listing.ticker);
       sourceUrl.searchParams.set("SYEAR", String(target.fiscalYear));
       sourceUrl.searchParams.set("SSEASON", String(target.season));
-      sourceUrl.searchParams.set("REPORT_ID", "C");
+      sourceUrl.searchParams.set("REPORT_ID", reportId);
       return {
         listingId: identity.listing.id,
         issuerId: identity.issuer.id,
@@ -131,12 +134,12 @@ export function buildCurrentMopsFinancialStatementDescriptors(
         sector: "operating_company" as const,
         sourceUrl: sourceUrl.toString(),
         filing: {
-          filingId: `mops:${identity.listing.ticker}:${target.fiscalYear}:${target.fiscalPeriod}`,
+          filingId: `mops:${identity.listing.ticker}:${target.fiscalYear}:${target.fiscalPeriod}:${filingBasis}`,
           fiscalYear: target.fiscalYear,
           fiscalPeriod: target.fiscalPeriod,
           periodStart: target.periodStart,
           periodEnd: target.periodEnd,
-          filingBasis: "consolidated" as const,
+          filingBasis,
           // The direct artifact endpoint does not expose a filing timestamp in
           // its URL contract. Use the first observation date conservatively;
           // never backdate it to the statutory due date.
@@ -147,9 +150,9 @@ export function buildCurrentMopsFinancialStatementDescriptors(
           amendmentType: "unknown" as const,
         },
       };
-    }))
-    .sort((left, right) => `${left.venue}:${left.ticker}:${left.filing.periodEnd}:${left.filing.fiscalPeriod}`
-      .localeCompare(`${right.venue}:${right.ticker}:${right.filing.periodEnd}:${right.filing.fiscalPeriod}`));
+    })))
+    .sort((left, right) => `${left.venue}:${left.ticker}:${left.filing.periodEnd}:${left.filing.fiscalPeriod}:${left.filing.filingBasis}`
+      .localeCompare(`${right.venue}:${right.ticker}:${right.filing.periodEnd}:${right.filing.fiscalPeriod}:${right.filing.filingBasis}`));
 }
 
 export function createResearchFinancialStatementAcquisitionHandler(
