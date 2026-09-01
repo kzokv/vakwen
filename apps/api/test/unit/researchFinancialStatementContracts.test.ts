@@ -54,6 +54,19 @@ describe("research financial-statement contracts", () => {
     })).toThrow();
   });
 
+  it("rejects request shapes that can exceed derived-outcome capacity", () => {
+    expect(() => researchFinancialStatementsQuerySchema.parse({
+      subject: { kind: "listing_id", listingId: "lst_demo" },
+      context: { knowledgeAt: "2026-09-01T00:00:00.000Z", effectiveAt: "2026-09-01T00:00:00.000Z", assessmentMode: "effective" },
+      periodicity: "quarterly",
+      page: { limit: 20, order: "desc" },
+      derivedMetrics: Array.from({ length: 11 }, (_, index) => ({
+        metricId: "gross_margin",
+        parameters: { variant: index },
+      })),
+    })).toThrow(/must not exceed 200 outcomes/);
+  });
+
   it("accepts only wrapped structured tool results", () => {
     const structured = {
       result: {

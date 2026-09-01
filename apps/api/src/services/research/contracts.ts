@@ -718,6 +718,14 @@ export const researchFinancialStatementsQuerySchema = researchQuerySchema.extend
       message: "Derived metrics must be unique by metricId and parameters",
     });
   }
+  const effectivePageLimit = query.page.limit ?? (query.periodicity === "annual" ? 3 : 8);
+  if ((effectivePageLimit * query.derivedMetrics.length) > 200) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["derivedMetrics"],
+      message: "page.limit multiplied by derivedMetrics length must not exceed 200 outcomes",
+    });
+  }
 }).transform((query) => {
   const defaultCount = query.periodicity === "annual" ? 3 : 8;
   const defaultLimit = query.periodicity === "annual" ? 3 : 8;

@@ -374,6 +374,41 @@ describe("financial statement fundamentals report", () => {
     ]);
   });
 
+  it("season-four filing: reconstructs discrete Q4 revenue from annual less Q3 cumulative facts", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "160"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "200"),
+    ];
+    for (const [year, q3Cumulative] of [[2024, "112"], [2025, "145"]] as const) {
+      const q3 = quarters.find((period) => period.fiscalYear === year && period.fiscalQuarter === 3)!;
+      const cumulative = makeFact(q3.periodEndDate, year, 3, "revenue", q3Cumulative, "income");
+      cumulative.period.startDate = `${year}-01-01`;
+      q3.sourceFacts.push(cumulative);
+      const q4Revenue = quarters.find((period) => period.fiscalYear === year && period.fiscalQuarter === 4)!
+        .sourceFacts.find((fact) => fact.metricId === "revenue")!;
+      q4Revenue.period.startDate = `${year}-01-01`;
+    }
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "quarterly_revenue_trend")?.status).toBe("supported");
+  });
+
   it("annual trend: withholds nonconsecutive years and periods without usable revenue", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

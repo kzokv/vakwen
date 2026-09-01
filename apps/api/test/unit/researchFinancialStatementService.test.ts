@@ -341,6 +341,8 @@ describe("research financial-statement service", () => {
     const comparativeGrossProfit = metricFact(record, "gross_profit", "20", { valueKind: "discrete" });
     const segmentRevenue = metricFact(record, "revenue", "15", { valueKind: "discrete" });
     const segmentGrossProfit = metricFact(record, "gross_profit", "6", { valueKind: "discrete" });
+    const cumulativeRevenue = metricFact(record, "revenue", "110", { valueKind: "cumulative" });
+    const cumulativeGrossProfit = metricFact(record, "gross_profit", "44", { valueKind: "cumulative" });
     comparativeRevenue.context = {
       ...comparativeRevenue.context,
       contextId: "2025-Q2:revenue",
@@ -361,7 +363,9 @@ describe("research financial-statement service", () => {
       contextId: "2026-Q2:segment-gross-profit",
       dimensions: { OperatingSegmentsAxis: "FoundryMember" },
     };
-    record.statements[0]!.facts.push(comparativeRevenue, comparativeGrossProfit, segmentRevenue, segmentGrossProfit);
+    cumulativeRevenue.context = { ...cumulativeRevenue.context, contextId: "2026-YTD:revenue", period: { kind: "duration", startAt: "2026-01-01T00:00:00.000Z", endAt: "2026-06-30T23:59:59.999Z" } };
+    cumulativeGrossProfit.context = { ...cumulativeGrossProfit.context, contextId: "2026-YTD:gross-profit", period: { kind: "duration", startAt: "2026-01-01T00:00:00.000Z", endAt: "2026-06-30T23:59:59.999Z" } };
+    record.statements[0]!.facts.push(comparativeRevenue, comparativeGrossProfit, segmentRevenue, segmentGrossProfit, cumulativeRevenue, cumulativeGrossProfit);
     await persistence.appendResearchFinancialStatementRecords([record]);
 
     const result = await getFinancialStatements(persistence, {
@@ -378,6 +382,30 @@ describe("research financial-statement service", () => {
 
     expect(result.derivedOutcomes).toEqual([
       expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),
+    ]);
+    expect(result.periods[0]?.sourceFacts.find((fact) => fact.observationId === cumulativeRevenue.id)?.period.durationMonths).toBe(6);
+  });
+
+  it("average-balance ratios: withhold when the immediately preceding annual period is missing", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeAnnualRecord(identity, 2022, { net_income: "10", equity: "70" }),
+      makeAnnualRecord(identity, 2024, { net_income: "18", equity: "90" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: { knowledgeAt: "2026-09-01T00:00:00.000Z", effectiveAt: "2026-09-01T00:00:00.000Z", assessmentMode: "effective" },
+      periodicity: "annual",
+      range: { kind: "latest_periods", count: 2 },
+      derivedMetrics: [{ metricId: "return_on_equity", parameters: {} }],
+    });
+
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "withheld", metricId: "return_on_equity", reasonCode: "missing_inputs" }),
+      expect.objectContaining({ status: "withheld", metricId: "return_on_equity", reasonCode: "missing_inputs" }),
     ]);
   });
 

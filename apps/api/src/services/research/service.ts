@@ -1060,7 +1060,12 @@ function mapFinancialFact(
       endDate: period.endDate,
       fiscalYear: record.fiscalPeriod.fiscalYear,
       fiscalQuarter: record.fiscalPeriod.fiscalQuarter,
-      durationMonths: record.periodicity === "annual" ? 12 : 3,
+      durationMonths: period.startDate === null
+        ? 1
+        : ((Number(period.endDate.slice(0, 4)) - Number(period.startDate.slice(0, 4))) * 12)
+          + Number(period.endDate.slice(5, 7))
+          - Number(period.startDate.slice(5, 7))
+          + 1,
     },
     taxonomy: {
       namespace: fact.concept.qname.split(":")[0] ?? "unknown",
@@ -1157,8 +1162,11 @@ function deriveComparableMetricValue(
     });
   });
   if (matches.length === 0) return { reason: "missing_inputs" };
-  if (matches.some((fact) => fact.unit.state === "unknown")) return { reason: "unknown_unit" };
-  const present = matches.filter((fact) => fact.normalized.state === "present");
+  const contextPreferred = record.periodicity === "quarterly" && matches.some((fact) => fact.context.valueKind === "discrete")
+    ? matches.filter((fact) => fact.context.valueKind === "discrete")
+    : matches;
+  if (contextPreferred.some((fact) => fact.unit.state === "unknown")) return { reason: "unknown_unit" };
+  const present = contextPreferred.filter((fact) => fact.normalized.state === "present");
   if (present.length !== 1) return { reason: present.length === 0 ? "missing_inputs" : "ambiguous_inputs" };
   const value = parseFactNumber(present[0]);
   if (value === null) return { reason: "missing_inputs" };
@@ -1187,9 +1195,12 @@ function previousChronologicalRecord(
   record: ResearchFinancialStatementRecord,
   recordsInOrder: readonly ResearchFinancialStatementRecord[],
 ): ResearchFinancialStatementRecord | null {
-  const token = periodToken(record);
-  const index = recordsInOrder.findIndex((candidate) => periodToken(candidate) === token);
-  return index > 0 ? recordsInOrder[index - 1] : null;
+  const expectedToken = record.periodicity === "annual"
+    ? previousAnnualToken(record)
+    : priorQuarterKey(record);
+  return expectedToken
+    ? recordsInOrder.find((candidate) => periodToken(candidate) === expectedToken) ?? null
+    : null;
 }
 
 function metricParameterMetricId(

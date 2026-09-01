@@ -292,6 +292,42 @@ function numericFact(period: ResearchFinancialStatementsOutput["periods"][number
   return Number.isFinite(value) ? value : null;
 }
 
+function quarterlyRevenueObservation(
+  period: ResearchFinancialStatementsOutput["periods"][number],
+  periods: readonly ResearchFinancialStatementsOutput["periods"][number][],
+): { value: number; unit: string } | null {
+  const direct = findFact(period, "revenue");
+  if (direct?.value.state === "present" && direct.unit.normalized.state === "present") {
+    const value = Number(direct.value.value);
+    return Number.isFinite(value) ? { value, unit: direct.unit.normalized.value } : null;
+  }
+  if (period.fiscalQuarter !== 4) return null;
+  const cumulative = period.sourceFacts.find((fact) => (
+    fact.metricId === "revenue"
+    && fact.period.startDate === `${period.fiscalYear}-01-01`
+    && fact.period.endDate === period.periodEndDate
+    && fact.value.state === "present"
+    && fact.unit.normalized.state === "present"
+  ));
+  const thirdQuarter = periods.find((candidate) => candidate.fiscalYear === period.fiscalYear && candidate.fiscalQuarter === 3);
+  const priorCumulative = thirdQuarter?.sourceFacts.find((fact) => (
+    fact.metricId === "revenue"
+    && fact.period.startDate === `${period.fiscalYear}-01-01`
+    && fact.period.endDate === thirdQuarter.periodEndDate
+    && fact.value.state === "present"
+    && fact.unit.normalized.state === "present"
+  ));
+  if (
+    cumulative?.value.state !== "present"
+    || cumulative.unit.normalized.state !== "present"
+    || priorCumulative?.value.state !== "present"
+    || priorCumulative.unit.normalized.state !== "present"
+    || cumulative.unit.normalized.value !== priorCumulative.unit.normalized.value
+  ) return null;
+  const value = Number(cumulative.value.value) - Number(priorCumulative.value.value);
+  return Number.isFinite(value) ? { value, unit: cumulative.unit.normalized.value } : null;
+}
+
 function formatPercent(value: number): string {
   return `${value.toFixed(2).replace(/\.?0+$/, "")}%`;
 }
@@ -376,10 +412,7 @@ function buildSupportedOrWithheldConclusions(
     return ((period.fiscalYear * 4) + period.fiscalQuarter!) === ((prior.fiscalYear * 4) + prior.fiscalQuarter! + 1);
   });
   const quarterlyRevenueUnits = orderedQuarters.map((period) => {
-    const fact = findFact(period, "revenue");
-    return numericFact(period, "revenue") !== null && fact?.unit.normalized.state === "present"
-      ? fact.unit.normalized.value
-      : null;
+    return quarterlyRevenueObservation(period, orderedQuarters)?.unit ?? null;
   });
   const quarterlyRevenueIsComparable = quarterlyRevenueUnits.every((unit): unit is string => unit !== null)
     && new Set(quarterlyRevenueUnits).size === 1;
