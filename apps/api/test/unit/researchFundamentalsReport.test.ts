@@ -146,6 +146,33 @@ function buildStatementsOutput(
   };
 }
 
+function availableFinancialStatementManifest(identity: ReturnType<typeof makeIdentity>) {
+  return {
+    contractVersion: "research-manifest/1.0.0",
+    selector: { kind: "listing_id" as const, listingId: identity.listing.id },
+    context: {
+      knowledgeAt: "2026-09-01T00:00:00.000Z",
+      effectiveAt: "2026-09-01T00:00:00.000Z",
+      assessmentMode: "effective" as const,
+    },
+    eligibility: identity.eligibility,
+    orchestration: { skillExposure: "enabled" as const },
+    datasets: [
+      { id: "research_identity", status: "available" as const },
+      { id: "price_series", status: "unavailable" as const, reasonCode: "no_authoritative_price_history" },
+      { id: "exchange_valuation_references", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "monthly_revenue", status: "unavailable" as const, reasonCode: "not_acquired" },
+      { id: "financial_statements", status: "available" as const },
+      { id: "institutional_trading", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "foreign_ownership", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "margin_and_short_balances", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "dividend_events", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "material_announcements", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "investor_materials", status: "unavailable" as const, reasonCode: "identity_only_release" },
+    ],
+  };
+}
+
 describe("financial statement fundamentals report", () => {
   it("operating company fixture: support YoY, annual trend, and quarterly trend from canonical statements only", async () => {
     const persistence = new MemoryPersistence();
@@ -215,6 +242,45 @@ describe("financial statement fundamentals report", () => {
     const markdown = renderFinancialStatementFundamentalsResearchReportMarkdown(report);
     expect(markdown).toContain("# Taiwan Financial Statement Fundamentals: 台積電");
     expect(markdown).toContain("- latest_revenue_yoy: supported");
+  });
+
+  it("annual trend: withholds nonconsecutive years and periods without usable revenue", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+    const missingRevenue = makePeriod(2024, null, "160");
+    missingRevenue.sourceFacts = missingRevenue.sourceFacts.filter((fact) => fact.metricId !== "revenue");
+    const scenarios = [
+      [makePeriod(2022, null, "100"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")],
+      [makePeriod(2023, null, "140"), missingRevenue, makePeriod(2025, null, "200")],
+    ];
+
+    for (const annuals of scenarios) {
+      const report = await buildFinancialStatementFundamentalsResearchReport(
+        persistence,
+        {
+          subject: { kind: "listing_id", listingId: identity.listing.id },
+          context: availableFinancialStatementManifest(identity).context,
+        },
+        {
+          getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+          getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+            query.periodicity === "annual"
+              ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+              : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+          ),
+        },
+      );
+
+      expect(report.conclusions.find((conclusion) => conclusion.id === "multi_year_revenue_trend")).toMatchObject({
+        status: "withheld",
+        reasonCodes: ["insufficient_multi_year_window"],
+      });
+    }
   });
 
   it("unsupported sector fixture: withhold every conclusion explicitly", async () => {

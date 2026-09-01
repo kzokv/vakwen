@@ -680,7 +680,7 @@ export const researchFinancialStatementsQuerySchema = researchQuerySchema.extend
   periodicity: financialStatementPeriodicitySchema.default("annual"),
   range: financialStatementRangeSchema.optional(),
   filingBasis: financialStatementFilingBasisSchema.default("policy_selected"),
-  statements: z.array(financialStatementStatementSchema).max(5).default(["income", "balance_sheet", "cash_flow"]),
+  statements: z.array(financialStatementStatementSchema).min(1).max(5).default(["income", "balance_sheet", "cash_flow"]),
   metricSelection: financialStatementMetricSelectionSchema.default({}),
   derivedMetrics: z.array(financialStatementDerivedMetricRequestSchema).max(20).default([]),
   page: financialStatementPageSchema.default({ order: "desc" }),
@@ -849,7 +849,7 @@ const financialStatementPeriodSchema = z.object({
   publishedAt: isoDateSchema,
   filingDate: isoDateSchema,
   acceptedAt: z.string().datetime({ offset: true }).nullable(),
-  filingBasis: z.enum(["consolidated", "individual"]),
+  filingBasis: z.enum(["consolidated", "individual", "unknown"]),
   statements: z.array(financialStatementStatementSchema).min(1).max(5),
   sourceFacts: z.array(financialStatementFactSchema).max(400),
   quality: z.object({

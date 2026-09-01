@@ -356,7 +356,20 @@ function buildSupportedOrWithheldConclusions(
         statement: "Latest due year-over-year financial statement conclusion is withheld.",
         reasonCodes: ["insufficient_yoy_window"],
       };
+  const annualYearsAreConsecutive = orderedAnnuals.every((period, index) => (
+    index === 0 || period.fiscalYear === orderedAnnuals[index - 1]!.fiscalYear + 1
+  ));
+  const annualRevenueUnits = orderedAnnuals.map((period) => {
+    const fact = findFact(period, "revenue");
+    return numericFact(period, "revenue") !== null && fact?.unit.normalized.state === "present"
+      ? fact.unit.normalized.value
+      : null;
+  });
+  const annualRevenueIsComparable = annualRevenueUnits.every((unit): unit is string => unit !== null)
+    && new Set(annualRevenueUnits).size === 1;
   const multiYearConclusion = orderedAnnuals.length >= FUNDAMENTALS_MINIMUM_WINDOWS.multiYearTrendAnnualPeriods
+    && annualYearsAreConsecutive
+    && annualRevenueIsComparable
     ? {
         id: "multi_year_revenue_trend" as const,
         status: "supported" as const,

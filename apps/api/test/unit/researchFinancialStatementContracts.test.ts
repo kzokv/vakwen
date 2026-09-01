@@ -42,6 +42,18 @@ describe("research financial-statement contracts", () => {
     })).toThrow();
   });
 
+  it("rejects an empty statement selection at the query boundary", () => {
+    expect(() => researchFinancialStatementsQuerySchema.parse({
+      subject: { kind: "listing_id", listingId: "lst_demo" },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      statements: [],
+    })).toThrow();
+  });
+
   it("accepts only wrapped structured tool results", () => {
     const structured = {
       result: {

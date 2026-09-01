@@ -14,8 +14,88 @@ import {
   RESEARCH_FINANCIAL_STATEMENT_ACQUISITION_QUEUE,
 } from "../../src/services/research/registerFinancialStatementAcquisitionWorker.js";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import type { MopsFinancialStatementDescriptor } from "../../src/services/research/providers/mopsXbrl.js";
+
+function acquisitionDescriptor(index: number): MopsFinancialStatementDescriptor {
+  return {
+    listingId: `lst_${index}`,
+    issuerId: `iss_${index}`,
+    ticker: String(2300 + index),
+    venue: "TWSE",
+    sector: "operating_company",
+    sourceUrl: `${OFFICIAL_FINANCIAL_STATEMENT_BASE_URL}?case=${index}`,
+    filing: {
+      filingId: `q2-2026-${index}`,
+      fiscalYear: 2026,
+      fiscalPeriod: "q2",
+      periodStart: "2026-04-01",
+      periodEnd: "2026-06-30",
+      filingBasis: "consolidated",
+      publishedAt: "2026-08-14",
+      revision: 0,
+      amendmentType: "original",
+    },
+  };
+}
+
+const validAcquisitionXbrl = `<?xml version="1.0" encoding="utf-8"?>
+  <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
+    <xbrli:context id="duration"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
+    <xbrli:context id="instant"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>
+    <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
+    <ifrs-full:Revenue contextRef="duration" unitRef="twd">60</ifrs-full:Revenue>
+    <ifrs-full:CashFlowsFromUsedInOperatingActivities contextRef="duration" unitRef="twd">15</ifrs-full:CashFlowsFromUsedInOperatingActivities>
+    <ifrs-full:Assets contextRef="instant" unitRef="twd">210</ifrs-full:Assets>
+  </xbrli:xbrl>`;
 
 describe("research financial statement acquisition", () => {
+  it("universe acquisition: bounds concurrency and persists successes when one filing fails", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    const appendSpy = vi.spyOn(persistence, "appendResearchFinancialStatementRecords");
+    const descriptors = Array.from({ length: 6 }, (_, index) => acquisitionDescriptor(index));
+    let active = 0;
+    let maxActive = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return String(input).endsWith("case=2")
+        ? new Response("temporary failure", { status: 503 })
+        : new Response(validAcquisitionXbrl, { status: 200 });
+    };
+
+    const result = await runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors,
+      fetchImpl,
+      retrievedAt: "2026-08-15T00:00:00.000Z",
+      acquisitionRunId: "bounded-partial-run",
+    });
+
+    expect(maxActive).toBeLessThanOrEqual(4);
+    expect(result).toMatchObject({ sourceCount: 6, recordCount: 5, failureCount: 1 });
+    expect(appendSpy).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ listingId: "lst_0" }),
+      expect.objectContaining({ listingId: "lst_5" }),
+    ]));
+    expect(appendSpy.mock.calls[0]?.[0]).toHaveLength(5);
+  });
+
+  it("maintenance HTML: rejects an artifact with no required statement facts", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    const appendSpy = vi.spyOn(persistence, "appendResearchFinancialStatementRecords");
+
+    await expect(runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors: [acquisitionDescriptor(0)],
+      fetchImpl: async () => new Response("<html><body>maintenance</body></html>", { status: 200 }),
+      retrievedAt: "2026-08-15T00:00:00.000Z",
+      acquisitionRunId: "empty-artifact-run",
+    })).rejects.toThrow(/statement facts|required statement roles/i);
+    expect(appendSpy).not.toHaveBeenCalled();
+  });
+
   it("official MOPS acquisition: discrete quarter contexts stay discrete and emitted supersedes keys resolve to stored predecessors", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const q2Revision1Url = `${OFFICIAL_FINANCIAL_STATEMENT_BASE_URL}?co_id=2330&year=2026&season=2&rev=1`;

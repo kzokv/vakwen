@@ -800,12 +800,19 @@ async function hasFinancialStatementsAvailable(
       filingBasis: "consolidated",
     });
     if (records.length > 0) return true;
-    return (await persistence.listLatestResearchFinancialStatementRecords({
+    if ((await persistence.listLatestResearchFinancialStatementRecords({
       subject: { kind: "listing_id", listingId },
       knowledgeAt: query.context.knowledgeAt,
       effectiveAt: query.context.effectiveAt,
       periodicity: query.periodicity,
       filingBasis: "individual",
+    })).length > 0) return true;
+    return (await persistence.listLatestResearchFinancialStatementRecords({
+      subject: { kind: "listing_id", listingId },
+      knowledgeAt: query.context.knowledgeAt,
+      effectiveAt: query.context.effectiveAt,
+      periodicity: query.periodicity,
+      filingBasis: "unknown",
     })).length > 0;
   } catch (error) {
     if (error instanceof ResearchServiceError && error.code === "research_dataset_unavailable") {
@@ -818,6 +825,7 @@ async function hasFinancialStatementsAvailable(
 function selectFinancialStatementBasis(
   consolidated: readonly ResearchFinancialStatementRecord[],
   individual: readonly ResearchFinancialStatementRecord[],
+  unknown: readonly ResearchFinancialStatementRecord[],
   requested: ResearchFinancialStatementsQuery["filingBasis"],
 ): { selected: ResearchFinancialStatementsOutput["basisPolicy"]["selected"]; fallbackApplied: boolean; records: ResearchFinancialStatementRecord[] } {
   if (requested === "consolidated" || requested === "individual") {
@@ -827,24 +835,39 @@ function selectFinancialStatementBasis(
       records: [...(requested === "consolidated" ? consolidated : individual)],
     };
   }
+  const includeUnknownPeriods = (selection: {
+    selected: "consolidated" | "individual";
+    fallbackApplied: boolean;
+    records: ResearchFinancialStatementRecord[];
+  }): { selected: ResearchFinancialStatementsOutput["basisPolicy"]["selected"]; fallbackApplied: boolean; records: ResearchFinancialStatementRecord[] } => {
+    const coveredPeriods = new Set(selection.records.map((record) => researchFinancialStatementPeriodKey(record)));
+    const additionalUnknown = unknown.filter((record) => !coveredPeriods.has(researchFinancialStatementPeriodKey(record)));
+    return additionalUnknown.length === 0
+      ? selection
+      : {
+          selected: "policy_selected",
+          fallbackApplied: selection.fallbackApplied,
+          records: [...selection.records, ...additionalUnknown],
+        };
+  };
   const consolidatedKeys = new Set(consolidated.map((record) => researchFinancialStatementPeriodKey(record)));
   const individualKeys = new Set(individual.map((record) => researchFinancialStatementPeriodKey(record)));
   const unionKeys = new Set([...consolidatedKeys, ...individualKeys]);
   const consolidatedCoversAll = unionKeys.size > 0 && unionKeys.size === consolidatedKeys.size;
   const individualCoversAll = unionKeys.size > 0 && unionKeys.size === individualKeys.size;
   if (consolidatedCoversAll) {
-    return { selected: "consolidated", fallbackApplied: false, records: [...consolidated] };
+    return includeUnknownPeriods({ selected: "consolidated", fallbackApplied: false, records: [...consolidated] });
   }
   if (individualCoversAll) {
-    return { selected: "individual", fallbackApplied: true, records: [...individual] };
+    return includeUnknownPeriods({ selected: "individual", fallbackApplied: true, records: [...individual] });
   }
   if (consolidated.length >= individual.length && consolidated.length > 0) {
-    return { selected: "consolidated", fallbackApplied: false, records: [...consolidated] };
+    return includeUnknownPeriods({ selected: "consolidated", fallbackApplied: false, records: [...consolidated] });
   }
   if (individual.length > 0) {
-    return { selected: "individual", fallbackApplied: true, records: [...individual] };
+    return includeUnknownPeriods({ selected: "individual", fallbackApplied: true, records: [...individual] });
   }
-  return { selected: "policy_selected", fallbackApplied: false, records: [] };
+  return { selected: "policy_selected", fallbackApplied: false, records: [...unknown] };
 }
 
 function financialPeriodToken(periodicity: ResearchFinancialStatementsQuery["periodicity"], date: string): string {
@@ -1386,8 +1409,11 @@ function deriveMetricForRecord(
     if ("reason" in end) return withholding(end.reason, []);
     if (start.unit !== end.unit) return withholding("incomparable_inputs", [...start.facts, ...end.facts].map((fact) => fact.id));
     if (start.value <= 0) return withholding("zero_denominator", [...start.facts, ...end.facts].map((fact) => fact.id));
+    if (end.value < 0) return withholding("incomparable_inputs", [...start.facts, ...end.facts].map((fact) => fact.id));
     const years = windowPeriods - 1;
-    return returned(Math.pow(end.value / start.value, 1 / years) - 1, "ratio", [...start.facts, ...end.facts].map((fact) => fact.id), "compound_annual_growth_rate");
+    const growth = Math.pow(end.value / start.value, 1 / years) - 1;
+    if (!Number.isFinite(growth)) return withholding("incomparable_inputs", [...start.facts, ...end.facts].map((fact) => fact.id));
+    return returned(growth, "ratio", [...start.facts, ...end.facts].map((fact) => fact.id), "compound_annual_growth_rate");
   }
   if (metricId === "return_on_equity" || metricId === "return_on_assets") {
     const numerator = record.periodicity === "quarterly"
@@ -1567,7 +1593,10 @@ export async function getFinancialStatements(
   const individual = query.filingBasis === "consolidated"
     ? []
     : await persistence.listLatestResearchFinancialStatementRecords({ ...baseQuery, filingBasis: "individual" });
-  const basisSelection = selectFinancialStatementBasis(consolidated, individual, query.filingBasis);
+  const unknown = query.filingBasis === "policy_selected"
+    ? await persistence.listLatestResearchFinancialStatementRecords({ ...baseQuery, filingBasis: "unknown" })
+    : [];
+  const basisSelection = selectFinancialStatementBasis(consolidated, individual, unknown, query.filingBasis);
   const orderedSelected = [...basisSelection.records]
     .sort((left, right) => query.page.order === "desc" ? financialStatementSortOrder(left, right) : financialStatementSortOrder(right, left));
   const outputRange = query.range.kind === "latest_periods"
@@ -1601,7 +1630,7 @@ export async function getFinancialStatements(
       publishedAt: record.publicationContext.publishedAt.slice(0, 10),
       filingDate: record.publicationContext.publishedAt.slice(0, 10),
       acceptedAt: record.publicationContext.revisionPublishedAt ?? record.publicationContext.publishedAt,
-      filingBasis: basisSelection.selected === "policy_selected" ? "consolidated" : basisSelection.selected,
+      filingBasis: record.filingBasis,
       statements: record.statements.filter((section) => query.statements.includes(section.kind)).map((section) => section.kind),
       sourceFacts: facts.map((fact) => mapFinancialFact(fact, record)),
       quality: {

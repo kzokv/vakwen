@@ -124,6 +124,8 @@ interface FinancialStatementAcquisitionOptions extends AcquisitionOptions {
   resolveDescriptors?: () => Promise<readonly MopsFinancialStatementDescriptor[]>;
 }
 
+const FINANCIAL_STATEMENT_ACQUISITION_CONCURRENCY = 4;
+
 async function fetchArtifact(fetchImpl: typeof fetch, sourceUrl: string, init?: RequestInit) {
   const response = await fetchImpl(sourceUrl, {
     ...init,
@@ -1274,19 +1276,53 @@ export async function runOfficialFinancialStatementAcquisition(
   const fetchImpl = options.fetchImpl ?? fetch;
   const retrievedAt = options.retrievedAt ?? new Date().toISOString();
   const acquisitionRunId = options.acquisitionRunId ?? `research-financial-statements-${retrievedAt}`;
-  const records = await Promise.all(descriptors.map(async (descriptor) => {
-    const artifact = await fetchRawArtifact(fetchImpl, descriptor.sourceUrl);
-    return canonicalizeFinancialStatementArtifact(persistence, parseMopsFinancialStatementArtifact(artifact.body, descriptor, {
-      retrievedAt,
-      acquisitionRunId,
-      contentHash: artifact.metadata.contentHash,
-    }));
-  }));
+  const records: ResearchFinancialStatementRecord[] = [];
+  const failures: Array<{ listingId: string; sourceUrl: string; message: string; error: unknown }> = [];
+  let nextDescriptorIndex = 0;
+  const acquireNext = async (): Promise<void> => {
+    while (nextDescriptorIndex < descriptors.length) {
+      const descriptor = descriptors[nextDescriptorIndex++];
+      if (!descriptor) return;
+      try {
+        const artifact = await fetchRawArtifact(fetchImpl, descriptor.sourceUrl);
+        const parsed = parseMopsFinancialStatementArtifact(artifact.body, descriptor, {
+          retrievedAt,
+          acquisitionRunId,
+          contentHash: artifact.metadata.contentHash,
+        });
+        if (parsed.facts.length === 0) {
+          throw new Error(`Official MOPS financial statement artifact ${descriptor.sourceUrl} returned no statement facts`);
+        }
+        if (parsed.issues.missingStatementRoles.length > 0) {
+          throw new Error(
+            `Official MOPS financial statement artifact ${descriptor.sourceUrl} is missing required statement roles: ${parsed.issues.missingStatementRoles.join(",")}`,
+          );
+        }
+        records.push(await canonicalizeFinancialStatementArtifact(persistence, parsed));
+      } catch (error) {
+        failures.push({
+          listingId: descriptor.listingId,
+          sourceUrl: descriptor.sourceUrl,
+          message: error instanceof Error ? error.message : String(error),
+          error,
+        });
+      }
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(FINANCIAL_STATEMENT_ACQUISITION_CONCURRENCY, descriptors.length) },
+    () => acquireNext(),
+  ));
+  if (records.length === 0) {
+    throw failures[0]?.error ?? new Error("Official MOPS financial statement acquisition produced no records");
+  }
   await persistence.appendResearchFinancialStatementRecords(records);
   return {
     acquisitionRunId,
     sourceCount: descriptors.length,
     recordCount: records.length,
+    failureCount: failures.length,
+    failures: failures.map(({ listingId, sourceUrl, message }) => ({ listingId, sourceUrl, message })),
     retrievedAt,
   };
 }

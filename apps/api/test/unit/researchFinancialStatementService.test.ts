@@ -180,7 +180,7 @@ function makeQuarterRecord(
   fiscalQuarter: 1 | 2 | 3 | 4,
   values: Partial<Record<ResearchFinancialStatementMetricId, string>>,
   options: {
-    filingBasis?: "consolidated" | "individual";
+    filingBasis?: "consolidated" | "individual" | "unknown";
     valueKinds?: Partial<Record<ResearchFinancialStatementMetricId, { valueKind?: "cumulative" | "discrete" | "instant"; unitId?: string }>>;
     publicationContext?: Partial<ResearchFinancialStatementRecord["publicationContext"]>;
     ambiguityFlags?: ResearchFinancialStatementRecord["ambiguityFlags"];
@@ -266,6 +266,42 @@ describe("research financial-statement service", () => {
     expect(manifest.datasets.find((dataset) => dataset.id === "financial_statements")).toMatchObject({
       status: "available",
     });
+  });
+
+  it("unknown-basis store: policy reads preserve the filing and withhold basis-dependent readiness", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 1, { revenue: "28" }, { filingBasis: "consolidated" }),
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60" }, { filingBasis: "unknown" }),
+    ]);
+
+    const manifest = await getResearchManifest(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+    });
+    const statements = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 2 },
+      filingBasis: "policy_selected",
+      derivedMetrics: [],
+    });
+
+    expect(manifest.datasets.find((dataset) => dataset.id === "financial_statements")).toMatchObject({ status: "available" });
+    expect(statements.periods).toHaveLength(2);
+    expect(statements.periods.map((period) => period.filingBasis)).toEqual(["unknown", "consolidated"]);
+    expect(statements.readiness).toMatchObject({ status: "usable_with_gaps", reasonCodes: expect.arrayContaining(["ambiguous_basis"]) });
   });
 
   it("comparative filing contexts: derived metrics select facts for the target filing period", async () => {
@@ -376,6 +412,34 @@ describe("research financial-statement service", () => {
     expect(result.derivedOutcomes).toEqual([
       expect.objectContaining({ status: "returned", metricId: "period_over_period_change", value: "0.25" }),
     ]);
+  });
+
+  it("negative CAGR endpoint: withholds instead of returning NaN", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeAnnualRecord(identity, 2023, { net_income: "10" }),
+      makeAnnualRecord(identity, 2024, { net_income: "5" }),
+      makeAnnualRecord(identity, 2025, { net_income: "-2" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "annual",
+      range: { kind: "latest_periods", count: 3 },
+      derivedMetrics: [{ metricId: "compound_annual_growth_rate", parameters: { baseMetricId: "net_income", windowPeriods: 3 } }],
+    });
+
+    expect(result.derivedOutcomes[0]).toEqual(
+      expect.objectContaining({ status: "withheld", metricId: "compound_annual_growth_rate" }),
+    );
+    expect(JSON.stringify(result)).not.toContain("NaN");
   });
 
   it("ascending pagination: freshness remains anchored to the latest selected filing", async () => {
