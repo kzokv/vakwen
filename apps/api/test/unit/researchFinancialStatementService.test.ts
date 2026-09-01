@@ -484,6 +484,9 @@ describe("research financial-statement service", () => {
       expect.objectContaining({ status: "withheld", metricId: "return_on_equity", reasonCode: "missing_inputs" }),
       expect.objectContaining({ status: "withheld", metricId: "return_on_equity", reasonCode: "missing_inputs" }),
     ]);
+    expect(result.derivedOutcomes.map((outcome) => outcome.filingPeriodId)).toEqual(
+      result.periods.map((period) => period.filingPeriodId),
+    );
   });
 
   it("signed capital expenditure: free cash flow adds the negative outflow", async () => {
@@ -743,6 +746,7 @@ describe("research financial-statement service", () => {
       periodicity: "quarterly",
       range: { kind: "latest_periods", count: 4 },
       page: { limit: 1, order: "desc" },
+      statements: ["income"],
       derivedMetrics: [
         { metricId: "gross_margin", parameters: {} },
         { metricId: "current_ratio", parameters: {} },
@@ -752,6 +756,7 @@ describe("research financial-statement service", () => {
 
     expect(result.identity.availability).toEqual({ status: "eligible", reasonCode: "operating_company" });
     expect(result.periods).toHaveLength(1);
+    expect(result.periods[0]?.sourceFacts.every((fact) => fact.statement === "income")).toBe(true);
     expect(result.periods[0]?.sourceFacts.some((fact) => fact.value.state === "present" && fact.value.value === "0")).toBe(false);
     expect(result.derivedOutcomes).toEqual([
       expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),

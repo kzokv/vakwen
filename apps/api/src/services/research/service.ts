@@ -1392,12 +1392,14 @@ function deriveMetricForRecord(
   parameters: Record<string, string | number | boolean>,
   calculatedAt: string,
 ): ResearchFinancialStatementDerivedOutcome {
+  const filingPeriodId = periodIdForRecord(record);
   const withholding = (
     reasonCode: Extract<ResearchFinancialStatementDerivedOutcome, { status: "withheld" }>["reasonCode"],
     observationIds: string[] = [],
   ): ResearchFinancialStatementDerivedOutcome => ({
     status: "withheld",
     metricId,
+    filingPeriodId,
     reasonCode,
     periodObservationIds: observationIds,
     parameters,
@@ -1405,6 +1407,7 @@ function deriveMetricForRecord(
   const returned = (value: number, units: string, observationIds: string[], formulaId: string): ResearchFinancialStatementDerivedOutcome => ({
     status: "returned",
     metricId,
+    filingPeriodId,
     periodObservationIds: observationIds,
     formulaId,
     formulaVersion: "1.0.0",
@@ -1826,11 +1829,11 @@ export async function getFinancialStatements(
       },
     };
   });
-  const calculationRecordsWithRequestedStatements = calculationRecords.filter((record) => (
-    record.statements.some((section) => query.statements.includes(section.kind))
-  ));
-  const recordsByKey = new Map(calculationRecordsWithRequestedStatements.map((record) => [periodIdForRecord(record), record] as const));
-  const factsByPeriodId = new Map(calculationRecordsWithRequestedStatements.map((record) => [periodIdForRecord(record), selectedStatementFacts(record, query.statements)] as const));
+  const recordsByKey = new Map(calculationRecords.map((record) => [periodIdForRecord(record), record] as const));
+  const factsByPeriodId = new Map(calculationRecords.map((record) => [
+    periodIdForRecord(record),
+    record.statements.flatMap((section) => section.facts),
+  ] as const));
   const derivedOutcomes = query.page.cursor
     ? []
     : pageRecords.flatMap((record) => query.derivedMetrics.map((request) => deriveMetricForRecord(

@@ -813,6 +813,7 @@ const financialStatementDerivedMetricStatusSchema = z.discriminatedUnion("status
   z.object({
     status: z.literal("returned"),
     metricId: financialStatementDerivedMetricIdSchema,
+    filingPeriodId: canonicalIdSchema,
     periodObservationIds: z.array(canonicalIdSchema).min(1).max(100),
     formulaId: z.string().min(1).max(120),
     formulaVersion: z.string().min(1).max(120),
@@ -825,6 +826,7 @@ const financialStatementDerivedMetricStatusSchema = z.discriminatedUnion("status
   z.object({
     status: z.literal("withheld"),
     metricId: financialStatementDerivedMetricIdSchema,
+    filingPeriodId: canonicalIdSchema,
     reasonCode: z.enum([
       "missing_inputs",
       "unknown_unit",
@@ -839,6 +841,7 @@ const financialStatementDerivedMetricStatusSchema = z.discriminatedUnion("status
   z.object({
     status: z.literal("not_applicable"),
     metricId: financialStatementDerivedMetricIdSchema,
+    filingPeriodId: canonicalIdSchema,
     reasonCode: z.enum(["not_applicable_subject", "unsupported_sector_extension"]),
     periodObservationIds: z.array(canonicalIdSchema).max(100),
     parameters: z.record(z.string().min(1).max(120), financialStatementScalarParameterSchema),
