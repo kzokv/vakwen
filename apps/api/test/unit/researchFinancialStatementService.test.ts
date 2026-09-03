@@ -36,7 +36,7 @@ const metricDefinitions: Record<ResearchFinancialStatementMetricId, {
   capital_expenditure: { statementKind: "cash_flow", qname: "ifrs-full:PurchaseOfPropertyPlantAndEquipment", label: "Capex", period: "duration", defaultValueKind: "cumulative" },
 };
 
-function makeIdentity() {
+function makeIdentity(industryCode = "24") {
   return canonicalizeOfficialIdentityRow({
     venue: "TWSE",
     snapshotDate: "2026-08-31",
@@ -48,7 +48,7 @@ function makeIdentity() {
       legalName: "台灣積體電路製造股份有限公司",
       displayName: "台積電",
       unifiedBusinessNumber: "22099131",
-      industryCode: "24",
+      industryCode,
       listedAt: "1994-09-05",
     },
   });
@@ -258,6 +258,70 @@ function makeAnnualRecord(
 }
 
 describe("research financial-statement service", () => {
+  it("financial-institution identity: marks core derived metrics as unsupported sector extensions", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity("17");
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 2, { current_assets: "120", current_liabilities: "60" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "current_ratio", parameters: {} }],
+    });
+
+    expect(result.identity.issuer.classification).toBe("financial_institution");
+    expect(result.periods).toHaveLength(1);
+    expect(result.derivedOutcomes).toEqual([
+      expect.objectContaining({
+        status: "not_applicable",
+        metricId: "current_ratio",
+        reasonCode: "unsupported_sector_extension",
+        periodObservationIds: [],
+      }),
+    ]);
+  });
+
+  it("period quality flags: degrade top-level confidence and readiness", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeQuarterRecord(identity, 2026, 2, { revenue: "60" }, {
+        ambiguityFlags: ["taxonomy_change", "unmapped_concept", "unknown_unit"],
+      }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [],
+    });
+
+    expect(result.confidence).toEqual({
+      status: "mixed",
+      reasonCodes: ["taxonomy_change", "unmapped_concept", "unknown_unit"],
+    });
+    expect(result.readiness).toEqual({
+      status: "usable_with_gaps",
+      reasonCodes: ["taxonomy_change", "unmapped_concept", "unknown_unit"],
+    });
+  });
+
   it("freshness: marks an older filing stale when a later statutory period is due", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

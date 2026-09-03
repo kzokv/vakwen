@@ -1611,6 +1611,20 @@ function deriveMetricForRecord(
   return withholding("missing_inputs", []);
 }
 
+function unsupportedSectorDerivedMetricForRecord(
+  request: ResearchFinancialStatementsQuery["derivedMetrics"][number],
+  record: ResearchFinancialStatementRecord,
+): ResearchFinancialStatementDerivedOutcome {
+  return {
+    status: "not_applicable",
+    metricId: request.metricId,
+    filingPeriodId: periodIdForRecord(record),
+    reasonCode: "unsupported_sector_extension",
+    periodObservationIds: [],
+    parameters: request.parameters,
+  };
+}
+
 export async function getResearchManifest(
   persistence: Persistence,
   query: ResearchQuery,
@@ -1891,14 +1905,18 @@ export async function getFinancialStatements(
   ] as const));
   const derivedOutcomes = query.page.cursor
     ? []
-    : pageRecords.flatMap((record) => query.derivedMetrics.map((request) => deriveMetricForRecord(
-        request.metricId,
-        record,
-        factsByPeriodId.get(periodIdForRecord(record)) ?? [],
-        recordsByKey,
-        factsByPeriodId,
-        request.parameters,
-        query.context.knowledgeAt,
+    : pageRecords.flatMap((record) => query.derivedMetrics.map((request) => (
+        identity.identity.issuer.classification === "financial_institution"
+          ? unsupportedSectorDerivedMetricForRecord(request, record)
+          : deriveMetricForRecord(
+              request.metricId,
+              record,
+              factsByPeriodId.get(periodIdForRecord(record)) ?? [],
+              recordsByKey,
+              factsByPeriodId,
+              request.parameters,
+              query.context.knowledgeAt,
+            )
       )));
   const pageRecordIds = new Set(pageRecords.map((record) => periodIdForRecord(record)));
   const derivedObservationIds = new Set(derivedOutcomes.flatMap((outcome) => outcome.periodObservationIds));
@@ -1940,6 +1958,9 @@ export async function getFinancialStatements(
   const readinessReasonCodes = dedupeByKey([
     ...(selectedRecordsForOutput.length === 0 ? ["no_authoritative_filing"] : []),
     ...(selectedRecordsForOutput.length > 0 && basisSelection.selected === "policy_selected" ? ["ambiguous_basis"] : []),
+    ...pageRecords.flatMap((record) => record.ambiguityFlags.filter((flag) => (
+      flag === "taxonomy_change" || flag === "unmapped_concept" || flag === "unknown_unit"
+    ))),
     ...gaps.map((gap) => gap.code),
     ...conflicts.map((conflict) => conflict.code),
   ], (value) => value);
