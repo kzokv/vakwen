@@ -1243,26 +1243,36 @@ describe("research financial-statement service", () => {
     const identity = makeIdentity();
     await persistence.appendResearchIdentityRecords([identity]);
     await persistence.appendResearchFinancialStatementRecords([
+      makeAnnualRecord(identity, 2024, { revenue: "80" }),
       makeAnnualRecord(identity, 2025, { revenue: "100" }),
     ]);
 
-    const result = await getFinancialStatements(persistence, {
-      subject: { kind: "listing_id", listingId: identity.listing.id },
+    const query = {
+      subject: { kind: "listing_id" as const, listingId: identity.listing.id },
       context: {
         knowledgeAt: "2026-09-01T00:00:00.000Z",
         effectiveAt: "2026-09-01T00:00:00.000Z",
-        assessmentMode: "effective",
+        assessmentMode: "effective" as const,
       },
-      periodicity: "annual",
-      range: { kind: "period_end_range", startDate: "2025-01-01", endDate: "2025-12-31" },
+      periodicity: "annual" as const,
+      range: { kind: "period_end_range" as const, startDate: "2024-01-01", endDate: "2025-12-31" },
+      page: { limit: 1, order: "desc" as const },
       derivedMetrics: [],
+    };
+    const firstPage = await getFinancialStatements(persistence, query);
+    const secondPage = await getFinancialStatements(persistence, {
+      ...query,
+      page: { ...query.page, cursor: firstPage.page.nextCursor! },
     });
 
-    expect(result.coverage).toEqual({
+    expect(firstPage.page.recordCount).toBe(1);
+    expect(secondPage.page.recordCount).toBe(1);
+    expect(firstPage.coverage).toEqual({
       status: "complete",
-      requestedPeriodCount: 1,
-      returnedPeriodCount: 1,
+      requestedPeriodCount: 2,
+      returnedPeriodCount: 2,
     });
+    expect(secondPage.coverage).toEqual(firstPage.coverage);
   });
 
   it("source fact auditability: exposes raw and normalized values with transformation metadata", async () => {
@@ -1405,9 +1415,11 @@ describe("research financial-statement service", () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
     await persistence.appendResearchIdentityRecords([identity]);
-    await persistence.appendResearchFinancialStatementRecords([
-      makeQuarterRecord(identity, 2026, 2, { current_assets: "120", current_liabilities: "60" }),
-    ]);
+    const record = makeQuarterRecord(identity, 2026, 2, { current_assets: "120", current_liabilities: "60" }, {
+      publicationContext: { amendment: true, restatement: true },
+      ambiguityFlags: ["taxonomy_change", "duplicate_context", "filing_basis_ambiguous"],
+    });
+    await persistence.appendResearchFinancialStatementRecords([record]);
 
     const result = await getFinancialStatements(persistence, {
       subject: { kind: "listing_id", listingId: identity.listing.id },
@@ -1423,10 +1435,19 @@ describe("research financial-statement service", () => {
     });
 
     expect(result.periods).toEqual([
-      expect.objectContaining({ statements: [], sourceFacts: [] }),
+      expect.objectContaining({
+        statements: [],
+        sourceFacts: [],
+        quality: expect.objectContaining({
+          amendmentsRestatements: expect.objectContaining({ status: "present" }),
+          taxonomyChanges: expect.objectContaining({ status: "present" }),
+          duplicateContexts: expect.objectContaining({ status: "present" }),
+          ambiguousBasis: expect.objectContaining({ status: "present" }),
+        }),
+      }),
     ]);
     expect(result.derivedOutcomes).toEqual([
-      expect.objectContaining({ status: "returned", metricId: "current_ratio", value: "2" }),
+      expect.objectContaining({ status: "withheld", metricId: "current_ratio", reasonCode: "ambiguous_inputs" }),
     ]);
   });
 

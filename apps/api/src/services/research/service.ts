@@ -1189,25 +1189,42 @@ function qualityStateForRecord(
   facts: readonly ResearchFinancialStatementFact[],
   kind: "taxonomyChanges" | "amendmentsRestatements" | "duplicateContexts" | "unmappedConcepts" | "unknownUnits" | "ambiguousBasis",
 ): ResearchFinancialStatementPeriod["quality"]["taxonomyChanges"] {
-  const matched = facts.filter((fact) => {
+  const recordMatched = (() => {
     switch (kind) {
       case "taxonomyChanges":
-        return record.ambiguityFlags.includes("taxonomy_change") || fact.ambiguityFlags.includes("taxonomy_change");
+        return record.ambiguityFlags.includes("taxonomy_change");
       case "amendmentsRestatements":
         return record.publicationContext.amendment || record.publicationContext.restatement;
       case "duplicateContexts":
-        return record.ambiguityFlags.includes("duplicate_context") || fact.ambiguityFlags.includes("duplicate_context");
+        return record.ambiguityFlags.includes("duplicate_context");
+      case "ambiguousBasis":
+        return record.filingBasis === "unknown" || record.ambiguityFlags.includes("filing_basis_ambiguous");
+      case "unmappedConcepts":
+      case "unknownUnits":
+        return false;
+    }
+  })();
+  const matched = facts.filter((fact) => {
+    if (recordMatched) return true;
+    switch (kind) {
+      case "taxonomyChanges":
+        return fact.ambiguityFlags.includes("taxonomy_change");
+      case "amendmentsRestatements":
+        return false;
+      case "duplicateContexts":
+        return fact.ambiguityFlags.includes("duplicate_context");
       case "unmappedConcepts":
         return fact.ambiguityFlags.includes("unmapped_concept");
       case "unknownUnits":
         return fact.ambiguityFlags.includes("unknown_unit");
       case "ambiguousBasis":
-        return record.filingBasis === "unknown" || record.ambiguityFlags.includes("filing_basis_ambiguous") || fact.ambiguityFlags.includes("filing_basis_ambiguous");
+        return fact.ambiguityFlags.includes("filing_basis_ambiguous");
     }
   });
+  const present = recordMatched || matched.length > 0;
   return {
-    status: matched.length > 0 ? "present" : "clear",
-    reasonCodes: matched.length > 0 ? [kind] : [],
+    status: present ? "present" : "clear",
+    reasonCodes: present ? [kind] : [],
     observationIds: matched.slice(0, FINANCIAL_STATEMENT_MAX_QUALITY_OBSERVATIONS).map((fact) => fact.id),
   };
 }
@@ -1949,9 +1966,9 @@ export async function getFinancialStatements(
     metricSelection: query.metricSelection,
     derivedMetricRequests: query.derivedMetrics,
     coverage: {
-      status: periods.length === 0 ? "none" : periods.length < financialStatementsRangeRequestedCount(query) ? "partial" : "complete",
+      status: outputRange.length === 0 ? "none" : outputRange.length < financialStatementsRangeRequestedCount(query) ? "partial" : "complete",
       requestedPeriodCount: financialStatementsRangeRequestedCount(query),
-      returnedPeriodCount: periods.length,
+      returnedPeriodCount: outputRange.length,
     },
     freshness: {
       state: periods.length === 0

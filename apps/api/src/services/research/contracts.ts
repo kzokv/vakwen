@@ -947,7 +947,7 @@ const financialStatementPeriodSchema = z.object({
 const financialStatementCoverageSchema = z.object({
   status: z.enum(["complete", "partial", "none", "not_applicable"]),
   requestedPeriodCount: z.number().int().min(0).max(44),
-  returnedPeriodCount: z.number().int().min(0).max(20),
+  returnedPeriodCount: z.number().int().min(0).max(44),
 }).strict();
 const financialStatementFreshnessSchema = z.object({
   state: z.enum(["current", "stale", "not_applicable", "unknown"]),
