@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { PostgresPersistence } from "../../src/persistence/postgres.js";
 import type { Persistence } from "../../src/persistence/types.js";
@@ -22,7 +22,11 @@ if (runPostgresIntegration && !managedCiStack) {
 
 const describePostgres = runPostgresIntegration && databaseUrl && redisUrl ? describe : describe.skip;
 
-async function seedTaiwanCalendar2026(persistence: Persistence, previewToken: string): Promise<void> {
+async function seedTaiwanCalendar2026(
+  persistence: Persistence,
+  previewToken: string,
+  postgresPool?: Pool,
+): Promise<void> {
   await persistence.saveMarketCalendarPreview({
     previewToken,
     importOperationId: `${previewToken}-import`,
@@ -46,7 +50,21 @@ async function seedTaiwanCalendar2026(persistence: Persistence, previewToken: st
     exceptions: [],
     createdAt: "2025-12-31T00:00:00.000Z",
   });
-  await persistence.confirmMarketCalendarPreview({ previewToken });
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2025-12-31T00:00:00.000Z"));
+  try {
+    await persistence.confirmMarketCalendarPreview({ previewToken });
+  } finally {
+    vi.useRealTimers();
+  }
+  if (postgresPool) {
+    await postgresPool.query(
+      `UPDATE market_data.market_calendar_versions
+          SET confirmed_at = $1
+        WHERE import_operation_id = $2`,
+      ["2025-12-31T00:00:00.000Z", `${previewToken}-import`],
+    );
+  }
 }
 
 describePostgres("research identity memory/Postgres parity", () => {
@@ -439,7 +457,7 @@ describePostgres("research identity memory/Postgres parity", () => {
     await memory.appendResearchMonthlyRevenueRecords([...records, julyCorrection, julyLateBackfill]);
     await postgres.appendResearchMonthlyRevenueRecords([...records, julyCorrection, julyLateBackfill]);
     await seedTaiwanCalendar2026(memory, "research-monthly-revenue-memory-2026");
-    await seedTaiwanCalendar2026(postgres, "research-monthly-revenue-postgres-2026");
+    await seedTaiwanCalendar2026(postgres, "research-monthly-revenue-postgres-2026", pool);
 
     const query = {
       subject: { kind: "listing_id" as const, listingId: identity.listing.id },
