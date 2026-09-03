@@ -159,7 +159,8 @@ describe("MOPS XBRL provider parser", () => {
           <ix:nonFraction name="ifrs-full:RevenueFromContractsWithCustomers" contextRef="ctx_q2" unitRef="twd" scale="3">1,234</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:GrossProfit" contextRef="ctx_q2" unitRef="twd">400</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:BasicEarningsLossPerShare" contextRef="ctx_q2" unitRef="twd" format="ixt:num-comma-decimal">1.234,5</ix:nonFraction>
-          <ix:nonFraction name="ifrs-full:FinanceCosts" contextRef="ctx_q2" unitRef="twd" format="ixt:zero-dash">-</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:FinanceCosts" contextRef="ctx_q2" unitRef="twd" format="ixt:zero-dash">&#45;</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:IncomeTaxExpenseContinuingOperations" contextRef="ctx_q2" unitRef="twd" format="ixt:zero-dash">&#x2212;</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:Liabilities" contextRef="ctx_q2" unitRef="twd" xsi:nil="true" />
           <ix:nonFraction name="ifrs-full:OperatingIncomeLoss" contextRef="ctx_q2" unitRef="twd">300</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:ProfitLoss" contextRef="ctx_q2" unitRef="twd">88</ix:nonFraction>
@@ -196,6 +197,12 @@ describe("MOPS XBRL provider parser", () => {
       .toBe("1234.5");
     expect(artifact.facts.find((fact) => fact.concept.localName === "FinanceCosts")?.normalizedValue)
       .toBe("0");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "FinanceCosts")?.rawValue)
+      .toBe("-");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "IncomeTaxExpenseContinuingOperations")).toMatchObject({
+      rawValue: "−",
+      normalizedValue: "0",
+    });
     expect(artifact.facts.find((fact) => fact.concept.localName === "Liabilities")?.normalizedValue).toBe("");
     expect(artifact.facts.filter((fact) => ["GrossProfit", "OperatingIncomeLoss"].includes(fact.concept.localName))
       .every((fact) => fact.statementRole === "income_statement")).toBe(true);

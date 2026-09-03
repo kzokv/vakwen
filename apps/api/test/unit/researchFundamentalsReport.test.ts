@@ -592,7 +592,7 @@ describe("financial statement fundamentals report", () => {
     });
   });
 
-  it("unrelated unknown units: does not suppress clean revenue conclusions", async () => {
+  it("period-level unknown units: withholds conclusions even when revenue itself has a known unit", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
     await persistence.appendResearchIdentityRecords([identity]);
@@ -601,19 +601,20 @@ describe("financial statement fundamentals report", () => {
       makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
       makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
     ];
-    for (const period of [annuals[0]!, quarters[0]!]) {
-      const capex = makeFact(
+    for (const period of [annuals[2]!, quarters[7]!]) {
+      const assets = period.sourceFacts.find((fact) => fact.metricId === "assets")!;
+      assets.unit = { raw: "mystery", normalized: { state: "missing", reasonCode: "unknown_unit" } };
+      assets.ambiguity.status = "unknown_unit";
+      const currentAssets = makeFact(
         period.periodEndDate,
         period.fiscalYear,
         period.fiscalQuarter as 1 | 2 | 3 | 4 | null,
-        "capital_expenditure",
-        "25",
-        "cash_flow",
+        "current_assets",
+        "80",
+        "balance_sheet",
       );
-      capex.unit = { raw: "mystery", normalized: { state: "missing", reasonCode: "unknown_unit" } };
-      capex.ambiguity.status = "unknown_unit";
-      period.sourceFacts.push(capex);
-      period.quality.unknownUnits = { status: "present", reasonCodes: ["unknownUnits"], observationIds: [capex.observationId] };
+      period.sourceFacts.push(currentAssets);
+      period.quality.unknownUnits = { status: "present", reasonCodes: ["unknownUnits"], observationIds: [assets.observationId] };
     }
 
     const report = await buildFinancialStatementFundamentalsResearchReport(
@@ -629,7 +630,23 @@ describe("financial statement fundamentals report", () => {
       },
     );
 
-    expect(report.conclusions.map((conclusion) => conclusion.status)).toEqual(["supported", "supported", "supported"]);
+    expect(report.conclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "latest_revenue_yoy",
+        status: "withheld",
+        reasonCodes: ["unknown_unit"],
+      }),
+      expect.objectContaining({
+        id: "multi_year_revenue_trend",
+        status: "withheld",
+        reasonCodes: ["unknown_unit"],
+      }),
+      expect.objectContaining({
+        id: "quarterly_revenue_trend",
+        status: "withheld",
+        reasonCodes: ["unknown_unit"],
+      }),
+    ]));
   });
 
   it("season-four filing: reconstructs discrete Q4 revenue from annual less Q3 cumulative facts", async () => {

@@ -18,7 +18,7 @@ KZO-249 adds a financial-statement acquisition and reporting lane to the Taiwan 
 - Duplicate contexts are retained rather than collapsed.
 - Byte-equivalent repeated facts are deduplicated during materialization; conflicting facts that share an identity remain validation errors.
 - Unknown units and unmapped concepts remain explicit quality issues.
-- Basis ambiguity, taxonomy ambiguity, and context ambiguity are withholding conditions for fundamentals conclusions.
+- Unknown-unit, basis, taxonomy, and context ambiguity are withholding conditions for fundamentals conclusions.
 - Amendment records preserve the original filing publication timestamp and record the amendment observation separately as the revision publication timestamp.
 
 ## Reporting Policy

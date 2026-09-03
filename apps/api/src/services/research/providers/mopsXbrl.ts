@@ -155,6 +155,15 @@ function parseAttributes(fragment: string): Record<string, string> {
 function stripMarkup(value: string): string {
   return value
     .replace(/<[^>]+>/g, " ")
+    .replace(/&#(?:(\d+)|x([0-9a-f]+));/gi, (entity, decimal: string | undefined, hexadecimal: string | undefined) => {
+      const codePoint = Number.parseInt(hexadecimal ?? decimal ?? "", hexadecimal ? 16 : 10);
+      return Number.isInteger(codePoint)
+        && codePoint >= 0
+        && codePoint <= 0x10ffff
+        && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? String.fromCodePoint(codePoint)
+        : entity;
+    })
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
