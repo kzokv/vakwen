@@ -126,7 +126,7 @@ export function buildCurrentMopsFinancialStatementDescriptors(
       sourceUrl.searchParams.set("functionName", "t164sb01");
       sourceUrl.searchParams.set("step", "9");
       sourceUrl.searchParams.set("co_id", identity.listing.ticker);
-      sourceUrl.searchParams.set("year", String(target.fiscalYear));
+      sourceUrl.searchParams.set("year", String(target.fiscalYear - 1911));
       sourceUrl.searchParams.set("season", String(target.season));
       sourceUrl.searchParams.set("report_id", reportId);
       return {

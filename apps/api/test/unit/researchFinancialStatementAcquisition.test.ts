@@ -471,7 +471,7 @@ describe("research financial statement acquisition", () => {
         ticker: "2330",
         venue: "TWSE",
         sector: "operating_company",
-        sourceUrl: expect.stringMatching(/functionName=t164sb01&step=9&co_id=2330&year=2026&season=2&report_id=C/),
+        sourceUrl: expect.stringMatching(/functionName=t164sb01&step=9&co_id=2330&year=115&season=2&report_id=C/),
         filing: expect.objectContaining({
           fiscalYear: 2026,
           fiscalPeriod: "q2",
@@ -484,7 +484,7 @@ describe("research financial statement acquisition", () => {
     );
     expect(descriptors).toContainEqual(
       expect.objectContaining({
-        sourceUrl: expect.stringMatching(/functionName=t164sb01&step=9&co_id=2330&year=2026&season=2&report_id=A/),
+        sourceUrl: expect.stringMatching(/functionName=t164sb01&step=9&co_id=2330&year=115&season=2&report_id=A/),
         filing: expect.objectContaining({
           fiscalYear: 2026,
           fiscalPeriod: "q2",
