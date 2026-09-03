@@ -1303,7 +1303,7 @@ export async function runOfficialFinancialStatementAcquisition(
   const fetchImpl = options.fetchImpl ?? fetch;
   const retrievalStartedAt = options.retrievedAt ?? new Date().toISOString();
   const acquisitionRunId = options.acquisitionRunId ?? `research-financial-statements-${retrievalStartedAt}`;
-  const records: ResearchFinancialStatementRecord[] = [];
+  let successfulRecordCount = 0;
   const failures: Array<{ listingId: string; sourceUrl: string; message: string; error: unknown }> = [];
   let nextDescriptorIndex = 0;
   const acquireNext = async (): Promise<void> => {
@@ -1331,7 +1331,7 @@ export async function runOfficialFinancialStatementAcquisition(
         }
         const record = await canonicalizeFinancialStatementArtifact(persistence, parsed);
         await persistence.appendResearchFinancialStatementRecords([record]);
-        records.push(record);
+        successfulRecordCount += 1;
       } catch (error) {
         failures.push({
           listingId: descriptor.listingId,
@@ -1346,13 +1346,13 @@ export async function runOfficialFinancialStatementAcquisition(
     { length: Math.min(FINANCIAL_STATEMENT_ACQUISITION_CONCURRENCY, descriptors.length) },
     () => acquireNext(),
   ));
-  if (records.length === 0) {
+  if (successfulRecordCount === 0) {
     throw failures[0]?.error ?? new Error("Official MOPS financial statement acquisition produced no records");
   }
   return {
     acquisitionRunId,
     sourceCount: descriptors.length,
-    recordCount: records.length,
+    recordCount: successfulRecordCount,
     failureCount: failures.length,
     failures: failures.map(({ listingId, sourceUrl, message }) => ({ listingId, sourceUrl, message })),
     retrievedAt: retrievalStartedAt,

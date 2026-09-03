@@ -218,6 +218,10 @@ export function applyResearchFinancialStatementTransform(
   const unsigned = sourceNegative ? compact.slice(1) : compact;
   const [whole = "0", fraction = ""] = unsigned.split(".");
   const digits = `${whole}${fraction}`;
+  const maximumTransformedLength = 10_000;
+  if (digits.length + Math.abs(scaleValue) + 2 > maximumTransformedLength) {
+    throw new RangeError(`XBRL numeric transform exceeds ${maximumTransformedLength} characters`);
+  }
   const decimalPosition = whole.length + scaleValue;
   let transformed: string;
   if (decimalPosition <= 0) {

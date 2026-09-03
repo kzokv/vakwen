@@ -207,6 +207,11 @@ describe("research financial statements", () => {
     expect(applyResearchFinancialStatementTransform("-25", null, "-")).toBe("-25");
   });
 
+  it("iXBRL transforms reject scales that would allocate an oversized decimal string", () => {
+    expect(() => applyResearchFinancialStatementTransform("1", "1000000", null)).toThrow(RangeError);
+    expect(() => applyResearchFinancialStatementTransform("1", "-1000000", null)).toThrow(RangeError);
+  });
+
   it("iXBRL format metadata preserves transformed values through record validation", () => {
     const record = makeRecord();
     const transformedFact = normalizeResearchFinancialStatementFact({
