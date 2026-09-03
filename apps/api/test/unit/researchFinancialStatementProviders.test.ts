@@ -76,6 +76,12 @@ describe("MOPS XBRL provider parser", () => {
         </xbrli:context>
         <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
         <xbrli:unit id="twd_alias"><xbrli:measure>currency:TWD</xbrli:measure></xbrli:unit>
+        <xbrli:unit id="twd_scoped" xmlns:scoped-currency="http://www.xbrl.org/2003/iso4217">
+          <xbrli:measure>scoped-currency:TWD</xbrli:measure>
+        </xbrli:unit>
+        <xbrli:unit id="twd_direct">
+          <xbrli:measure xmlns:direct-currency="http://www.xbrl.org/2003/iso4217">direct-currency:TWD</xbrli:measure>
+        </xbrli:unit>
         <ifrs-full:Inventories contextRef="ctx_comparative" unitRef="twd">190000</ifrs-full:Inventories>
         <ifrs-full:Assets contextRef="ctx_consolidated" unitRef="twd">3450000</ifrs-full:Assets>
         <ifrs-full:Inventories contextRef="ctx_instant" unitRef="twd">210000</ifrs-full:Inventories>
@@ -121,8 +127,10 @@ describe("MOPS XBRL provider parser", () => {
     expect(artifact.facts.find((fact) => fact.contextRef === "ctx_typed_segment")?.contextDimensions).toEqual([
       { dimension: "custom:OperatingSegmentAxis", member: "custom:SegmentName:Foundry" },
     ]);
-    expect(artifact.units).toHaveLength(2);
+    expect(artifact.units).toHaveLength(4);
     expect(artifact.units.map((unit) => unit.measures)).toEqual([
+      ["{http://www.xbrl.org/2003/iso4217}TWD"],
+      ["{http://www.xbrl.org/2003/iso4217}TWD"],
       ["{http://www.xbrl.org/2003/iso4217}TWD"],
       ["{http://www.xbrl.org/2003/iso4217}TWD"],
     ]);

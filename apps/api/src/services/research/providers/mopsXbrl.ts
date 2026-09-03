@@ -192,22 +192,6 @@ function detectArtifactKind(content: string, declaredKind: MopsArtifactKind | un
     : "xbrl";
 }
 
-function extractNamespaceMap(content: string): Record<string, string> {
-  const rootMatch = /<([A-Za-z_][\w:.-]*)([^>]*)>/m.exec(content);
-  if (!rootMatch) return {};
-  const namespaceMap: Record<string, string> = {};
-  for (const [attributeName, value] of Object.entries(parseAttributes(rootMatch[2] ?? ""))) {
-    if (attributeName === "xmlns") {
-      namespaceMap[""] = value;
-      continue;
-    }
-    if (attributeName.startsWith("xmlns:")) {
-      namespaceMap[attributeName.slice(6)] = value;
-    }
-  }
-  return namespaceMap;
-}
-
 function namespaceMapWithDeclarations(
   inherited: Readonly<Record<string, string>>,
   attributes: Readonly<Record<string, string>>,
@@ -333,29 +317,53 @@ function canonicalMeasureQName(measure: string, namespaceMap: Readonly<Record<st
   return namespaceUri ? `{${namespaceUri}}${localName}` : measure;
 }
 
-function extractUnits(content: string, namespaceMap: Readonly<Record<string, string>>): MopsUnitRecord[] {
-  const units: MopsUnitRecord[] = [];
+function extractUnits(content: string): MopsUnitRecord[] {
+  type MeasureCandidate = {
+    offset: number;
+    attributes: Record<string, string>;
+    value: string;
+    location: "numerator" | "denominator" | "measure";
+  };
+  const pendingUnits: Array<{ id: string; measures: MeasureCandidate[] }> = [];
+  const allMeasures: MeasureCandidate[] = [];
   for (const match of content.matchAll(/<(?:\w+:)?unit\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?unit>/g)) {
     const attributes = parseAttributes(match[1] ?? "");
     const body = match[2] ?? "";
-    const numerator = /<(?:\w+:)?divide\b/i.test(body)
-      ? [...body.matchAll(/<(?:\w+:)?unitNumerator\b[\s\S]*?<(?:\w+:)?measure\b[^>]*>([^<]+)<\/(?:\w+:)?measure>[\s\S]*?<\/(?:\w+:)?unitNumerator>/g)]
-        .map((item) => canonicalMeasureQName(stripMarkup(item[1] ?? ""), namespaceMap))
-      : [];
-    const denominator = /<(?:\w+:)?divide\b/i.test(body)
-      ? [...body.matchAll(/<(?:\w+:)?unitDenominator\b[\s\S]*?<(?:\w+:)?measure\b[^>]*>([^<]+)<\/(?:\w+:)?measure>[\s\S]*?<\/(?:\w+:)?unitDenominator>/g)]
-        .map((item) => canonicalMeasureQName(stripMarkup(item[1] ?? ""), namespaceMap))
-      : [];
-    const measures = [...body.matchAll(/<(?:\w+:)?measure\b[^>]*>([^<]+)<\/(?:\w+:)?measure>/g)]
-      .map((item) => canonicalMeasureQName(stripMarkup(item[1] ?? ""), namespaceMap));
-    units.push({
-      id: attributes.id ?? `unit_${units.length + 1}`,
-      measures,
-      numeratorMeasures: numerator,
-      denominatorMeasures: denominator,
-    });
+    const bodyOffset = match.index + match[0].indexOf(body);
+    const ranges = (elementName: "unitNumerator" | "unitDenominator") => [
+      ...body.matchAll(new RegExp(`<(?:\\w+:)?${elementName}\\b[\\s\\S]*?<\\/(?:\\w+:)?${elementName}>`, "g")),
+    ].map((item) => ({ start: item.index, end: item.index + item[0].length }));
+    const numeratorRanges = ranges("unitNumerator");
+    const denominatorRanges = ranges("unitDenominator");
+    const measures = [...body.matchAll(/<(?:\w+:)?measure\b([^>]*)>([^<]+)<\/(?:\w+:)?measure>/g)]
+      .map((item): MeasureCandidate => {
+        const relativeOffset = item.index;
+        const location = numeratorRanges.some((range) => relativeOffset >= range.start && relativeOffset < range.end)
+          ? "numerator"
+          : denominatorRanges.some((range) => relativeOffset >= range.start && relativeOffset < range.end)
+            ? "denominator"
+            : "measure";
+        return {
+          offset: bodyOffset + relativeOffset,
+          attributes: parseAttributes(item[1] ?? ""),
+          value: stripMarkup(item[2] ?? ""),
+          location,
+        };
+      });
+    allMeasures.push(...measures);
+    pendingUnits.push({ id: attributes.id ?? `unit_${pendingUnits.length + 1}`, measures });
   }
-  return units;
+  const namespaceMaps = namespaceMapsAtElementOffsets(content, allMeasures);
+  const canonical = (measure: MeasureCandidate) => canonicalMeasureQName(
+    measure.value,
+    namespaceMaps.get(measure.offset) ?? {},
+  );
+  return pendingUnits.map((unit) => ({
+    id: unit.id,
+    measures: unit.measures.map(canonical),
+    numeratorMeasures: unit.measures.filter((measure) => measure.location === "numerator").map(canonical),
+    denominatorMeasures: unit.measures.filter((measure) => measure.location === "denominator").map(canonical),
+  }));
 }
 
 function statementRoleForConcept(
@@ -589,9 +597,8 @@ export function parseMopsFinancialStatementArtifact(
   },
 ): MopsFinancialStatementArtifact {
   const artifactKind = detectArtifactKind(content, descriptor.artifactKind);
-  const namespaceMap = extractNamespaceMap(content);
   const contexts = extractContexts(content);
-  const units = extractUnits(content, namespaceMap);
+  const units = extractUnits(content);
   const contextsById = new Map(contexts.map((context) => [context.id, context] as const));
   const facts = artifactKind === "ixbrl"
     ? extractInlineFacts(content, contextsById)
