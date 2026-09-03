@@ -96,7 +96,7 @@ export const OFFICIAL_PRICE_SOURCES = {
   tpexSuspensionsHistory: "https://www.tpex.org.tw/openapi/v1/tpex_spendi_history",
 } as const;
 
-export const OFFICIAL_FINANCIAL_STATEMENT_BASE_URL = "https://mops.twse.com.tw/server-java/t164sb01";
+export const OFFICIAL_FINANCIAL_STATEMENT_BASE_URL = "https://mopsov.twse.com.tw/server-java/FileDownLoad";
 
 const TPEX_DELISTING_FIRST_YEAR = 2021;
 const ETF_ABSENCE_COMPLETENESS_GUARD_PERCENT = 1;

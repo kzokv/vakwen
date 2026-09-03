@@ -571,15 +571,18 @@ export function compareResearchFinancialStatementRevisionPrecedence(
   left: ResearchFinancialStatementRecord,
   right: ResearchFinancialStatementRecord,
 ): number {
-  const publicationOrder = left.publicationContext.publishedAt.localeCompare(
-    right.publicationContext.publishedAt,
-  );
+  const publicationOrder = Date.parse(left.publicationContext.publishedAt)
+    - Date.parse(right.publicationContext.publishedAt);
   if (publicationOrder !== 0) return publicationOrder;
   const filingSequenceOrder = left.publicationContext.filingSequence
     - right.publicationContext.filingSequence;
   if (filingSequenceOrder !== 0) return filingSequenceOrder;
-  const revisionPublicationOrder = (left.publicationContext.revisionPublishedAt ?? "")
-    .localeCompare(right.publicationContext.revisionPublishedAt ?? "");
+  const revisionPublicationOrder = left.publicationContext.revisionPublishedAt === null
+    ? right.publicationContext.revisionPublishedAt === null ? 0 : -1
+    : right.publicationContext.revisionPublishedAt === null
+      ? 1
+      : Date.parse(left.publicationContext.revisionPublishedAt)
+        - Date.parse(right.publicationContext.revisionPublishedAt);
   if (revisionPublicationOrder !== 0) return revisionPublicationOrder;
   const revisionSequenceOrder = left.publicationContext.revisionSequence
     - right.publicationContext.revisionSequence;
@@ -595,15 +598,18 @@ function compareResearchFinancialStatementSourcePrecedence(
   left: ResearchFinancialStatementRecord,
   right: ResearchFinancialStatementRecord,
 ): number {
-  const publicationOrder = left.publicationContext.publishedAt.localeCompare(
-    right.publicationContext.publishedAt,
-  );
+  const publicationOrder = Date.parse(left.publicationContext.publishedAt)
+    - Date.parse(right.publicationContext.publishedAt);
   if (publicationOrder !== 0) return publicationOrder;
   const filingSequenceOrder = left.publicationContext.filingSequence
     - right.publicationContext.filingSequence;
   if (filingSequenceOrder !== 0) return filingSequenceOrder;
-  const revisionPublicationOrder = (left.publicationContext.revisionPublishedAt ?? "")
-    .localeCompare(right.publicationContext.revisionPublishedAt ?? "");
+  const revisionPublicationOrder = left.publicationContext.revisionPublishedAt === null
+    ? right.publicationContext.revisionPublishedAt === null ? 0 : -1
+    : right.publicationContext.revisionPublishedAt === null
+      ? 1
+      : Date.parse(left.publicationContext.revisionPublishedAt)
+        - Date.parse(right.publicationContext.revisionPublishedAt);
   if (revisionPublicationOrder !== 0) return revisionPublicationOrder;
   return left.publicationContext.revisionSequence - right.publicationContext.revisionSequence;
 }

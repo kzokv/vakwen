@@ -123,11 +123,12 @@ export function buildCurrentMopsFinancialStatementDescriptors(
       { reportId: "A", filingBasis: "individual" as const },
     ]).map(({ reportId, filingBasis }) => {
       const sourceUrl = new URL(OFFICIAL_FINANCIAL_STATEMENT_BASE_URL);
-      sourceUrl.searchParams.set("step", "1");
-      sourceUrl.searchParams.set("CO_ID", identity.listing.ticker);
-      sourceUrl.searchParams.set("SYEAR", String(target.fiscalYear));
-      sourceUrl.searchParams.set("SSEASON", String(target.season));
-      sourceUrl.searchParams.set("REPORT_ID", reportId);
+      sourceUrl.searchParams.set("functionName", "t164sb01");
+      sourceUrl.searchParams.set("step", "9");
+      sourceUrl.searchParams.set("co_id", identity.listing.ticker);
+      sourceUrl.searchParams.set("year", String(target.fiscalYear));
+      sourceUrl.searchParams.set("season", String(target.season));
+      sourceUrl.searchParams.set("report_id", reportId);
       return {
         listingId: identity.listing.id,
         issuerId: identity.issuer.id,

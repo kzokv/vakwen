@@ -6,7 +6,7 @@ KZO-249 adds a financial-statement acquisition and reporting lane to the Taiwan 
 
 - Authority: official MOPS XBRL and iXBRL instances only.
 - Access provider: `MOPS_XBRL`.
-- Acquisition side: fetches explicit descriptor URLs, hashes the full artifact, parses contexts, units, concepts, and facts, and preserves filing metadata including revision and amendment or restatement state.
+- Acquisition side: fetches explicit raw iXBRL download URLs from MOPS's `FileDownLoad` endpoint, hashes the full artifact, parses contexts, units, concepts, and facts, and preserves filing metadata including revision and amendment or restatement state.
 - Worker side: the research-enabled pg-boss startup registers the daily financial-statement worker. At run time it builds an 11-period historical window for every active Golden Path operating-company identity—three latest legally due annual filings plus eight latest legally due quarterly filings—and acquires the official MOPS descriptors with bounded concurrency and per-filing failure isolation. Empty or incomplete statement artifacts are rejected, successful filings are persisted even when siblings fail, changed content is promoted to an amendment revision with predecessor lineage, and an empty identity store is an explicit no-op until identity acquisition has populated canonical listings.
 - Read side: research tools and skills must read only from the canonical store through `get_financial_statements`; they must not call MOPS, FinMind, or convenience-summary pages directly.
 - Coverage describes the full selected range and is independent of page size or cursor position; page record counts remain transport metadata.

@@ -158,6 +158,31 @@ describe("research financial statement acquisition", () => {
     expect(records[0]?.publicationContext.publishedAt).toBe(observedAt);
   });
 
+  it("offset timestamps: memory visibility compares publication and retrieval as instants", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    const offsetInstant = "2026-08-15T08:00:00+08:00";
+    await runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors: [{
+        ...acquisitionDescriptor(1),
+        filing: { ...acquisitionDescriptor(1).filing, publishedAt: offsetInstant },
+      }],
+      fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
+      retrievedAt: offsetInstant,
+      acquisitionRunId: "offset-timestamp-visibility",
+    });
+
+    await expect(persistence.listResearchFinancialStatementRecords({
+      subject: { kind: "listing_id", listingId: "lst_1" },
+      effectiveAt: "2026-08-15T00:30:00.000Z",
+      knowledgeAt: "2026-08-15T00:30:00.000Z",
+      periodicity: "quarterly",
+      filingBasis: "consolidated",
+      startPeriod: "2026-Q2",
+      endPeriod: "2026-Q2",
+    })).resolves.toHaveLength(1);
+  });
+
   it("changed scheduled artifact: promotes changes and restorations to new amendment revisions with lineage", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
@@ -446,7 +471,7 @@ describe("research financial statement acquisition", () => {
         ticker: "2330",
         venue: "TWSE",
         sector: "operating_company",
-        sourceUrl: expect.stringMatching(/step=1&CO_ID=2330&SYEAR=2026&SSEASON=2&REPORT_ID=C/),
+        sourceUrl: expect.stringMatching(/functionName=t164sb01&step=9&co_id=2330&year=2026&season=2&report_id=C/),
         filing: expect.objectContaining({
           fiscalYear: 2026,
           fiscalPeriod: "q2",
@@ -459,7 +484,7 @@ describe("research financial statement acquisition", () => {
     );
     expect(descriptors).toContainEqual(
       expect.objectContaining({
-        sourceUrl: expect.stringMatching(/step=1&CO_ID=2330&SYEAR=2026&SSEASON=2&REPORT_ID=A/),
+        sourceUrl: expect.stringMatching(/functionName=t164sb01&step=9&co_id=2330&year=2026&season=2&report_id=A/),
         filing: expect.objectContaining({
           fiscalYear: 2026,
           fiscalPeriod: "q2",
