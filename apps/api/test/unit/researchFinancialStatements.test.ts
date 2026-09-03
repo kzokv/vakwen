@@ -281,6 +281,20 @@ describe("research financial statements", () => {
     });
   });
 
+  it("raw artifact materialization: preserves artifact-wide unit and mapping flags", () => {
+    const artifact = makeRawArtifact([makeRawRevenueFact()]);
+    artifact.issues = {
+      ...artifact.issues,
+      unknownUnitIds: ["mystery_unit"],
+      unmappedConcepts: ["custom:UnmappedDisclosure"],
+    };
+
+    expect(materializeResearchFinancialStatementRecord(artifact).ambiguityFlags).toEqual([
+      "unknown_unit",
+      "unmapped_concept",
+    ]);
+  });
+
   it("blank sentinels stay missing while explicit zero remains numeric zero", () => {
     const missing = normalizeResearchFinancialStatementFact({
       listingId: "lst_2330",

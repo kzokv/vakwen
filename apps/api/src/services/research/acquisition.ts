@@ -1313,7 +1313,10 @@ export async function runOfficialFinancialStatementAcquisition(
       try {
         const artifact = await fetchRawArtifact(fetchImpl, descriptor.sourceUrl);
         const artifactRetrievedAt = options.retrievedAt ?? new Date().toISOString();
-        const parsed = parseMopsFinancialStatementArtifact(artifact.body, descriptor, {
+        const observedDescriptor = descriptor.filing.amendmentType === "unknown"
+          ? { ...descriptor, filing: { ...descriptor.filing, publishedAt: artifactRetrievedAt } }
+          : descriptor;
+        const parsed = parseMopsFinancialStatementArtifact(artifact.body, observedDescriptor, {
           retrievedAt: artifactRetrievedAt,
           acquisitionRunId,
           contentHash: artifact.metadata.contentHash,

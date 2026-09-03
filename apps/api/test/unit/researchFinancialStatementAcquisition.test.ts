@@ -59,9 +59,11 @@ describe("research financial statement acquisition", () => {
       setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
       const persistence = new MemoryPersistence();
       const appendSpy = vi.spyOn(persistence, "appendResearchFinancialStatementRecords");
+      const descriptor = acquisitionDescriptor(0);
+      descriptor.filing.amendmentType = "unknown";
 
       await runOfficialFinancialStatementAcquisition(persistence, {
-        descriptors: [acquisitionDescriptor(0)],
+        descriptors: [descriptor],
         fetchImpl: async () => {
           vi.setSystemTime(new Date("2026-08-15T00:05:00.000Z"));
           return new Response(validAcquisitionXbrl, { status: 200 });
@@ -71,6 +73,10 @@ describe("research financial statement acquisition", () => {
 
       expect(appendSpy.mock.calls[0]?.[0][0]).toHaveProperty(
         "provenance.retrievedAt",
+        "2026-08-15T00:05:00.000Z",
+      );
+      expect(appendSpy.mock.calls[0]?.[0][0]).toHaveProperty(
+        "publicationContext.publishedAt",
         "2026-08-15T00:05:00.000Z",
       );
     } finally {

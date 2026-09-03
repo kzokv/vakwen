@@ -498,6 +498,8 @@ export function materializeResearchFinancialStatementRecord(
       ...(input.issues.basisAmbiguity ? ["filing_basis_ambiguous" as const] : []),
       ...(input.issues.taxonomyAmbiguity ? ["taxonomy_change" as const] : []),
       ...(input.issues.contextAmbiguity ? ["duplicate_context" as const] : []),
+      ...(input.issues.unknownUnitIds.length > 0 ? ["unknown_unit" as const] : []),
+      ...(input.issues.unmappedConcepts.length > 0 ? ["unmapped_concept" as const] : []),
     ],
     provenance: {
       id: opaqueId("fin_stmt_prov", input.listingId, input.filing.filingId, input.artifact.contentHash),
