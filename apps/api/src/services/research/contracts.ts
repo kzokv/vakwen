@@ -819,7 +819,10 @@ const financialStatementFactSchema = z.object({
     raw: z.string().min(1),
     normalized: financialStatementValueStateSchema,
   }).strict(),
-  value: financialStatementValueStateSchema,
+  value: z.object({
+    raw: z.string(),
+    normalized: financialStatementValueStateSchema,
+  }).strict(),
   unit: z.object({
     raw: z.string().nullable(),
     normalized: financialStatementValueStateSchema,
@@ -829,6 +832,14 @@ const financialStatementFactSchema = z.object({
     normalized: financialStatementValueStateSchema,
   }).strict(),
   precision: z.object({
+    raw: z.string().nullable(),
+    normalized: financialStatementValueStateSchema,
+  }).strict(),
+  format: z.object({
+    raw: z.string().nullable(),
+    normalized: financialStatementValueStateSchema,
+  }).strict(),
+  sign: z.object({
     raw: z.string().nullable(),
     normalized: financialStatementValueStateSchema,
   }).strict(),
@@ -935,7 +946,7 @@ const financialStatementPeriodSchema = z.object({
 }).strict();
 const financialStatementCoverageSchema = z.object({
   status: z.enum(["complete", "partial", "none", "not_applicable"]),
-  requestedPeriodCount: z.number().int().min(0).max(20),
+  requestedPeriodCount: z.number().int().min(0).max(44),
   returnedPeriodCount: z.number().int().min(0).max(20),
 }).strict();
 const financialStatementFreshnessSchema = z.object({

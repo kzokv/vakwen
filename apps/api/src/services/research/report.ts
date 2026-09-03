@@ -309,8 +309,8 @@ function findFact(
 function numericFact(period: ResearchFinancialStatementsOutput["periods"][number], metricId: string): number | null {
   const fact = findFact(period, metricId);
   if (!fact) return null;
-  if (fact.value.state !== "present") return null;
-  const value = Number(fact.value.value);
+  if (fact.value.normalized.state !== "present") return null;
+  const value = Number(fact.value.normalized.value);
   return Number.isFinite(value) ? value : null;
 }
 
@@ -321,8 +321,8 @@ function quarterlyRevenueObservation(
   const directCandidates = matchingFacts(period, "revenue");
   if (directCandidates.length > 1) return null;
   const direct = directCandidates[0];
-  if (direct?.value.state === "present" && direct.unit.normalized.state === "present") {
-    const value = Number(direct.value.value);
+  if (direct?.value.normalized.state === "present" && direct.unit.normalized.state === "present") {
+    const value = Number(direct.value.normalized.value);
     return Number.isFinite(value) ? { value, unit: direct.unit.normalized.value } : null;
   }
   if (period.fiscalQuarter !== 4) return null;
@@ -331,7 +331,7 @@ function quarterlyRevenueObservation(
     && factMatchesSelectedBasis(fact)
     && fact.period.startDate === `${period.fiscalYear}-01-01`
     && fact.period.endDate === period.periodEndDate
-    && fact.value.state === "present"
+    && fact.value.normalized.state === "present"
     && fact.unit.normalized.state === "present"
   ));
   const thirdQuarter = periods.find((candidate) => candidate.fiscalYear === period.fiscalYear && candidate.fiscalQuarter === 3);
@@ -340,7 +340,7 @@ function quarterlyRevenueObservation(
     && factMatchesSelectedBasis(fact)
     && fact.period.startDate === `${period.fiscalYear}-01-01`
     && fact.period.endDate === thirdQuarter.periodEndDate
-    && fact.value.state === "present"
+    && fact.value.normalized.state === "present"
     && fact.unit.normalized.state === "present"
   )) ?? [];
   if (cumulativeCandidates.length !== 1 || priorCumulativeCandidates.length !== 1) return null;
@@ -349,13 +349,13 @@ function quarterlyRevenueObservation(
   if (
     cumulative.ambiguity.status === "duplicate_context"
     || priorCumulative.ambiguity.status === "duplicate_context"
-    || cumulative.value.state !== "present"
+    || cumulative.value.normalized.state !== "present"
     || cumulative.unit.normalized.state !== "present"
-    || priorCumulative.value.state !== "present"
+    || priorCumulative.value.normalized.state !== "present"
     || priorCumulative.unit.normalized.state !== "present"
     || cumulative.unit.normalized.value !== priorCumulative.unit.normalized.value
   ) return null;
-  const value = Number(cumulative.value.value) - Number(priorCumulative.value.value);
+  const value = Number(cumulative.value.normalized.value) - Number(priorCumulative.value.normalized.value);
   return Number.isFinite(value) ? { value, unit: cumulative.unit.normalized.value } : null;
 }
 
@@ -369,7 +369,12 @@ function quarterSortValue(period: ResearchFinancialStatementsOutput["periods"][n
 }
 
 function periodHasRequiredStatements(period: ResearchFinancialStatementsOutput["periods"][number]): boolean {
-  const roles = new Set(period.statements);
+  const roles = new Set(period.sourceFacts.filter((fact) => (
+    fact.value.normalized.state === "present"
+    && fact.unit.normalized.state === "present"
+    && factMatchesSelectedBasis(fact)
+    && fact.period.endDate === period.periodEndDate
+  )).map((fact) => fact.statement));
   return roles.has("balance_sheet") && roles.has("income") && roles.has("cash_flow");
 }
 
@@ -388,6 +393,7 @@ function firstAmbiguityReason(periods: readonly ResearchFinancialStatementsOutpu
     ))
     .map((fact) => fact.taxonomy.taxonomyVersion)));
   if (revenueTaxonomyVersions.size > 1) return "taxonomy_ambiguity";
+  if (periods.some((period) => period.quality.duplicateContexts.status === "present")) return "context_ambiguity";
   if (revenueFacts.some((fact) => fact.ambiguity.status === "duplicate_context")) return "context_ambiguity";
   if (periods.some((period) => !periodHasRequiredStatements(period))) return "missing_required_statement";
   return null;

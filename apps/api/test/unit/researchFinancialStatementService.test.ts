@@ -842,7 +842,7 @@ describe("research financial-statement service", () => {
     expect(result.identity.availability).toEqual({ status: "eligible", reasonCode: "operating_company" });
     expect(result.periods).toHaveLength(1);
     expect(result.periods[0]?.sourceFacts.every((fact) => fact.statement === "income")).toBe(true);
-    expect(result.periods[0]?.sourceFacts.some((fact) => fact.value.state === "present" && fact.value.value === "0")).toBe(false);
+    expect(result.periods[0]?.sourceFacts.some((fact) => fact.value.normalized.state === "present" && fact.value.normalized.value === "0")).toBe(false);
     expect(result.derivedOutcomes).toEqual([
       expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),
       expect.objectContaining({ status: "returned", metricId: "current_ratio", value: "2" }),
@@ -1238,6 +1238,91 @@ describe("research financial-statement service", () => {
     expect(result.readiness).toEqual({ status: "withheld", reasonCodes: ["no_authoritative_filing"] });
   });
 
+  it("period-end range coverage: counts applicable fiscal period ends independently of page size", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeAnnualRecord(identity, 2025, { revenue: "100" }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "annual",
+      range: { kind: "period_end_range", startDate: "2025-01-01", endDate: "2025-12-31" },
+      derivedMetrics: [],
+    });
+
+    expect(result.coverage).toEqual({
+      status: "complete",
+      requestedPeriodCount: 1,
+      returnedPeriodCount: 1,
+    });
+  });
+
+  it("source fact auditability: exposes raw and normalized values with transformation metadata", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const record = makeQuarterRecord(identity, 2026, 2, {});
+    const transformedRevenue = normalizeResearchFinancialStatementFact({
+      listingId: record.listingId,
+      issuerId: record.issuerId,
+      filingId: record.publicationContext.filingId,
+      revisionId: record.publicationContext.revisionId,
+      statementKind: "income",
+      concept: { qname: "ifrs-full:Revenue", label: "Revenue" },
+      metric: { state: "mapped", metricId: "revenue" },
+      contextId: "2026-Q2:formatted-revenue",
+      period: {
+        kind: "duration",
+        startAt: "2026-04-01T00:00:00.000Z",
+        endAt: "2026-06-30T23:59:59.999Z",
+      },
+      valueKind: "discrete",
+      rawValue: "1.234,5",
+      normalizedValue: "-1234.5",
+      unit: { state: "known", unitId: "TWD" },
+      declaredSign: "-",
+      declaredFormat: "ixt:num-comma-decimal",
+    });
+    record.statements[0]!.facts = [transformedRevenue];
+    await persistence.appendResearchFinancialStatementRecords([record]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      statements: ["income"],
+      derivedMetrics: [],
+    });
+
+    expect(result.periods[0]?.sourceFacts[0]).toMatchObject({
+      value: {
+        raw: "1.234,5",
+        normalized: { state: "present", value: "-1234.5" },
+      },
+      format: {
+        raw: "ixt:num-comma-decimal",
+        normalized: { state: "present", value: "ixt:num-comma-decimal" },
+      },
+      sign: {
+        raw: "-",
+        normalized: { state: "present", value: "-" },
+      },
+    });
+  });
+
   it("period-end range: loads predecessor lookback for derived metrics without widening output", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
@@ -1455,7 +1540,7 @@ describe("research financial-statement service", () => {
       expect.objectContaining({
         statement: "sector_extension",
         concept: expect.objectContaining({ raw: "tifrs:BankCapitalAdequacyRatio0" }),
-        value: { state: "present", value: "Tier 1 capital disclosure" },
+        value: { raw: "Tier 1 capital disclosure", normalized: { state: "present", value: "Tier 1 capital disclosure" } },
         taxonomy: {
           namespace: "https://mops.twse.com.tw/taxonomy/2025/tifrs-bank",
           conceptName: "BankCapitalAdequacyRatio0",
@@ -1508,7 +1593,7 @@ describe("research financial-statement service", () => {
     expect(result.periods[0]?.sourceFacts.some((fact) => fact.metricId === "unmapped")).toBe(false);
     expect(result.periods[0]?.quality.unmappedConcepts.status).toBe("present");
     expect(result.periods[0]?.quality.unknownUnits.status).toBe("present");
-    expect(result.periods[0]?.sourceFacts.some((fact) => fact.value.state === "present" && fact.value.value === "0")).toBe(false);
+    expect(result.periods[0]?.sourceFacts.some((fact) => fact.value.normalized.state === "present" && fact.value.normalized.value === "0")).toBe(false);
     expect(result.derivedOutcomes).toEqual([
       expect.objectContaining({ status: "withheld", metricId: "current_ratio", reasonCode: "missing_inputs" }),
     ]);

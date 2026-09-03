@@ -14,15 +14,18 @@ KZO-249 adds a financial-statement acquisition and reporting lane to the Taiwan 
 
 - MOPS has required XBRL filings since 2010 and iXBRL since 2019 Q1.
 - Canonical storage must preserve versioned taxonomy lineage from the artifact namespace map and fact namespaces.
+- Source facts expose both raw and normalized values plus scale, precision, format, and sign metadata so transformations remain auditable.
 - Duplicate contexts are retained rather than collapsed.
+- Byte-equivalent repeated facts are deduplicated during materialization; conflicting facts that share an identity remain validation errors.
 - Unknown units and unmapped concepts remain explicit quality issues.
 - Basis ambiguity, taxonomy ambiguity, and context ambiguity are withholding conditions for fundamentals conclusions.
+- Amendment records preserve the original filing publication timestamp and record the amendment observation separately as the revision publication timestamp.
 
 ## Reporting Policy
 
 - The fundamentals report is descriptive only.
 - Latest due YoY conclusions require the latest due filing plus the prior-year comparable period.
-- Multi-year trend conclusions require 3 complete annual periods.
+- Multi-year trend conclusions require 3 complete annual periods with usable current-period facts for every core statement.
 - Quarterly trend or seasonality conclusions require 8 comparable discrete quarters.
 - Unsupported sectors, including financial institutions in the initial policy set, must produce withheld conclusions rather than partial interpretation.
 - Rendering is a faithful projection of the canonical artifact; it must not add forecasts, valuation, or recommendations.

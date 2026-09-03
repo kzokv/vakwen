@@ -706,7 +706,21 @@ function financialStatementsMaxLimit(periodicity: ResearchFinancialStatementsQue
 }
 
 function financialStatementsRangeRequestedCount(query: ResearchFinancialStatementsQuery): number {
-  return query.range.kind === "latest_periods" ? (query.range.count ?? financialStatementsDefaultLimit(query.periodicity)) : query.page.limit;
+  if (query.range.kind === "latest_periods") {
+    return query.range.count ?? financialStatementsDefaultLimit(query.periodicity);
+  }
+  const range = query.range;
+  const periodEndSuffixes = query.periodicity === "annual"
+    ? ["12-31"]
+    : ["03-31", "06-30", "09-30", "12-31"];
+  let count = 0;
+  for (let year = Number(range.startDate.slice(0, 4)); year <= Number(range.endDate.slice(0, 4)); year += 1) {
+    count += periodEndSuffixes.filter((suffix) => {
+      const periodEnd = `${year}-${suffix}`;
+      return periodEnd >= range.startDate && periodEnd <= range.endDate;
+    }).length;
+  }
+  return count;
 }
 
 function financialStatementSortOrder(
@@ -1097,11 +1111,14 @@ function mapFinancialFact(
       raw: fact.concept.label,
       normalized: { state: "present", value: fact.concept.label },
     },
-    value: fact.normalized.state === "present"
-      ? { state: "present", value: fact.normalized.value }
-      : fact.statementKind === "sector_extension" && fact.raw.value.trim() !== ""
-        ? { state: "present", value: fact.raw.value }
-        : { state: "missing", reasonCode: fact.normalized.reason },
+    value: {
+      raw: fact.raw.value,
+      normalized: fact.normalized.state === "present"
+        ? { state: "present", value: fact.normalized.value }
+        : fact.statementKind === "sector_extension" && fact.raw.value.trim() !== ""
+          ? { state: "present", value: fact.raw.value }
+          : { state: "missing", reasonCode: fact.normalized.reason },
+    },
     unit: fact.unit.state === "known"
       ? { raw: fact.unit.unitId, normalized: { state: "present", value: fact.unit.unitId } }
       : { raw: fact.unit.rawUnitId, normalized: { state: "missing", reasonCode: "unknown_unit" } },
@@ -1110,6 +1127,12 @@ function mapFinancialFact(
       : { raw: null, normalized: { state: "missing", reasonCode: "not_reported" } },
     precision: fact.declaredPrecision
       ? { raw: fact.declaredPrecision, normalized: { state: "present", value: fact.declaredPrecision } }
+      : { raw: null, normalized: { state: "missing", reasonCode: "not_reported" } },
+    format: fact.declaredFormat
+      ? { raw: fact.declaredFormat, normalized: { state: "present", value: fact.declaredFormat } }
+      : { raw: null, normalized: { state: "missing", reasonCode: "not_reported" } },
+    sign: fact.declaredSign
+      ? { raw: fact.declaredSign, normalized: { state: "present", value: fact.declaredSign } }
       : { raw: null, normalized: { state: "missing", reasonCode: "not_reported" } },
     filingBasis: record.filingBasis === "consolidated" || record.filingBasis === "individual"
       ? { raw: record.filingBasis, normalized: { state: "present", value: record.filingBasis } }
@@ -1892,7 +1915,7 @@ export async function getFinancialStatements(
   }
   const missingFactCount = periods.reduce((count, period) => (
     count
-    + period.sourceFacts.filter((fact) => sourceFactIsCurrentIssuerWide(fact, period) && fact.value.state === "missing").length
+    + period.sourceFacts.filter((fact) => sourceFactIsCurrentIssuerWide(fact, period) && fact.value.normalized.state === "missing").length
     + missingRequestedFactCount(period, query)
   ), 0);
   const missingMetricCount = derivedOutcomes.filter((metric) => metric.status !== "returned").length;

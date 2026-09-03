@@ -190,10 +190,19 @@ describe("research financial statement acquisition", () => {
     const amendment = records.find((record) => record.publicationContext.revisionSequence === 1);
     const original = records.find((record) => record.publicationContext.revisionSequence === 0);
     const restoration = records.find((record) => record.publicationContext.revisionSequence === 2);
-    expect(amendment?.publicationContext).toMatchObject({ amendment: true, revisionSequence: 1 });
+    expect(amendment?.publicationContext).toMatchObject({
+      amendment: true,
+      revisionSequence: 1,
+      publishedAt: original?.publicationContext.publishedAt,
+    });
+    expect(amendment?.publicationContext.revisionPublishedAt?.slice(0, 10)).toBe("2026-08-19");
     expect(amendment?.relations).toEqual([{ kind: "supersedes", targetRecordKey: researchFinancialStatementRecordKey(original!) }]);
-    expect(restoration?.publicationContext).toMatchObject({ amendment: true, revisionSequence: 2 });
-    expect(restoration?.publicationContext.publishedAt.slice(0, 10)).toBe("2026-08-24");
+    expect(restoration?.publicationContext).toMatchObject({
+      amendment: true,
+      revisionSequence: 2,
+      publishedAt: original?.publicationContext.publishedAt,
+    });
+    expect(restoration?.publicationContext.revisionPublishedAt?.slice(0, 10)).toBe("2026-08-24");
     expect(restoration?.provenance.contentHash).toBe(original?.provenance.contentHash);
     expect(restoration?.relations).toEqual([{ kind: "supersedes", targetRecordKey: researchFinancialStatementRecordKey(amendment!) }]);
   });

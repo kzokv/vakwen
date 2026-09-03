@@ -2,11 +2,81 @@ import { describe, expect, it } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import {
   applyResearchFinancialStatementTransform,
+  materializeResearchFinancialStatementRecord,
   normalizeResearchFinancialStatementFact,
   resolveLatestResearchFinancialStatementRecords,
   type ResearchFinancialStatementRecord,
   validateResearchFinancialStatementRecord,
 } from "../../src/services/research/financialStatements.js";
+import type { MopsFinancialStatementArtifact } from "../../src/services/research/providers/mopsXbrl.js";
+
+function makeRawArtifact(facts: MopsFinancialStatementArtifact["facts"]): MopsFinancialStatementArtifact {
+  return {
+    listingId: "lst_2330",
+    issuerId: "iss_2330",
+    ticker: "2330",
+    venue: "TWSE",
+    sector: "operating_company",
+    filing: {
+      filingId: "mops-2026q2-raw",
+      fiscalYear: 2026,
+      fiscalPeriod: "q2",
+      periodStart: "2026-04-01",
+      periodEnd: "2026-06-30",
+      filingBasis: "consolidated",
+      publishedAt: "2026-08-14",
+      revision: 0,
+      amendmentType: "original",
+    },
+    artifact: {
+      publisher: "MOPS",
+      accessProvider: "MOPS_XBRL",
+      sourceUrl: "https://mops.twse.com.tw/server-java/t164sb01",
+      contentHash: "sha256:raw-artifact",
+      retrievedAt: "2026-08-14T11:00:00.000Z",
+      acquisitionRunId: "run-raw-artifact",
+      artifactKind: "ixbrl",
+      taxonomyVersions: ["2026"],
+      primaryNamespace: "https://xbrl.ifrs.org/taxonomy/2026",
+    },
+    contexts: [],
+    units: [{ id: "twd", measures: ["iso4217:TWD"], numeratorMeasures: [], denominatorMeasures: [] }],
+    facts,
+    issues: {
+      duplicateContextGroups: [],
+      unknownUnitIds: [],
+      unmappedConcepts: [],
+      basisAmbiguity: false,
+      taxonomyAmbiguity: false,
+      contextAmbiguity: false,
+      missingStatementRoles: [],
+    },
+  };
+}
+
+function makeRawRevenueFact(): MopsFinancialStatementArtifact["facts"][number] {
+  return {
+    id: "raw-revenue",
+    statementRole: "income_statement",
+    concept: {
+      qname: "ifrs-full:Revenue",
+      prefix: "ifrs-full",
+      localName: "Revenue",
+      namespaceUri: "https://xbrl.ifrs.org/taxonomy/2026",
+    },
+    contextRef: "duration",
+    unitRef: "twd",
+    decimals: "0",
+    scale: null,
+    sign: null,
+    format: null,
+    rawValue: "1234",
+    normalizedValue: "1234",
+    periodEnd: "2026-06-30",
+    periodStart: "2026-04-01",
+    contextDimensions: [],
+  };
+}
 
 function makeRecord(overrides: Partial<ResearchFinancialStatementRecord> = {}): ResearchFinancialStatementRecord {
   const filingId = overrides.publicationContext?.filingId ?? "mops-2026q2";
@@ -163,6 +233,31 @@ describe("research financial statements", () => {
 
     expect(() => validateResearchFinancialStatementRecord(record)).not.toThrow();
     expect(transformedFact.declaredFormat).toBe("ixt:num-comma-decimal");
+  });
+
+  it("raw artifact materialization: retains value-changing iXBRL format metadata", () => {
+    const formatted = {
+      ...makeRawRevenueFact(),
+      format: "ixt:num-comma-decimal",
+      rawValue: "1.234,5",
+      normalizedValue: "1234.5",
+    };
+
+    const record = materializeResearchFinancialStatementRecord(makeRawArtifact([formatted]));
+
+    expect(record.statements[0]?.facts[0]).toMatchObject({
+      raw: { state: "present", value: "1.234,5" },
+      normalized: { state: "present", value: "1234.5" },
+      declaredFormat: "ixt:num-comma-decimal",
+    });
+  });
+
+  it("raw artifact materialization: deduplicates repeated identical facts", () => {
+    const repeated = makeRawRevenueFact();
+
+    const record = materializeResearchFinancialStatementRecord(makeRawArtifact([repeated, { ...repeated }]));
+
+    expect(record.statements[0]?.facts).toHaveLength(1);
   });
 
   it("blank sentinels stay missing while explicit zero remains numeric zero", () => {

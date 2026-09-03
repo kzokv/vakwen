@@ -415,6 +415,8 @@ export function materializeResearchFinancialStatementRecord(
   const sections = new Map<ResearchFinancialStatementKind, ResearchFinancialStatementFact[]>();
   const pushFact = (kind: ResearchFinancialStatementKind, fact: ResearchFinancialStatementFact) => {
     const current = sections.get(kind) ?? [];
+    const repeated = current.find((candidate) => candidate.id === fact.id);
+    if (repeated && JSON.stringify(repeated) === JSON.stringify(fact)) return;
     current.push(fact);
     sections.set(kind, current);
   };
@@ -449,6 +451,7 @@ export function materializeResearchFinancialStatementRecord(
       declaredScale: fact.scale,
       declaredPrecision: fact.decimals,
       declaredSign: fact.sign,
+      declaredFormat: fact.format,
       ambiguityFlags: [
         ...(issuesByContextSignature.has(fact.contextRef) ? ["duplicate_context" as const] : []),
         ...(input.issues.basisAmbiguity ? ["filing_basis_ambiguous" as const] : []),

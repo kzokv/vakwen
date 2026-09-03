@@ -265,6 +265,8 @@ async function canonicalizeFinancialStatementArtifact(
   const statementFacts = new Map<ResearchFinancialStatementKind, ResearchFinancialStatementFact[]>();
   const pushFact = (statementKind: ResearchFinancialStatementKind, fact: ResearchFinancialStatementFact) => {
     const current = statementFacts.get(statementKind) ?? [];
+    const repeated = current.find((candidate) => candidate.id === fact.id);
+    if (repeated && JSON.stringify(repeated) === JSON.stringify(fact)) return;
     current.push(fact);
     statementFacts.set(statementKind, current);
   };
@@ -330,11 +332,11 @@ async function canonicalizeFinancialStatementArtifact(
     ? String(artifact.filing.fiscalYear).padStart(4, "0")
     : `${String(artifact.filing.fiscalYear).padStart(4, "0")}-Q${artifact.filing.fiscalPeriod.slice(1)}`;
   const filingBasis = resolveMopsArtifactFilingBasis(artifact);
-  const publishedAt = financialStatementPublishedAtTimestamp(artifact.filing.publishedAt);
+  const observedPublishedAt = financialStatementPublishedAtTimestamp(artifact.filing.publishedAt);
   const predecessorCandidates = artifact.filing.revision > 0
     ? await persistence.listLatestResearchFinancialStatementRecords({
         subject: { kind: "listing_id", listingId: artifact.listingId },
-        effectiveAt: publishedAt,
+        effectiveAt: observedPublishedAt,
         knowledgeAt: artifact.artifact.retrievedAt,
         periodicity: artifact.filing.fiscalPeriod === "annual" ? "annual" : "quarterly",
         filingBasis,
@@ -345,6 +347,14 @@ async function canonicalizeFinancialStatementArtifact(
   const predecessor = predecessorCandidates
     .filter((candidate) => candidate.publicationContext.revisionSequence < artifact.filing.revision)
     .sort((left, right) => right.publicationContext.revisionSequence - left.publicationContext.revisionSequence)[0];
+  const publishedAt = matchesLatestRevision
+    ? latestRevision!.publicationContext.publishedAt
+    : predecessor?.publicationContext.publishedAt ?? observedPublishedAt;
+  const revisionPublishedAt = artifact.filing.revision > 0
+    ? matchesLatestRevision
+      ? latestRevision!.publicationContext.revisionPublishedAt
+      : observedPublishedAt
+    : null;
   const relations: ResearchFinancialStatementRecord["relations"] = predecessor
     ? [{
         kind: "supersedes",
@@ -368,9 +378,7 @@ async function canonicalizeFinancialStatementArtifact(
       filingId: artifact.filing.filingId,
       revisionId,
       publishedAt,
-      revisionPublishedAt: artifact.filing.revision > 0
-        ? publishedAt
-        : null,
+      revisionPublishedAt,
       filingSequence: 0,
       revisionSequence: artifact.filing.revision,
       processingId: artifact.artifact.contentHash,

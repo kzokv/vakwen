@@ -39,10 +39,12 @@ function makeFact(
     metricId,
     concept: { raw: `ifrs-full:${metricId}`, normalized: { state: "present" as const, value: `ifrs-full:${metricId}` } },
     label: { raw: metricId, normalized: { state: "present" as const, value: metricId } },
-    value: { state: "present" as const, value },
+    value: { raw: value, normalized: { state: "present" as const, value } },
     unit: { raw: "iso4217:TWD", normalized: { state: "present" as const, value: "iso4217:TWD" } },
     scale: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
     precision: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
+    format: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
+    sign: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
     filingBasis: { raw: "consolidated", normalized: { state: "present" as const, value: "consolidated" as const } },
     dimensions: {},
     period: {
@@ -514,6 +516,82 @@ describe("financial statement fundamentals report", () => {
     expect(oldestAnnualAmbiguousReport.conclusions.find((conclusion) => conclusion.id === "multi_year_revenue_trend")?.status).toBe("withheld");
   });
 
+  it("required statements: withholds conclusions when a core section lacks usable current-period facts", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const latestCashFlow = annuals[2]!.sourceFacts.find((fact) => fact.statement === "cash_flow")!;
+    latestCashFlow.period.endDate = "2024-12-31";
+    latestCashFlow.period.fiscalYear = 2024;
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["missing_required_statement"],
+    });
+    expect(report.conclusions.find((conclusion) => conclusion.id === "multi_year_revenue_trend")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["missing_required_statement"],
+    });
+  });
+
+  it("period-level duplicate contexts: withholds conclusions even when revenue itself is unambiguous", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const duplicateAsset = annuals[2]!.sourceFacts.find((fact) => fact.metricId === "assets")!;
+    duplicateAsset.ambiguity.status = "duplicate_context";
+    annuals[2]!.quality.duplicateContexts = {
+      status: "present",
+      reasonCodes: ["duplicateContexts"],
+      observationIds: [duplicateAsset.observationId],
+    };
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["context_ambiguity"],
+    });
+    expect(report.conclusions.find((conclusion) => conclusion.id === "multi_year_revenue_trend")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["context_ambiguity"],
+    });
+  });
+
   it("unrelated unknown units: does not suppress clean revenue conclusions", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
@@ -618,11 +696,17 @@ describe("financial statement fundamentals report", () => {
     const missingRevenue = makePeriod(2024, null, "160");
     missingRevenue.sourceFacts = missingRevenue.sourceFacts.filter((fact) => fact.metricId !== "revenue");
     const scenarios = [
-      [makePeriod(2022, null, "100"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")],
-      [makePeriod(2023, null, "140"), missingRevenue, makePeriod(2025, null, "200")],
+      {
+        annuals: [makePeriod(2022, null, "100"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")],
+        reasonCode: "insufficient_multi_year_window",
+      },
+      {
+        annuals: [makePeriod(2023, null, "140"), missingRevenue, makePeriod(2025, null, "200")],
+        reasonCode: "missing_required_statement",
+      },
     ];
 
-    for (const annuals of scenarios) {
+    for (const { annuals, reasonCode } of scenarios) {
       const report = await buildFinancialStatementFundamentalsResearchReport(
         persistence,
         {
@@ -641,7 +725,7 @@ describe("financial statement fundamentals report", () => {
 
       expect(report.conclusions.find((conclusion) => conclusion.id === "multi_year_revenue_trend")).toMatchObject({
         status: "withheld",
-        reasonCodes: ["insufficient_multi_year_window"],
+        reasonCodes: [reasonCode],
       });
     }
   });
