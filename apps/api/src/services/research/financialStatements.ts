@@ -476,7 +476,9 @@ export function materializeResearchFinancialStatementRecord(
       filingId: input.filing.filingId,
       revisionId: `${input.filing.filingId}:r${input.filing.revision}`,
       publishedAt,
-      revisionPublishedAt: input.filing.revision > 0 ? publishedAt : null,
+      revisionPublishedAt: input.filing.revision > 0
+        ? financialStatementPublishedAtTimestamp(input.artifact.retrievedAt)
+        : null,
       filingSequence: 0,
       revisionSequence: input.filing.revision,
       processingId: input.artifact.contentHash,

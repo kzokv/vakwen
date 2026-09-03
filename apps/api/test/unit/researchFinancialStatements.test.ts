@@ -260,6 +260,27 @@ describe("research financial statements", () => {
     expect(record.statements[0]?.facts).toHaveLength(1);
   });
 
+  it("raw amendment materialization: preserves original and revision publication timestamps", () => {
+    const artifact = makeRawArtifact([makeRawRevenueFact()]);
+    artifact.filing = {
+      ...artifact.filing,
+      revision: 1,
+      amendmentType: "amendment",
+      publishedAt: "2026-08-14T10:00:00.000Z",
+    };
+    artifact.artifact = {
+      ...artifact.artifact,
+      retrievedAt: "2026-08-20T11:00:00.000Z",
+    };
+
+    expect(materializeResearchFinancialStatementRecord(artifact).publicationContext).toMatchObject({
+      publishedAt: "2026-08-14T10:00:00.000Z",
+      revisionPublishedAt: "2026-08-20T11:00:00.000Z",
+      revisionSequence: 1,
+      amendment: true,
+    });
+  });
+
   it("blank sentinels stay missing while explicit zero remains numeric zero", () => {
     const missing = normalizeResearchFinancialStatementFact({
       listingId: "lst_2330",

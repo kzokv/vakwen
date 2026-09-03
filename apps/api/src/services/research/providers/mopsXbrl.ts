@@ -312,14 +312,14 @@ function statementRoleForConcept(
   if (namespaceUri && /^https?:\/\/xbrl\.ifrs\.org\/taxonomy\/.+\/ifrs-full\/?$/i.test(namespaceUri)) {
     if (context?.periodType === "instant") return "balance_sheet";
     if (context?.periodType === "duration") {
+      if (/Equity|ShareCapital|TreasuryShares|DistributionsToOwners|TransactionsWithOwners/i.test(localName)) {
+        return "equity_statement";
+      }
       if (
         /Cash|AdjustmentsFor|ReconcileProfitLoss|IncreaseDecreaseIn|ClassifiedAs(?:Operating|Investing|Financing)Activities|ProceedsFrom|Payments(?:To|For)|PurchaseOf|AcquisitionOf|DisposalOf/i
           .test(localName)
       ) {
         return "cash_flow_statement";
-      }
-      if (/Equity|ShareCapital|TreasuryShares|DistributionsToOwners|TransactionsWithOwners/i.test(localName)) {
-        return "equity_statement";
       }
       return "income_statement";
     }
