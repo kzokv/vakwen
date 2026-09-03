@@ -1200,8 +1200,9 @@ function qualityStateForRecord(
       case "ambiguousBasis":
         return record.filingBasis === "unknown" || record.ambiguityFlags.includes("filing_basis_ambiguous");
       case "unmappedConcepts":
+        return record.ambiguityFlags.includes("unmapped_concept");
       case "unknownUnits":
-        return false;
+        return record.ambiguityFlags.includes("unknown_unit");
     }
   })();
   const matched = facts.filter((fact) => {

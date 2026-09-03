@@ -316,7 +316,7 @@ function statementRoleForConcept(
         return "equity_statement";
       }
       if (
-        /Cash|AdjustmentsFor|ReconcileProfitLoss|IncreaseDecreaseIn|ClassifiedAs(?:Operating|Investing|Financing)Activities|ProceedsFrom|Payments(?:To|For)|PurchaseOf|AcquisitionOf|DisposalOf/i
+        /(?:Net)?CashFlows?(?:From|UsedIn)|AdjustmentsFor|ReconcileProfitLoss|IncreaseDecreaseIn|ClassifiedAs(?:Operating|Investing|Financing)Activities|ProceedsFrom|Payments(?:To|For)|PurchaseOf|AcquisitionOf|DisposalOf/i
           .test(localName)
       ) {
         return "cash_flow_statement";

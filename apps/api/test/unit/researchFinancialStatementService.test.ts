@@ -1417,7 +1417,13 @@ describe("research financial-statement service", () => {
     await persistence.appendResearchIdentityRecords([identity]);
     const record = makeQuarterRecord(identity, 2026, 2, { current_assets: "120", current_liabilities: "60" }, {
       publicationContext: { amendment: true, restatement: true },
-      ambiguityFlags: ["taxonomy_change", "duplicate_context", "filing_basis_ambiguous"],
+      ambiguityFlags: [
+        "taxonomy_change",
+        "duplicate_context",
+        "filing_basis_ambiguous",
+        "unmapped_concept",
+        "unknown_unit",
+      ],
     });
     await persistence.appendResearchFinancialStatementRecords([record]);
 
@@ -1443,6 +1449,8 @@ describe("research financial-statement service", () => {
           taxonomyChanges: expect.objectContaining({ status: "present" }),
           duplicateContexts: expect.objectContaining({ status: "present" }),
           ambiguousBasis: expect.objectContaining({ status: "present" }),
+          unmappedConcepts: expect.objectContaining({ status: "present", observationIds: [] }),
+          unknownUnits: expect.objectContaining({ status: "present", observationIds: [] }),
         }),
       }),
     ]);

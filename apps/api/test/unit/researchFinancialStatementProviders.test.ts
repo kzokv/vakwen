@@ -169,6 +169,7 @@ describe("MOPS XBRL provider parser", () => {
           <ix:nonFraction name="ifrs-full:DividendsPaidClassifiedAsFinancingActivities" contextRef="ctx_q2" unitRef="twd">10</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:AdjustmentsForReconcileProfitLoss" contextRef="ctx_q2" unitRef="twd">15</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:IncreaseDecreaseInEquity" contextRef="ctx_q2" unitRef="twd">20</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:GainsLossesOnCashFlowHedgesNetOfTax" contextRef="ctx_q2" unitRef="twd">5</ix:nonFraction>
           <ix:nonNumeric name="custom:NarrativeDisclosure" contextRef="ctx_q2" continuedAt="continuation-1">Alpha <ix:exclude>remove me</ix:exclude></ix:nonNumeric>
           <ix:continuation id="continuation-1" continuedAt="continuation-2">Beta</ix:continuation>
           <ix:continuation id="continuation-2">Gamma</ix:continuation>
@@ -221,6 +222,8 @@ describe("MOPS XBRL provider parser", () => {
       .toBe("equity_statement");
     expect(artifact.facts.find((fact) => fact.concept.localName === "IncreaseDecreaseInEquity")?.statementRole)
       .toBe("equity_statement");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "GainsLossesOnCashFlowHedgesNetOfTax")?.statementRole)
+      .toBe("income_statement");
     expect(artifact.issues.missingStatementRoles).toEqual([]);
     expect(artifact.issues.taxonomyAmbiguity).toBe(false);
   });
