@@ -162,7 +162,7 @@ describe("financial statements MCP tool", () => {
     await app.close();
   });
 
-  it("returns wrapped read-only results, emits derived metrics only on the first page, and rejects cursor mutations", async () => {
+  it("returns wrapped read-only results, emits derived metrics on every page, and rejects cursor mutations", async () => {
     const identity = makeIdentity();
     await app.persistence.appendResearchIdentityRecords([identity]);
     await app.persistence.appendResearchFinancialStatementRecords([
@@ -281,12 +281,14 @@ describe("financial statements MCP tool", () => {
     const secondBody = parseMcpJson<{
       result: {
         structuredContent: {
-          result: { derivedOutcomes: unknown[] };
+          result: { derivedOutcomes: Array<{ metricId: string; status: string; value?: string }> };
         };
       };
     }>(second.body);
     expect(second.statusCode).toBe(200);
-    expect(secondBody.result.structuredContent.result.derivedOutcomes).toEqual([]);
+    expect(secondBody.result.structuredContent.result.derivedOutcomes).toEqual([
+      expect.objectContaining({ metricId: "gross_margin", status: "returned", value: "0.4" }),
+    ]);
     expect(appendIdentitySpy).not.toHaveBeenCalled();
     expect(appendStatementsSpy).not.toHaveBeenCalled();
 

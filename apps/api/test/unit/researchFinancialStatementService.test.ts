@@ -1692,7 +1692,7 @@ describe("research financial-statement service", () => {
     ]);
   });
 
-  it("returns derived metrics only on the first page and rejects bound-cursor mutations", async () => {
+  it("returns derived metrics on every page and rejects bound-cursor mutations", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
     await persistence.appendResearchIdentityRecords([identity]);
@@ -1731,7 +1731,9 @@ describe("research financial-statement service", () => {
       expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),
     ]);
     expect(secondPage.periods).toHaveLength(1);
-    expect(secondPage.derivedOutcomes).toEqual([]);
+    expect(secondPage.derivedOutcomes).toEqual([
+      expect.objectContaining({ status: "returned", metricId: "gross_margin", value: "0.4" }),
+    ]);
 
     await expect(getFinancialStatements(persistence, {
       subject: { kind: "listing_id", listingId: identity.listing.id },

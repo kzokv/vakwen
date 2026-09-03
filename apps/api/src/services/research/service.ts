@@ -1903,21 +1903,19 @@ export async function getFinancialStatements(
     periodIdForRecord(record),
     record.statements.flatMap((section) => section.facts),
   ] as const));
-  const derivedOutcomes = query.page.cursor
-    ? []
-    : pageRecords.flatMap((record) => query.derivedMetrics.map((request) => (
-        identity.identity.issuer.classification === "financial_institution"
-          ? unsupportedSectorDerivedMetricForRecord(request, record)
-          : deriveMetricForRecord(
-              request.metricId,
-              record,
-              factsByPeriodId.get(periodIdForRecord(record)) ?? [],
-              recordsByKey,
-              factsByPeriodId,
-              request.parameters,
-              query.context.knowledgeAt,
-            )
-      )));
+  const derivedOutcomes = pageRecords.flatMap((record) => query.derivedMetrics.map((request) => (
+    identity.identity.issuer.classification === "financial_institution"
+      ? unsupportedSectorDerivedMetricForRecord(request, record)
+      : deriveMetricForRecord(
+          request.metricId,
+          record,
+          factsByPeriodId.get(periodIdForRecord(record)) ?? [],
+          recordsByKey,
+          factsByPeriodId,
+          request.parameters,
+          query.context.knowledgeAt,
+        )
+  )));
   const pageRecordIds = new Set(pageRecords.map((record) => periodIdForRecord(record)));
   const derivedObservationIds = new Set(derivedOutcomes.flatMap((outcome) => outcome.periodObservationIds));
   const provenanceRecords = calculationRecords.filter((record) => (
