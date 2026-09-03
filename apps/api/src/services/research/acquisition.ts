@@ -1301,8 +1301,8 @@ export async function runOfficialFinancialStatementAcquisition(
     throw new Error("Official MOPS financial statement acquisition requires at least one descriptor");
   }
   const fetchImpl = options.fetchImpl ?? fetch;
-  const retrievedAt = options.retrievedAt ?? new Date().toISOString();
-  const acquisitionRunId = options.acquisitionRunId ?? `research-financial-statements-${retrievedAt}`;
+  const retrievalStartedAt = options.retrievedAt ?? new Date().toISOString();
+  const acquisitionRunId = options.acquisitionRunId ?? `research-financial-statements-${retrievalStartedAt}`;
   const records: ResearchFinancialStatementRecord[] = [];
   const failures: Array<{ listingId: string; sourceUrl: string; message: string; error: unknown }> = [];
   let nextDescriptorIndex = 0;
@@ -1312,8 +1312,9 @@ export async function runOfficialFinancialStatementAcquisition(
       if (!descriptor) return;
       try {
         const artifact = await fetchRawArtifact(fetchImpl, descriptor.sourceUrl);
+        const artifactRetrievedAt = options.retrievedAt ?? new Date().toISOString();
         const parsed = parseMopsFinancialStatementArtifact(artifact.body, descriptor, {
-          retrievedAt,
+          retrievedAt: artifactRetrievedAt,
           acquisitionRunId,
           contentHash: artifact.metadata.contentHash,
         });
@@ -1351,6 +1352,6 @@ export async function runOfficialFinancialStatementAcquisition(
     recordCount: records.length,
     failureCount: failures.length,
     failures: failures.map(({ listingId, sourceUrl, message }) => ({ listingId, sourceUrl, message })),
-    retrievedAt,
+    retrievedAt: retrievalStartedAt,
   };
 }

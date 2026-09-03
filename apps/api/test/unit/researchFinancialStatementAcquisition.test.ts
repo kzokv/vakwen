@@ -52,6 +52,32 @@ const validAcquisitionXbrl = `<?xml version="1.0" encoding="utf-8"?>
   </xbrli:xbrl>`;
 
 describe("research financial statement acquisition", () => {
+  it("scheduled fetch: timestamps each artifact after its response is received", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+      const persistence = new MemoryPersistence();
+      const appendSpy = vi.spyOn(persistence, "appendResearchFinancialStatementRecords");
+
+      await runOfficialFinancialStatementAcquisition(persistence, {
+        descriptors: [acquisitionDescriptor(0)],
+        fetchImpl: async () => {
+          vi.setSystemTime(new Date("2026-08-15T00:05:00.000Z"));
+          return new Response(validAcquisitionXbrl, { status: 200 });
+        },
+        acquisitionRunId: "per-artifact-observation-run",
+      });
+
+      expect(appendSpy.mock.calls[0]?.[0][0]).toHaveProperty(
+        "provenance.retrievedAt",
+        "2026-08-15T00:05:00.000Z",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("universe acquisition: bounds concurrency and persists successes when one filing fails", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();
