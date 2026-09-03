@@ -85,6 +85,9 @@ describe("MOPS XBRL provider parser", () => {
         <ifrs-full:RevenueFromContractsWithCustomers contextRef="ctx_typed_segment" unitRef="twd">222000</ifrs-full:RevenueFromContractsWithCustomers>
         <ifrs-full:GrossProfit contextRef="ctx_consolidated" unitRef="twd" xsi:nil="true" />
         <ifrs-full:CashFlowsFromUsedInOperatingActivities contextRef="ctx_consolidated" unitRef="unknown_unit">88000</ifrs-full:CashFlowsFromUsedInOperatingActivities>
+        <custom:scope xmlns:scoped-ifrs="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
+          <scoped-ifrs:Equity contextRef="ctx_instant" unitRef="twd">2800000</scoped-ifrs:Equity>
+        </custom:scope>
         <custom:UnmappedMetric contextRef="ctx_consolidated" unitRef="twd">42</custom:UnmappedMetric>
       </xbrli:xbrl>`,
       xbrlDescriptor,
@@ -110,6 +113,8 @@ describe("MOPS XBRL provider parser", () => {
       .toBe("balance_sheet");
     expect(artifact.facts.find((fact) => fact.concept.localName === "BasicEarningsLossPerShare")?.statementRole)
       .toBe("income_statement");
+    expect(artifact.facts.find((fact) => fact.concept.qname === "scoped-ifrs:Equity")?.concept.namespaceUri)
+      .toBe("http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full");
     expect(artifact.contexts.find((context) => context.id === "ctx_typed_segment")?.dimensions).toEqual([
       { dimension: "custom:OperatingSegmentAxis", member: "custom:SegmentName:Foundry" },
     ]);
@@ -178,6 +183,11 @@ describe("MOPS XBRL provider parser", () => {
           <ix:nonFraction name="ifrs-full:CurrentLiabilities" contextRef="ctx_q2" unitRef="twd">350</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:InterestBearingBorrowings" contextRef="ctx_q2" unitRef="twd">120</ix:nonFraction>
           <ix:nonFraction name="tifrs-bsci-ci:EquityAtBeginningOfPeriod" contextRef="ctx_q2" unitRef="twd">800</ix:nonFraction>
+          <section xmlns:scoped-ifrs="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
+            <ix:nonFraction name="scoped-ifrs:Equity" contextRef="ctx_q2" unitRef="twd">900</ix:nonFraction>
+          </section>
+          <ix:nonFraction xmlns:direct-ifrs="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full"
+            name="direct-ifrs:CashAndCashEquivalents" contextRef="ctx_q2" unitRef="twd">250</ix:nonFraction>
         </body>
       </html>`,
       {
@@ -224,6 +234,10 @@ describe("MOPS XBRL provider parser", () => {
       .toBe("equity_statement");
     expect(artifact.facts.find((fact) => fact.concept.localName === "GainsLossesOnCashFlowHedgesNetOfTax")?.statementRole)
       .toBe("income_statement");
+    expect(artifact.facts.find((fact) => fact.concept.qname === "scoped-ifrs:Equity")?.concept.namespaceUri)
+      .toBe("http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full");
+    expect(artifact.facts.find((fact) => fact.concept.qname === "direct-ifrs:CashAndCashEquivalents")?.concept.namespaceUri)
+      .toBe("http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full");
     expect(artifact.issues.missingStatementRoles).toEqual([]);
     expect(artifact.issues.taxonomyAmbiguity).toBe(false);
   });

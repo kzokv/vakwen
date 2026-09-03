@@ -1883,7 +1883,7 @@ export async function getFinancialStatements(
       periodStartDate: record.fiscalPeriod.periodStart,
       periodEndDate: record.fiscalPeriod.periodEnd,
       publishedAt: taiwanCalendarDate(record.publicationContext.publishedAt),
-      filingDate: taiwanCalendarDate(record.publicationContext.publishedAt),
+      filingDate: null,
       acceptedAt: record.publicationContext.revisionPublishedAt ?? record.publicationContext.publishedAt,
       filingBasis: record.filingBasis,
       statements: record.statements.filter((section) => query.statements.includes(section.kind)).map((section) => section.kind),

@@ -208,6 +208,62 @@ function extractNamespaceMap(content: string): Record<string, string> {
   return namespaceMap;
 }
 
+function namespaceMapWithDeclarations(
+  inherited: Readonly<Record<string, string>>,
+  attributes: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const namespaceMap = { ...inherited };
+  for (const [attributeName, value] of Object.entries(attributes)) {
+    if (attributeName === "xmlns") {
+      namespaceMap[""] = value;
+    } else if (attributeName.startsWith("xmlns:")) {
+      namespaceMap[attributeName.slice(6)] = value;
+    }
+  }
+  return namespaceMap;
+}
+
+function namespaceMapsAtElementOffsets(
+  content: string,
+  elements: readonly { offset: number; attributes: Readonly<Record<string, string>> }[],
+): Map<number, Record<string, string>> {
+  const results = new Map<number, Record<string, string>>();
+  const ordered = [...elements].sort((left, right) => left.offset - right.offset);
+  const openElements: Array<{ name: string; parentNamespaces: Record<string, string> }> = [];
+  const voidHtmlElements = new Set([
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
+  ]);
+  let activeNamespaces: Record<string, string> = {};
+  const tagPattern = /<\/?([A-Za-z_][\w:.-]*)\b([^>]*)>/g;
+  let pendingTag = tagPattern.exec(content);
+
+  for (const element of ordered) {
+    while (pendingTag && pendingTag.index < element.offset) {
+      const fullTag = pendingTag[0];
+      const name = (pendingTag[1] ?? "").toLowerCase();
+      if (fullTag.startsWith("</")) {
+        for (let index = openElements.length - 1; index >= 0; index -= 1) {
+          if (openElements[index]?.name !== name) continue;
+          activeNamespaces = openElements[index]?.parentNamespaces ?? {};
+          openElements.length = index;
+          break;
+        }
+      } else {
+        const attributes = parseAttributes(pendingTag[2] ?? "");
+        const elementNamespaces = namespaceMapWithDeclarations(activeNamespaces, attributes);
+        const selfClosing = /\/\s*>$/.test(fullTag) || voidHtmlElements.has(name);
+        if (!selfClosing) {
+          openElements.push({ name, parentNamespaces: activeNamespaces });
+          activeNamespaces = elementNamespaces;
+        }
+      }
+      pendingTag = tagPattern.exec(content);
+    }
+    results.set(element.offset, namespaceMapWithDeclarations(activeNamespaces, element.attributes));
+  }
+  return results;
+}
+
 function extractContexts(content: string): MopsContextRecord[] {
   const contexts: MopsContextRecord[] = [];
   for (const match of content.matchAll(/<(?:\w+:)?context\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?context>/g)) {
@@ -400,10 +456,14 @@ function inlineFactValue(
 
 function extractInlineFacts(
   content: string,
-  namespaceMap: Record<string, string>,
   contextsById: ReadonlyMap<string, MopsContextRecord>,
 ): MopsFactRecord[] {
-  const facts: MopsFactRecord[] = [];
+  const candidates: Array<{
+    offset: number;
+    qname: string;
+    attributes: Record<string, string>;
+    value: string;
+  }> = [];
   const continuationsById = new Map<string, { body: string; continuedAt?: string }>();
   for (const match of content.matchAll(/<ix:continuation\b([^>]*)>([\s\S]*?)<\/ix:continuation>/gi)) {
     const attributes = parseAttributes(match[1] ?? "");
@@ -418,38 +478,62 @@ function extractInlineFacts(
     const qname = attributes.name;
     if (!qname) continue;
     const value = inlineFactValue(match[2] ?? "", attributes.continuedAt, continuationsById);
-    const fact = buildFactRecord(qname, attributes, value, namespaceMap, contextsById);
-    if (fact) facts.push(fact);
+    candidates.push({ offset: match.index, qname, attributes, value });
   }
   for (const match of content.matchAll(/<ix:(?:nonFraction|nonNumeric)\b([^>]*)\/>/gi)) {
     const attributes = parseAttributes(match[1] ?? "");
     const qname = attributes.name;
     if (!qname) continue;
     const value = inlineFactValue("", attributes.continuedAt, continuationsById);
-    const fact = buildFactRecord(qname, attributes, value, namespaceMap, contextsById);
-    if (fact) facts.push(fact);
+    candidates.push({ offset: match.index, qname, attributes, value });
   }
+  candidates.sort((left, right) => left.offset - right.offset);
+  const namespaceMaps = namespaceMapsAtElementOffsets(content, candidates);
+  const facts = candidates.flatMap((candidate) => {
+    const fact = buildFactRecord(
+      candidate.qname,
+      candidate.attributes,
+      candidate.value,
+      namespaceMaps.get(candidate.offset) ?? {},
+      contextsById,
+    );
+    return fact ? [fact] : [];
+  });
   return facts;
 }
 
 function extractXbrlFacts(
   content: string,
-  namespaceMap: Record<string, string>,
   contextsById: ReadonlyMap<string, MopsContextRecord>,
 ): MopsFactRecord[] {
-  const facts: MopsFactRecord[] = [];
+  const candidates: Array<{
+    offset: number;
+    qname: string;
+    attributes: Record<string, string>;
+    value: string;
+  }> = [];
   for (const match of content.matchAll(/<([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)\b([^>]*)>([^<]*)<\/\1>/g)) {
     const attributes = parseAttributes(match[2] ?? "");
     if (!attributes.contextRef) continue;
-    const fact = buildFactRecord(match[1] ?? "", attributes, match[3] ?? "", namespaceMap, contextsById);
-    if (fact) facts.push(fact);
+    candidates.push({ offset: match.index, qname: match[1] ?? "", attributes, value: match[3] ?? "" });
   }
   for (const match of content.matchAll(/<([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)\b([^>]*)\/>/g)) {
     const attributes = parseAttributes(match[2] ?? "");
     if (!attributes.contextRef) continue;
-    const fact = buildFactRecord(match[1] ?? "", attributes, "", namespaceMap, contextsById);
-    if (fact) facts.push(fact);
+    candidates.push({ offset: match.index, qname: match[1] ?? "", attributes, value: "" });
   }
+  candidates.sort((left, right) => left.offset - right.offset);
+  const namespaceMaps = namespaceMapsAtElementOffsets(content, candidates);
+  const facts = candidates.flatMap((candidate) => {
+    const fact = buildFactRecord(
+      candidate.qname,
+      candidate.attributes,
+      candidate.value,
+      namespaceMaps.get(candidate.offset) ?? {},
+      contextsById,
+    );
+    return fact ? [fact] : [];
+  });
   return facts;
 }
 
@@ -510,8 +594,8 @@ export function parseMopsFinancialStatementArtifact(
   const units = extractUnits(content, namespaceMap);
   const contextsById = new Map(contexts.map((context) => [context.id, context] as const));
   const facts = artifactKind === "ixbrl"
-    ? extractInlineFacts(content, namespaceMap, contextsById)
-    : extractXbrlFacts(content, namespaceMap, contextsById);
+    ? extractInlineFacts(content, contextsById)
+    : extractXbrlFacts(content, contextsById);
   const unitsById = new Map(units.map((unit) => [unit.id, unit] as const));
   const duplicateContextGroups = [...new Map(
     contexts.map((context) => [context.signature, contexts.filter((item) => item.signature === context.signature).map((item) => item.id)] as const),

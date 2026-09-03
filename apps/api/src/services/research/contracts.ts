@@ -930,7 +930,7 @@ const financialStatementPeriodSchema = z.object({
   periodStartDate: isoDateSchema.nullable(),
   periodEndDate: isoDateSchema,
   publishedAt: isoDateSchema,
-  filingDate: isoDateSchema,
+  filingDate: isoDateSchema.nullable(),
   acceptedAt: z.string().datetime({ offset: true }).nullable(),
   filingBasis: z.enum(["consolidated", "individual", "unknown"]),
   statements: z.array(financialStatementStatementSchema).max(5),

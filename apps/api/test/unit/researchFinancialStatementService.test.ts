@@ -833,7 +833,7 @@ describe("research financial-statement service", () => {
     expect(secondPage.freshness).toEqual(firstPage.freshness);
   });
 
-  it("publication dates project exact instants onto the Taiwan calendar", async () => {
+  it("observation dates project exact instants without fabricating an unavailable filing date", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
     await persistence.appendResearchIdentityRecords([identity]);
@@ -857,7 +857,7 @@ describe("research financial-statement service", () => {
 
     expect(result.periods[0]).toMatchObject({
       publishedAt: "2026-09-01",
-      filingDate: "2026-09-01",
+      filingDate: null,
       acceptedAt: "2026-08-31T17:30:00.000Z",
     });
     expect(result.freshness.authoritativeAsOf).toBe("2026-09-01");
