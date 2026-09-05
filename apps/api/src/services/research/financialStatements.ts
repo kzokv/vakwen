@@ -23,7 +23,7 @@ export type ResearchFinancialStatementAmbiguityFlag =
   | "filing_basis_ambiguous"
   | "taxonomy_change";
 
-export const RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION = "research-financial-statements-parser/1.0.2";
+export const RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION = "research-financial-statements-parser/1.0.3";
 
 export function researchFinancialStatementProcessingId(
   contentHash: string,
@@ -667,16 +667,17 @@ export function resolveLatestResearchFinancialStatementRecords(
   for (const record of [...records].sort(researchFinancialStatementRecordSortOrder)) {
     const periodKey = `${record.listingId}:${researchFinancialStatementPeriodKey(record)}:${record.filingBasis}`;
     const current = latestByPeriod.get(periodKey);
+    const sourcePrecedence = current
+      ? compareResearchFinancialStatementSourcePrecedence(current, record)
+      : null;
     const successiveProcessingRevision = current
       && current.publicationContext.filingId === record.publicationContext.filingId
       && current.publicationContext.revisionId === record.publicationContext.revisionId
       && current.provenance.contentHash === record.provenance.contentHash
       && current.publicationContext.processingSequence !== record.publicationContext.processingSequence;
-    if (
-      current
-      && compareResearchFinancialStatementSourcePrecedence(current, record) === 0
-      && !successiveProcessingRevision
-    ) {
+    if (sourcePrecedence !== null && sourcePrecedence < 0) {
+      ambiguityByPeriod.delete(periodKey);
+    } else if (current && sourcePrecedence === 0 && !successiveProcessingRevision) {
       const flags = ambiguityByPeriod.get(periodKey) ?? new Set(current.ambiguityFlags);
       flags.add("duplicate_context");
       ambiguityByPeriod.set(periodKey, flags);
@@ -732,15 +733,9 @@ export function normalizeResearchFinancialStatementFact(input: {
       input.concept.qname,
       input.taxonomy?.namespaceUri ?? "",
       input.contextId,
-      input.rawValue,
-      normalized.state === "present" ? `present:${normalized.value}` : `missing:${normalized.reason}`,
       input.unit.state === "known"
         ? `known:${input.unit.unitId}`
         : `unknown:${input.unit.rawUnitId ?? ""}`,
-      input.declaredScale ?? "",
-      input.declaredPrecision ?? "",
-      input.declaredSign ?? "",
-      input.declaredFormat ?? "",
     ),
     kind: "source_fact",
     listingId: input.listingId,

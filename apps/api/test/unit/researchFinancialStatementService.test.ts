@@ -5,6 +5,7 @@ import {
   normalizeResearchFinancialStatementFact,
   researchFinancialStatementPeriodKey,
   type ResearchFinancialStatementMetricId,
+  type ResearchFinancialStatementFact,
   type ResearchFinancialStatementRecord,
 } from "../../src/services/research/financialStatements.js";
 import { getFinancialStatements, getResearchManifest, ResearchServiceError } from "../../src/services/research/service.js";
@@ -130,6 +131,8 @@ function metricFact(
     valueKind?: "cumulative" | "discrete" | "instant";
     unitId?: string;
     taxonomyVersion?: string;
+    context?: Pick<ResearchFinancialStatementFact["context"], "contextId">
+      & Partial<Omit<ResearchFinancialStatementFact["context"], "contextId">>;
   },
 ) {
   const definition = metricDefinitions[metricId];
@@ -144,15 +147,16 @@ function metricFact(
       taxonomy: { namespaceUri: "https://xbrl.ifrs.org/taxonomy", version: overrides.taxonomyVersion },
     } : {}),
     metric: { state: "mapped", metricId },
-    contextId: `${researchFinancialStatementPeriodKey(record)}:${metricId}`,
-    period: definition.period === "instant"
+    contextId: overrides?.context?.contextId ?? `${researchFinancialStatementPeriodKey(record)}:${metricId}`,
+    ...(overrides?.context?.dimensions ? { dimensions: overrides.context.dimensions } : {}),
+    period: overrides?.context?.period ?? (definition.period === "instant"
       ? { kind: "instant", instantAt: `${record.fiscalPeriod.periodEnd}T23:59:59.999Z` }
       : {
           kind: "duration",
           startAt: `${record.fiscalPeriod.periodStart}T00:00:00.000Z`,
           endAt: `${record.fiscalPeriod.periodEnd}T23:59:59.999Z`,
-        },
-    valueKind: overrides?.valueKind ?? definition.defaultValueKind,
+        }),
+    valueKind: overrides?.context?.valueKind ?? overrides?.valueKind ?? definition.defaultValueKind,
     rawValue,
     unit: { state: "known", unitId: overrides?.unitId ?? "TWD" },
   });
@@ -472,34 +476,14 @@ describe("research financial-statement service", () => {
         gross_profit: { valueKind: "discrete" },
       },
     });
-    const comparativeRevenue = metricFact(record, "revenue", "50", { valueKind: "discrete" });
-    const comparativeGrossProfit = metricFact(record, "gross_profit", "20", { valueKind: "discrete" });
-    const segmentRevenue = metricFact(record, "revenue", "15", { valueKind: "discrete" });
-    const segmentGrossProfit = metricFact(record, "gross_profit", "6", { valueKind: "discrete" });
-    const cumulativeRevenue = metricFact(record, "revenue", "110", { valueKind: "cumulative" });
-    const cumulativeGrossProfit = metricFact(record, "gross_profit", "44", { valueKind: "cumulative" });
-    comparativeRevenue.context = {
-      ...comparativeRevenue.context,
-      contextId: "2025-Q2:revenue",
-      period: { kind: "duration", startAt: "2025-04-01T00:00:00.000Z", endAt: "2025-06-30T23:59:59.999Z" },
-    };
-    comparativeGrossProfit.context = {
-      ...comparativeGrossProfit.context,
-      contextId: "2025-Q2:gross-profit",
-      period: { kind: "duration", startAt: "2025-04-01T00:00:00.000Z", endAt: "2025-06-30T23:59:59.999Z" },
-    };
-    segmentRevenue.context = {
-      ...segmentRevenue.context,
-      contextId: "2026-Q2:segment-revenue",
-      dimensions: { OperatingSegmentsAxis: "FoundryMember" },
-    };
-    segmentGrossProfit.context = {
-      ...segmentGrossProfit.context,
-      contextId: "2026-Q2:segment-gross-profit",
-      dimensions: { OperatingSegmentsAxis: "FoundryMember" },
-    };
-    cumulativeRevenue.context = { ...cumulativeRevenue.context, contextId: "2026-YTD:revenue", period: { kind: "duration", startAt: "2026-01-01T00:00:00.000Z", endAt: "2026-06-30T23:59:59.999Z" } };
-    cumulativeGrossProfit.context = { ...cumulativeGrossProfit.context, contextId: "2026-YTD:gross-profit", period: { kind: "duration", startAt: "2026-01-01T00:00:00.000Z", endAt: "2026-06-30T23:59:59.999Z" } };
+    const comparativePeriod = { kind: "duration" as const, startAt: "2025-04-01T00:00:00.000Z", endAt: "2025-06-30T23:59:59.999Z" };
+    const comparativeRevenue = metricFact(record, "revenue", "50", { valueKind: "discrete", context: { contextId: "2025-Q2:revenue", period: comparativePeriod } });
+    const comparativeGrossProfit = metricFact(record, "gross_profit", "20", { valueKind: "discrete", context: { contextId: "2025-Q2:gross-profit", period: comparativePeriod } });
+    const segmentRevenue = metricFact(record, "revenue", "15", { valueKind: "discrete", context: { contextId: "2026-Q2:segment-revenue", dimensions: { OperatingSegmentsAxis: "FoundryMember" } } });
+    const segmentGrossProfit = metricFact(record, "gross_profit", "6", { valueKind: "discrete", context: { contextId: "2026-Q2:segment-gross-profit", dimensions: { OperatingSegmentsAxis: "FoundryMember" } } });
+    const cumulativePeriod = { kind: "duration" as const, startAt: "2026-01-01T00:00:00.000Z", endAt: "2026-06-30T23:59:59.999Z" };
+    const cumulativeRevenue = metricFact(record, "revenue", "110", { valueKind: "cumulative", context: { contextId: "2026-YTD:revenue", period: cumulativePeriod } });
+    const cumulativeGrossProfit = metricFact(record, "gross_profit", "44", { valueKind: "cumulative", context: { contextId: "2026-YTD:gross-profit", period: cumulativePeriod } });
     record.statements[0]!.facts.push(comparativeRevenue, comparativeGrossProfit, segmentRevenue, segmentGrossProfit, cumulativeRevenue, cumulativeGrossProfit);
     await persistence.appendResearchFinancialStatementRecords([record]);
 
@@ -530,7 +514,10 @@ describe("research financial-statement service", () => {
     const identity = makeIdentity();
     await persistence.appendResearchIdentityRecords([identity]);
     const q2 = makeQuarterRecord(identity, 2026, 2, { revenue: "60" });
-    q2.statements[0]!.facts.push(metricFact(q2, "revenue", "32", { valueKind: "discrete" }));
+    q2.statements[0]!.facts.push(metricFact(q2, "revenue", "32", {
+      valueKind: "discrete",
+      context: { contextId: "2026-Q2:revenue:discrete" },
+    }));
     const q3 = makeQuarterRecord(identity, 2026, 3, { revenue: "100" });
     await persistence.appendResearchFinancialStatementRecords([q2, q3]);
 
@@ -1593,12 +1580,13 @@ describe("research financial-statement service", () => {
     const identity = makeIdentity();
     await persistence.appendResearchIdentityRecords([identity]);
     const record = makeQuarterRecord(identity, 2026, 2, { revenue: "60" });
-    const comparativeGrossProfit = metricFact(record, "gross_profit", "20", { valueKind: "discrete" });
-    comparativeGrossProfit.context = {
-      ...comparativeGrossProfit.context,
-      contextId: "2025-Q2:gross-profit",
-      period: { kind: "duration", startAt: "2025-04-01T00:00:00.000Z", endAt: "2025-06-30T23:59:59.999Z" },
-    };
+    const comparativeGrossProfit = metricFact(record, "gross_profit", "20", {
+      valueKind: "discrete",
+      context: {
+        contextId: "2025-Q2:gross-profit",
+        period: { kind: "duration", startAt: "2025-04-01T00:00:00.000Z", endAt: "2025-06-30T23:59:59.999Z" },
+      },
+    });
     record.statements[0]!.facts.push(comparativeGrossProfit);
     await persistence.appendResearchFinancialStatementRecords([record]);
 

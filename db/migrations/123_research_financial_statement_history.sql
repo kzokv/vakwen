@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS research.financial_statement_records (
   processing_id TEXT NOT NULL,
   processing_sequence INTEGER NOT NULL CHECK (processing_sequence >= 0),
   retrieved_at TIMESTAMPTZ NOT NULL,
+  processed_at TIMESTAMPTZ NOT NULL,
   record JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (

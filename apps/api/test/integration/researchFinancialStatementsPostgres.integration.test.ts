@@ -291,4 +291,48 @@ describePostgres("research financial statements memory/Postgres parity", () => {
       "research_financial_statement_records_listing_temporal_idx",
     ]);
   });
+
+  it("keeps memory and Postgres knowledge-time visibility aligned for later processing revisions", async () => {
+    const memory = new MemoryPersistence();
+    const original = makeRecord();
+    const reprocessed = makeRecord({
+      publicationContext: {
+        ...original.publicationContext,
+        processingId: "proc-parser-v2",
+        processingSequence: 2,
+      },
+      provenance: {
+        ...original.provenance,
+        id: "prv_mops-2026q2-r0_proc-parser-v2",
+        retrievedAt: original.provenance.retrievedAt,
+        processedAt: "2026-08-18T00:05:00.000Z",
+        parserVersion: "research-financial-statements-parser/1.0.3",
+      },
+    });
+    await memory.appendResearchFinancialStatementRecords([original, reprocessed]);
+    await postgres.appendResearchFinancialStatementRecords([original, reprocessed]);
+
+    const beforeProcessingQuery = {
+      subject: { kind: "listing_id" as const, listingId: original.listingId },
+      effectiveAt: "2026-08-15T00:00:00.000Z",
+      knowledgeAt: "2026-08-15T00:00:00.000Z",
+      periodicity: "quarterly" as const,
+    };
+    const beforeProcessing = await postgres.listLatestResearchFinancialStatementRecords(beforeProcessingQuery);
+    expect(beforeProcessing).toEqual(
+      await memory.listLatestResearchFinancialStatementRecords(beforeProcessingQuery),
+    );
+    expect(beforeProcessing[0]?.publicationContext.processingId).toBe("proc-1");
+
+    const afterProcessingQuery = {
+      ...beforeProcessingQuery,
+      effectiveAt: "2026-08-19T00:00:00.000Z",
+      knowledgeAt: "2026-08-19T00:00:00.000Z",
+    };
+    const afterProcessing = await postgres.listLatestResearchFinancialStatementRecords(afterProcessingQuery);
+    expect(afterProcessing).toEqual(
+      await memory.listLatestResearchFinancialStatementRecords(afterProcessingQuery),
+    );
+    expect(afterProcessing[0]?.publicationContext.processingId).toBe("proc-parser-v2");
+  });
 });

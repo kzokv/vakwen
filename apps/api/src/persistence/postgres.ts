@@ -1673,10 +1673,10 @@ export class PostgresPersistence implements Persistence {
              record_key, listing_id, issuer_id, ticker, venue, periodicity, period_key,
              period_end, filing_basis, filing_published_at, filing_sequence,
              revision_published_at, revision_sequence, processing_id, processing_sequence,
-             retrieved_at, record
+             retrieved_at, processed_at, record
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7, $8::date, $9, $10::timestamptz, $11,
-             $12::timestamptz, $13, $14, $15, $16::timestamptz, $17::jsonb
+             $12::timestamptz, $13, $14, $15, $16::timestamptz, $17::timestamptz, $18::jsonb
            )
            ON CONFLICT (record_key) DO NOTHING`,
           [
@@ -1698,6 +1698,7 @@ export class PostgresPersistence implements Persistence {
             record.publicationContext.processingId,
             record.publicationContext.processingSequence,
             record.provenance.retrievedAt,
+            record.provenance.processedAt,
             JSON.stringify(record),
           ],
         );
@@ -1724,6 +1725,7 @@ export class PostgresPersistence implements Persistence {
          AND periodicity = $2
          AND COALESCE(revision_published_at, filing_published_at) <= $3::timestamptz
          AND retrieved_at <= $4::timestamptz
+         AND processed_at <= $4::timestamptz
          AND ($5::text IS NULL OR period_key >= $5::text)
          AND ($6::text IS NULL OR period_key <= $6::text)
          AND ($7::text IS NULL OR filing_basis = $7::text)

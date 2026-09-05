@@ -5681,6 +5681,7 @@ describePostgres("postgres migrations", () => {
       "processing_id",
       "processing_sequence",
       "retrieved_at",
+      "processed_at",
       "record",
       "created_at",
     ]);

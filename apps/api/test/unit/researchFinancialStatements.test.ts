@@ -414,7 +414,7 @@ describe("research financial statements", () => {
     expect(first.id).not.toBe(second.id);
   });
 
-  it("fact identity distinguishes otherwise identical displays with different numeric transformations", () => {
+  it("fact identity uses structural XBRL identity and rejects conflicting reported values", () => {
     const baseInput = {
       listingId: "lst_2330",
       issuerId: "iss_2330",
@@ -444,7 +444,16 @@ describe("research financial statements", () => {
       declaredScale: "3",
     });
 
-    expect(unscaled.id).not.toBe(scaled.id);
+    expect(unscaled.id).toBe(scaled.id);
+
+    const record = makeRecord({
+      statements: [
+        { kind: "income", facts: [unscaled, scaled] },
+        { kind: "balance_sheet", facts: [] },
+        { kind: "cash_flow", facts: [] },
+      ],
+    });
+    expect(() => validateResearchFinancialStatementRecord(record)).toThrow(/duplicate fact id/);
   });
 
   it("latest revision selection follows explicit publication and revision sequence instead of retrieval order", () => {
@@ -502,6 +511,42 @@ describe("research financial statements", () => {
     });
 
     expect(latest?.publicationContext.revisionId).toBe(original.publicationContext.revisionId);
+  });
+
+  it("knowledge-time reads do not expose processing revisions before processing completes", async () => {
+    const persistence = new MemoryPersistence();
+    const original = makeRecord();
+    const reprocessed = makeRecord({
+      publicationContext: {
+        ...original.publicationContext,
+        processingId: "proc-parser-v2",
+        processingSequence: 2,
+      },
+      provenance: {
+        ...original.provenance,
+        id: "prv_fin_stmt_2330_q2_parser_v2",
+        retrievedAt: original.provenance.retrievedAt,
+        processedAt: "2026-08-18T00:05:00.000Z",
+        parserVersion: "research-financial-statements-parser/1.0.3",
+      },
+    });
+    await persistence.appendResearchFinancialStatementRecords([original, reprocessed]);
+
+    const query = {
+      subject: { kind: "listing_id" as const, listingId: original.listingId },
+      effectiveAt: "2026-08-15T00:00:00.000Z",
+      knowledgeAt: "2026-08-15T00:00:00.000Z",
+      periodicity: "quarterly" as const,
+    };
+    const [beforeProcessing] = await persistence.listLatestResearchFinancialStatementRecords(query);
+    const [afterProcessing] = await persistence.listLatestResearchFinancialStatementRecords({
+      ...query,
+      effectiveAt: "2026-08-19T00:00:00.000Z",
+      knowledgeAt: "2026-08-19T00:00:00.000Z",
+    });
+
+    expect(beforeProcessing?.publicationContext.processingId).toBe("proc-1");
+    expect(afterProcessing?.publicationContext.processingId).toBe("proc-parser-v2");
   });
 
   it("validation requires core statements but still preserves sector-extension and unmapped metadata", async () => {
@@ -595,6 +640,45 @@ describe("research financial statements", () => {
     const [latest] = resolveLatestResearchFinancialStatementRecords([processedFirst, reprocessed]);
 
     expect(latest?.publicationContext.processingId).toBe("proc-parser-v2");
+    expect(latest?.ambiguityFlags).not.toContain("duplicate_context");
+  });
+
+  it("a later source revision clears ambiguity from tied historical records", () => {
+    const original = makeRecord();
+    const tied = makeRecord({
+      publicationContext: {
+        ...original.publicationContext,
+        processingId: "proc-conflicting-source",
+        processingSequence: 2,
+      },
+      provenance: {
+        ...original.provenance,
+        id: "prv_fin_stmt_2330_q2_conflicting_source",
+        contentHash: "sha256:conflicting-source-copy",
+      },
+    });
+    const amendment = makeRecord({
+      publicationContext: {
+        ...original.publicationContext,
+        revisionId: "mops-2026q2-r1",
+        revisionPublishedAt: "2026-08-16T09:00:00.000Z",
+        revisionSequence: 1,
+        processingId: "proc-amendment",
+        processingSequence: 1,
+        amendment: true,
+      },
+      provenance: {
+        ...original.provenance,
+        id: "prv_fin_stmt_2330_q2_amendment",
+        contentHash: "sha256:amendment",
+        retrievedAt: "2026-08-16T10:00:00.000Z",
+        processedAt: "2026-08-16T10:05:00.000Z",
+      },
+    });
+
+    const [latest] = resolveLatestResearchFinancialStatementRecords([original, tied, amendment]);
+
+    expect(latest?.publicationContext.revisionId).toBe("mops-2026q2-r1");
     expect(latest?.ambiguityFlags).not.toContain("duplicate_context");
   });
 
