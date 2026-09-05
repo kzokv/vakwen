@@ -113,6 +113,7 @@ describe("MOPS XBRL provider parser", () => {
     expect(artifact.issues.basisAmbiguity).toBe(true);
     expect(artifact.issues.contextAmbiguity).toBe(true);
     expect(artifact.issues.taxonomyAmbiguity).toBe(false);
+    expect(artifact.artifact.taxonomyVersions).toContain("2026-03-01");
     expect(artifact.facts.map((fact) => fact.concept.localName)).toContain("RevenueFromContractsWithCustomers");
     expect(artifact.facts.find((fact) => fact.concept.localName === "GrossProfit")?.normalizedValue).toBe("");
     expect(artifact.contexts).toHaveLength(6);

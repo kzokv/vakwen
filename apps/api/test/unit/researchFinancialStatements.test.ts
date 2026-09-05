@@ -283,6 +283,26 @@ describe("research financial statements", () => {
     expect(record.statements[0]?.facts).toHaveLength(1);
   });
 
+  it("raw artifact materialization: rejects a claimed basis contradicted by artifact contexts", () => {
+    const artifact = makeRawArtifact([makeRawRevenueFact()]);
+    artifact.contexts = [{
+      id: "ctx-individual",
+      entityIdentifiers: ["22099131"],
+      periodType: "duration",
+      instant: null,
+      startDate: "2026-04-01",
+      endDate: "2026-06-30",
+      dimensions: [{
+        dimension: "tifrs:StatementBasisAxis",
+        member: "tifrs:SeparateFinancialStatementsMember",
+      }],
+      signature: "individual-context",
+    }];
+
+    expect(() => materializeResearchFinancialStatementRecord(artifact))
+      .toThrow(/filing basis consolidated contradicts artifact contexts \(individual\)/);
+  });
+
   it("raw artifact materialization: records the actual processing time", () => {
     vi.useFakeTimers();
     try {

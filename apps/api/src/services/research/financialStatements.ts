@@ -391,16 +391,21 @@ export function valueKindForMopsFact(
 export function resolveMopsArtifactFilingBasis(
   artifact: MopsFinancialStatementArtifact,
 ): ResearchFinancialStatementFilingBasis {
-  if (artifact.filing.filingBasis !== "unknown") return artifact.filing.filingBasis;
-  if (artifact.issues.basisAmbiguity) return "unknown";
   const members = new Set(
     artifact.contexts.flatMap((context) => context.dimensions.map((dimension) => dimension.member.toLowerCase())),
   );
   const individual = [...members].some((member) => /separate|individual|個別|個體/.test(member));
   const consolidated = [...members].some((member) => /consolidated|合併/.test(member));
-  if (individual && consolidated) return "unknown";
-  if (individual) return "individual";
-  return consolidated ? "consolidated" : "unknown";
+  const contextBasis: ResearchFinancialStatementFilingBasis = individual === consolidated
+    ? "unknown"
+    : individual ? "individual" : "consolidated";
+  const claimedBasis = artifact.filing.filingBasis;
+  if (claimedBasis !== "unknown" && contextBasis !== "unknown" && claimedBasis !== contextBasis) {
+    throw new Error(`MOPS filing basis ${claimedBasis} contradicts artifact contexts (${contextBasis})`);
+  }
+  if (claimedBasis !== "unknown") return claimedBasis;
+  if (artifact.issues.basisAmbiguity) return "unknown";
+  return contextBasis;
 }
 
 export function researchFinancialStatementTaxonomyVersion(namespaceUri: string | null): string {

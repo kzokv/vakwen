@@ -812,6 +812,37 @@ describe("research financial-statement service", () => {
     expect(JSON.stringify(result)).not.toMatch(/Infinity|NaN/);
   });
 
+  it("finite formula inputs that overflow: withholds derived outcomes", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeAnnualRecord(identity, 2025, {
+        current_assets: `1${"0".repeat(308)}`,
+        current_liabilities: `0.${"0".repeat(307)}1`,
+      }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "annual",
+      range: { kind: "latest_periods", count: 1 },
+      derivedMetrics: [{ metricId: "current_ratio", parameters: {} }],
+    });
+
+    expect(result.derivedOutcomes[0]).toEqual(expect.objectContaining({
+      status: "withheld",
+      metricId: "current_ratio",
+      reasonCode: "incomparable_inputs",
+    }));
+    expect(JSON.stringify(result)).not.toMatch(/Infinity|NaN/);
+  });
+
   it("ascending pagination: freshness remains anchored to the latest selected filing", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();

@@ -1460,19 +1460,27 @@ function deriveMetricForRecord(
     periodObservationIds: observationIds,
     parameters,
   });
-  const returned = (value: number, units: string, observationIds: string[], formulaId: string): ResearchFinancialStatementDerivedOutcome => ({
-    status: "returned",
-    metricId,
-    filingPeriodId,
-    periodObservationIds: observationIds,
-    formulaId,
-    formulaVersion: "1.0.0",
-    parameters,
-    units,
-    value: Number.isInteger(value) ? String(value) : value.toFixed(6).replace(/0+$/, "").replace(/\.$/, ""),
-    calculatedAt,
-    rounding: "half_away_from_zero_6dp",
-  });
+  const returned = (
+    value: number,
+    units: string,
+    observationIds: string[],
+    formulaId: string,
+  ): ResearchFinancialStatementDerivedOutcome => {
+    if (!Number.isFinite(value)) return withholding("incomparable_inputs", observationIds);
+    return {
+      status: "returned",
+      metricId,
+      filingPeriodId,
+      periodObservationIds: observationIds,
+      formulaId,
+      formulaVersion: "1.0.0",
+      parameters,
+      units,
+      value: Number.isInteger(value) ? String(value) : value.toFixed(6).replace(/0+$/, "").replace(/\.$/, ""),
+      calculatedAt,
+      rounding: "half_away_from_zero_6dp",
+    };
+  };
   const recordsInOrder = [...recordsByKey.values()].sort((left, right) => (
     left.fiscalPeriod.periodEnd.localeCompare(right.fiscalPeriod.periodEnd)
       || left.publicationContext.publishedAt.localeCompare(right.publicationContext.publishedAt)
