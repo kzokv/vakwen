@@ -1720,6 +1720,14 @@ describe("research financial-statement service", () => {
     expect(result.periods[0]?.sourceFacts.some((fact) => fact.metricId === "unmapped")).toBe(false);
     expect(result.periods[0]?.quality.unmappedConcepts.status).toBe("present");
     expect(result.periods[0]?.quality.unknownUnits.status).toBe("present");
+    expect(result.confidence).toEqual({
+      status: "mixed",
+      reasonCodes: ["unmapped_concept", "unknown_unit"],
+    });
+    expect(result.readiness).toEqual({
+      status: "usable_with_gaps",
+      reasonCodes: ["unmapped_concept", "unknown_unit"],
+    });
     expect(result.periods[0]?.sourceFacts.some((fact) => fact.value.normalized.state === "present" && fact.value.normalized.value === "0")).toBe(false);
     expect(result.derivedOutcomes).toEqual([
       expect.objectContaining({ status: "withheld", metricId: "current_ratio", reasonCode: "missing_inputs" }),

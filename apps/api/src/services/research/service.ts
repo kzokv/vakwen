@@ -1964,6 +1964,13 @@ export async function getFinancialStatements(
     ...pageRecords.flatMap((record) => record.ambiguityFlags.filter((flag) => (
       flag === "taxonomy_change" || flag === "unmapped_concept" || flag === "unknown_unit"
     ))),
+    ...periods.flatMap((period) => [
+      ...(period.quality.taxonomyChanges.status === "present" ? ["taxonomy_change"] : []),
+      ...(period.quality.duplicateContexts.status === "present" ? ["duplicate_context"] : []),
+      ...(period.quality.unmappedConcepts.status === "present" ? ["unmapped_concept"] : []),
+      ...(period.quality.unknownUnits.status === "present" ? ["unknown_unit"] : []),
+      ...(period.quality.ambiguousBasis.status === "present" ? ["ambiguous_basis"] : []),
+    ]),
     ...gaps.map((gap) => gap.code),
     ...conflicts.map((conflict) => conflict.code),
   ], (value) => value);
