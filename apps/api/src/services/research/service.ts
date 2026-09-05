@@ -1125,6 +1125,9 @@ function mapFinancialFact(
     scale: fact.declaredScale
       ? { raw: fact.declaredScale, normalized: { state: "present", value: fact.declaredScale } }
       : { raw: null, normalized: { state: "missing", reasonCode: "not_reported" } },
+    decimals: fact.declaredDecimals
+      ? { raw: fact.declaredDecimals, normalized: { state: "present", value: fact.declaredDecimals } }
+      : { raw: null, normalized: { state: "missing", reasonCode: "not_reported" } },
     precision: fact.declaredPrecision
       ? { raw: fact.declaredPrecision, normalized: { state: "present", value: fact.declaredPrecision } }
       : { raw: null, normalized: { state: "missing", reasonCode: "not_reported" } },

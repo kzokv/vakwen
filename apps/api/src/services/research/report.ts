@@ -605,9 +605,16 @@ export async function buildFinancialStatementFundamentalsResearchReport(
             basisAmbiguity: period.quality.ambiguousBasis.status === "present",
             taxonomyAmbiguity: period.quality.taxonomyChanges.status === "present",
             contextAmbiguity: period.quality.duplicateContexts.status === "present",
-            unknownUnitIds: period.sourceFacts
-              .filter((fact) => fact.unit.normalized.state === "missing")
-              .map((fact) => fact.unit.raw ?? "unknown"),
+            unknownUnitIds: (() => {
+              const factUnitIds = period.sourceFacts
+                .filter((fact) => fact.unit.normalized.state === "missing")
+                .map((fact) => fact.unit.raw ?? "unknown");
+              return factUnitIds.length > 0
+                ? [...new Set(factUnitIds)]
+                : period.quality.unknownUnits.status === "present"
+                  ? ["unknown"]
+                  : [];
+            })(),
           },
           facts: period.sourceFacts.filter((fact) =>
             ["revenue", "net_income", "assets", "operating_cash_flow"].includes(fact.metricId)

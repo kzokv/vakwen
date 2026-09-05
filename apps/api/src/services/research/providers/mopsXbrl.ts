@@ -76,6 +76,7 @@ export interface MopsFactRecord {
   contextRef: string;
   unitRef: string | null;
   decimals: string | null;
+  precision: string | null;
   scale: string | null;
   sign: string | null;
   format: string | null;
@@ -425,6 +426,7 @@ function buildFactRecord(
     contextRef,
     unitRef: attributes.unitRef ?? null,
     decimals: attributes.decimals ?? null,
+    precision: attributes.precision ?? null,
     scale: attributes.scale ?? null,
     sign: attributes.sign ?? null,
     format: attributes.format ?? null,

@@ -170,8 +170,8 @@ describe("MOPS XBRL provider parser", () => {
             <xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period>
           </xbrli:context>
           <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
-          <ix:nonFraction name="ifrs-full:RevenueFromContractsWithCustomers" contextRef="ctx_q2" unitRef="twd" scale="3">1,234</ix:nonFraction>
-          <ix:nonFraction name="ifrs-full:GrossProfit" contextRef="ctx_q2" unitRef="twd">400</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:RevenueFromContractsWithCustomers" contextRef="ctx_q2" unitRef="twd" scale="3" decimals="-3">1,234</ix:nonFraction>
+          <ix:nonFraction name="ifrs-full:GrossProfit" contextRef="ctx_q2" unitRef="twd" precision="5">400</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:BasicEarningsLossPerShare" contextRef="ctx_q2" unitRef="twd" format="ixt:num-comma-decimal">1.234,5</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:FinanceCosts" contextRef="ctx_q2" unitRef="twd" format="ixt:zero-dash">&#45;</ix:nonFraction>
           <ix:nonFraction name="ifrs-full:IncomeTaxExpenseContinuingOperations" contextRef="ctx_q2" unitRef="twd" format="ixt:zero-dash">&#x2212;</ix:nonFraction>
@@ -212,6 +212,14 @@ describe("MOPS XBRL provider parser", () => {
     expect(artifact.artifact.artifactKind).toBe("ixbrl");
     expect(artifact.facts.find((fact) => fact.concept.localName === "RevenueFromContractsWithCustomers")?.normalizedValue)
       .toBe("1234000");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "RevenueFromContractsWithCustomers")).toMatchObject({
+      decimals: "-3",
+      precision: null,
+    });
+    expect(artifact.facts.find((fact) => fact.concept.localName === "GrossProfit")).toMatchObject({
+      decimals: null,
+      precision: "5",
+    });
     expect(artifact.facts.find((fact) => fact.concept.localName === "PurchaseOfPropertyPlantAndEquipment")?.normalizedValue)
       .toBe("-25");
     expect(artifact.facts.find((fact) => fact.concept.localName === "BasicEarningsLossPerShare")?.normalizedValue)

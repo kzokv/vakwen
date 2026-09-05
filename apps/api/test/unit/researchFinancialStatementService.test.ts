@@ -1349,6 +1349,8 @@ describe("research financial-statement service", () => {
       rawValue: "1.234,5",
       normalizedValue: "-1234.5",
       unit: { state: "known", unitId: "TWD" },
+      declaredDecimals: "-3",
+      declaredPrecision: "5",
       declaredSign: "-",
       declaredFormat: "ixt:num-comma-decimal",
     });
@@ -1372,6 +1374,14 @@ describe("research financial-statement service", () => {
       value: {
         raw: "1.234,5",
         normalized: { state: "present", value: "-1234.5" },
+      },
+      decimals: {
+        raw: "-3",
+        normalized: { state: "present", value: "-3" },
+      },
+      precision: {
+        raw: "5",
+        normalized: { state: "present", value: "5" },
       },
       format: {
         raw: "ixt:num-comma-decimal",

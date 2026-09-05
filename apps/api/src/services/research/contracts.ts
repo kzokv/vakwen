@@ -831,6 +831,10 @@ const financialStatementFactSchema = z.object({
     raw: z.string().nullable(),
     normalized: financialStatementValueStateSchema,
   }).strict(),
+  decimals: z.object({
+    raw: z.string().nullable(),
+    normalized: financialStatementValueStateSchema,
+  }).strict().optional(),
   precision: z.object({
     raw: z.string().nullable(),
     normalized: financialStatementValueStateSchema,

@@ -71,6 +71,7 @@ function makeRawRevenueFact(): MopsFinancialStatementArtifact["facts"][number] {
     contextRef: "duration",
     unitRef: "twd",
     decimals: "0",
+    precision: null,
     scale: null,
     sign: null,
     format: null,
@@ -221,6 +222,11 @@ describe("research financial statements", () => {
   it("iXBRL transforms reject scales that would allocate an oversized decimal string", () => {
     expect(() => applyResearchFinancialStatementTransform("1", "1000000", null)).toThrow(RangeError);
     expect(() => applyResearchFinancialStatementTransform("1", "-1000000", null)).toThrow(RangeError);
+  });
+
+  it("iXBRL transforms reject non-integer and non-numeric scales", () => {
+    expect(() => applyResearchFinancialStatementTransform("123", "1.5", null)).toThrow(TypeError);
+    expect(() => applyResearchFinancialStatementTransform("123", "bad", null)).toThrow(TypeError);
   });
 
   it("iXBRL format metadata preserves transformed values through record validation", () => {

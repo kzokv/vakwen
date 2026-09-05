@@ -103,6 +103,7 @@ export interface ResearchFinancialStatementFact {
   normalized: ResearchFinancialStatementNormalizedValue;
   unit: ResearchFinancialStatementUnitRef;
   declaredScale: string | null;
+  declaredDecimals: string | null;
   declaredPrecision: string | null;
   declaredSign?: string | null;
   declaredFormat?: string | null;
@@ -230,7 +231,9 @@ export function applyResearchFinancialStatementTransform(
   const compact = rawValue.trim().replaceAll(",", "");
   if (!/^-?\d+(?:\.\d+)?$/.test(compact)) return compact;
   const scaleValue = scale === null ? 0 : Number(scale);
-  if (!Number.isSafeInteger(scaleValue)) return compact;
+  if (!Number.isSafeInteger(scaleValue)) {
+    throw new TypeError("XBRL numeric scale must be a safe integer");
+  }
   const sourceNegative = compact.startsWith("-");
   const negative = sign === "-" || sourceNegative;
   const unsigned = sourceNegative ? compact.slice(1) : compact;
@@ -472,7 +475,8 @@ export function materializeResearchFinancialStatementRecord(
         ? { state: "known", unitId: researchFinancialStatementUnitId(unitRecord, fact.unitRef ?? "unknown") }
         : { state: "unknown", rawUnitId: fact.unitRef },
       declaredScale: fact.scale,
-      declaredPrecision: fact.decimals,
+      declaredDecimals: fact.decimals,
+      declaredPrecision: fact.precision,
       declaredSign: fact.sign,
       declaredFormat: fact.format,
       ambiguityFlags: [
@@ -715,6 +719,7 @@ export function normalizeResearchFinancialStatementFact(input: {
   normalizedValue?: string;
   unit: ResearchFinancialStatementUnitRef;
   declaredScale?: string | null;
+  declaredDecimals?: string | null;
   declaredPrecision?: string | null;
   declaredSign?: string | null;
   declaredFormat?: string | null;
@@ -757,6 +762,7 @@ export function normalizeResearchFinancialStatementFact(input: {
     normalized,
     unit: input.unit,
     declaredScale: input.declaredScale ?? null,
+    declaredDecimals: input.declaredDecimals ?? null,
     declaredPrecision: input.declaredPrecision ?? null,
     declaredSign: input.declaredSign ?? null,
     declaredFormat: input.declaredFormat ?? null,

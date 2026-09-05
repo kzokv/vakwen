@@ -337,7 +337,8 @@ async function canonicalizeFinancialStatementArtifact(
         ? { state: "known", unitId: researchFinancialStatementUnitId(unit, fact.unitRef ?? "unknown") }
         : { state: "unknown", rawUnitId: fact.unitRef },
       declaredScale: fact.scale,
-      declaredPrecision: fact.decimals,
+      declaredDecimals: fact.decimals,
+      declaredPrecision: fact.precision,
       declaredSign: fact.sign,
       declaredFormat: fact.format,
       ambiguityFlags: [

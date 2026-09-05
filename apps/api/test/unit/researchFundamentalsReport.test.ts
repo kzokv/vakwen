@@ -42,6 +42,7 @@ function makeFact(
     value: { raw: value, normalized: { state: "present" as const, value } },
     unit: { raw: "iso4217:TWD", normalized: { state: "present" as const, value: "iso4217:TWD" } },
     scale: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
+    decimals: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
     precision: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
     format: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
     sign: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
@@ -641,6 +642,13 @@ describe("financial statement fundamentals report", () => {
         reasonCodes: ["unknown_unit"],
       }),
     ]));
+    expect(report.sections.find((section) => section.id === "independent_facts")).toMatchObject({
+      periods: expect.arrayContaining([
+        expect.objectContaining({
+          issues: expect.objectContaining({ unknownUnitIds: ["unknown"] }),
+        }),
+      ]),
+    });
   });
 
   it("season-four filing: reconstructs discrete Q4 revenue from annual less Q3 cumulative facts", async () => {
