@@ -59,6 +59,7 @@ function makeRawArtifact(facts: MopsFinancialStatementArtifact["facts"]): MopsFi
 function makeRawRevenueFact(): MopsFinancialStatementArtifact["facts"][number] {
   return {
     id: "raw-revenue",
+    inlineType: null,
     statementRole: "income_statement",
     concept: {
       qname: "ifrs-full:Revenue",
