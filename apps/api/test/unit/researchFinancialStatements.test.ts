@@ -817,16 +817,38 @@ describe("research financial statements", () => {
       ...base,
       provenance: { ...base.provenance, processedAt: "2026-08-14T10:59:59.999Z" },
     })).toThrow(/at or after retrievedAt/);
+    expect(() => validateResearchFinancialStatementRecord({
+      ...base,
+      publicationContext: { ...base.publicationContext, publishedAt: "2026-02-30T11:00:00.000Z" },
+    })).toThrow(/ISO datetime/);
+    expect(() => validateResearchFinancialStatementRecord({
+      ...base,
+      statements: base.statements.map((statement, index) => index === 0
+        ? {
+            ...statement,
+            facts: statement.facts.map((fact, factIndex) => factIndex === 0
+              ? {
+                  ...fact,
+                  context: {
+                    ...fact.context,
+                    period: { kind: "instant" as const, instantAt: "2026-02-30T23:59:59.999Z" },
+                    valueKind: "instant" as const,
+                  },
+                }
+              : fact),
+          }
+        : statement),
+    })).toThrow(/instant period invalid/);
   });
 
-  it("canonical publication sequences require safe non-negative integers", () => {
+  it("canonical publication sequences require the non-negative PostgreSQL INTEGER range", () => {
     for (const field of ["filingSequence", "revisionSequence", "processingSequence"] as const) {
-      for (const invalid of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      for (const invalid of [-1, 1.5, 2_147_483_648, Number.NaN, Number.POSITIVE_INFINITY]) {
         const base = makeRecord();
         expect(() => validateResearchFinancialStatementRecord({
           ...base,
           publicationContext: { ...base.publicationContext, [field]: invalid },
-        })).toThrow(/publication sequences must be safe non-negative integers/);
+        })).toThrow(/publication sequences must fit the non-negative PostgreSQL INTEGER range/);
       }
     }
   });

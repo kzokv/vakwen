@@ -202,9 +202,27 @@ function isIsoDate(value: string): boolean {
 }
 
 function isTimestamp(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return false;
-  const date = new Date(value);
-  return !Number.isNaN(date.getTime());
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = Number(match[8] ?? "0");
+  const offsetMinute = Number(match[9] ?? "0");
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  return daysInMonth !== undefined
+    && day >= 1
+    && day <= daysInMonth
+    && hour <= 23
+    && minute <= 59
+    && second <= 59
+    && offsetHour <= 23
+    && offsetMinute <= 59
+    && !Number.isNaN(Date.parse(value));
 }
 
 function isNormalizedDecimal(value: string): boolean {
@@ -822,8 +840,8 @@ export function validateResearchFinancialStatementRecord(
     record.publicationContext.revisionSequence,
     record.publicationContext.processingSequence,
   ];
-  if (!publicationSequences.every((sequence) => Number.isSafeInteger(sequence) && sequence >= 0)) {
-    throw invalidResearchFinancialStatementRecord("publication sequences must be safe non-negative integers");
+  if (!publicationSequences.every((sequence) => Number.isInteger(sequence) && sequence >= 0 && sequence <= 2_147_483_647)) {
+    throw invalidResearchFinancialStatementRecord("publication sequences must fit the non-negative PostgreSQL INTEGER range");
   }
   if (!record.publicationContext.processingId) {
     throw invalidResearchFinancialStatementRecord("processing revision identity must be present");
