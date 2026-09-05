@@ -321,6 +321,14 @@ describe("research financial statements", () => {
     }
   });
 
+  it("raw artifact materialization: rejects offsetless publication timestamps", () => {
+    const artifact = makeRawArtifact([makeRawRevenueFact()]);
+    artifact.filing.publishedAt = "2026-08-14T11:00:00";
+
+    expect(() => materializeResearchFinancialStatementRecord(artifact))
+      .toThrow(/invalid published date or timestamp/);
+  });
+
   it("raw amendment materialization: preserves original and revision publication timestamps", () => {
     const artifact = makeRawArtifact([makeRawRevenueFact()]);
     artifact.filing = {
@@ -809,5 +817,17 @@ describe("research financial statements", () => {
       ...base,
       provenance: { ...base.provenance, processedAt: "2026-08-14T10:59:59.999Z" },
     })).toThrow(/at or after retrievedAt/);
+  });
+
+  it("canonical publication sequences require safe non-negative integers", () => {
+    for (const field of ["filingSequence", "revisionSequence", "processingSequence"] as const) {
+      for (const invalid of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const base = makeRecord();
+        expect(() => validateResearchFinancialStatementRecord({
+          ...base,
+          publicationContext: { ...base.publicationContext, [field]: invalid },
+        })).toThrow(/publication sequences must be safe non-negative integers/);
+      }
+    }
   });
 });

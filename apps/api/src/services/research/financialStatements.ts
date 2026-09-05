@@ -281,7 +281,7 @@ function financialStatementPublishedAtTimestamp(value: string): string {
   if (isIsoDate(value)) {
     return new Date(`${value}T00:00:00+08:00`).toISOString();
   }
-  if (value.includes("T") && !Number.isNaN(Date.parse(value))) {
+  if (isTimestamp(value)) {
     return new Date(value).toISOString();
   }
   throw invalidResearchFinancialStatementRecord(`invalid published date or timestamp ${value}`);
@@ -817,11 +817,16 @@ export function validateResearchFinancialStatementRecord(
   if (Date.parse(record.provenance.processedAt) < Date.parse(record.provenance.retrievedAt)) {
     throw invalidResearchFinancialStatementRecord("processedAt must be at or after retrievedAt");
   }
-  if (record.publicationContext.filingSequence < 0 || record.publicationContext.revisionSequence < 0) {
-    throw invalidResearchFinancialStatementRecord("publication sequences must be non-negative");
+  const publicationSequences = [
+    record.publicationContext.filingSequence,
+    record.publicationContext.revisionSequence,
+    record.publicationContext.processingSequence,
+  ];
+  if (!publicationSequences.every((sequence) => Number.isSafeInteger(sequence) && sequence >= 0)) {
+    throw invalidResearchFinancialStatementRecord("publication sequences must be safe non-negative integers");
   }
-  if (record.publicationContext.processingSequence < 0 || !record.publicationContext.processingId) {
-    throw invalidResearchFinancialStatementRecord("processing revision identity must be present and non-negative");
+  if (!record.publicationContext.processingId) {
+    throw invalidResearchFinancialStatementRecord("processing revision identity must be present");
   }
   const sectionKinds = new Set<ResearchFinancialStatementKind>();
   for (const section of record.statements) {
