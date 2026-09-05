@@ -179,6 +179,38 @@ describe("research financial statement acquisition", () => {
     expect(appendSpy).not.toHaveBeenCalled();
   });
 
+  it("period validation: rejects statement facts belonging to another filing period", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    const appendSpy = vi.spyOn(persistence, "appendResearchFinancialStatementRecords");
+    const wrongPeriodXbrl = validAcquisitionXbrl
+      .replaceAll("2026-04-01", "2025-04-01")
+      .replaceAll("2026-06-30", "2025-06-30");
+
+    await expect(runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors: [acquisitionDescriptor(0)],
+      fetchImpl: async () => new Response(wrongPeriodXbrl, { status: 200 }),
+      retrievedAt: "2026-08-15T00:00:00.000Z",
+      acquisitionRunId: "wrong-period-artifact-run",
+    })).rejects.toThrow(/does not match requested period 2026:q2/i);
+    expect(appendSpy).not.toHaveBeenCalled();
+  });
+
+  it("period validation: accepts year-to-date duration contexts for the requested quarter", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+
+    await expect(runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors: [acquisitionDescriptor(0)],
+      fetchImpl: async () => new Response(
+        validAcquisitionXbrl.replaceAll("2026-04-01", "2026-01-01"),
+        { status: 200 },
+      ),
+      retrievedAt: "2026-08-15T00:00:00.000Z",
+      acquisitionRunId: "current-cumulative-period-run",
+    })).resolves.toMatchObject({ recordCount: 1, failureCount: 0 });
+  });
+
   it("unknown publication time: preserves the exact first-observation timestamp", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();

@@ -217,6 +217,26 @@ function artifactAmbiguityFlags(
   ];
 }
 
+const REQUIRED_FINANCIAL_STATEMENT_ROLES = [
+  "balance_sheet",
+  "income_statement",
+  "cash_flow_statement",
+] as const;
+
+function missingCurrentPeriodStatementRoles(
+  artifact: MopsFinancialStatementArtifact,
+): typeof REQUIRED_FINANCIAL_STATEMENT_ROLES[number][] {
+  const allowedDurationStarts = new Set([
+    artifact.filing.periodStart,
+    `${artifact.filing.fiscalYear}-01-01`,
+  ]);
+  const currentPeriodRoles = new Set(artifact.facts
+    .filter((fact) => fact.periodEnd === artifact.filing.periodEnd)
+    .filter((fact) => fact.periodStart === null || allowedDurationStarts.has(fact.periodStart))
+    .map((fact) => fact.statementRole));
+  return REQUIRED_FINANCIAL_STATEMENT_ROLES.filter((role) => !currentPeriodRoles.has(role));
+}
+
 async function canonicalizeFinancialStatementArtifact(
   persistence: Persistence,
   artifact: MopsFinancialStatementArtifact,
@@ -1335,6 +1355,12 @@ export async function runOfficialFinancialStatementAcquisition(
         if (parsed.issues.missingStatementRoles.length > 0) {
           throw new Error(
             `Official MOPS financial statement artifact ${descriptor.sourceUrl} is missing required statement roles: ${parsed.issues.missingStatementRoles.join(",")}`,
+          );
+        }
+        const missingCurrentPeriodRoles = missingCurrentPeriodStatementRoles(parsed);
+        if (missingCurrentPeriodRoles.length > 0) {
+          throw new Error(
+            `Official MOPS financial statement artifact ${descriptor.sourceUrl} does not match requested period ${descriptor.filing.fiscalYear}:${descriptor.filing.fiscalPeriod}; missing current-period statement roles: ${missingCurrentPeriodRoles.join(",")}`,
           );
         }
         const parsedEntityIdentifiers = new Set(
