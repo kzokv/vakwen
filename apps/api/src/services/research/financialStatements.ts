@@ -816,6 +816,14 @@ export function validateResearchFinancialStatementRecord(
     sectionKinds.add(section.kind);
     const factIds = new Set<string>();
     for (const fact of section.facts) {
+      if (
+        fact.listingId !== record.listingId
+        || fact.issuerId !== record.issuerId
+        || fact.filingId !== record.publicationContext.filingId
+        || fact.revisionId !== record.publicationContext.revisionId
+      ) {
+        throw invalidResearchFinancialStatementRecord(`fact ${fact.id} ownership mismatch`);
+      }
       if (fact.statementKind !== section.kind) {
         throw invalidResearchFinancialStatementRecord(`fact ${fact.id} statement kind mismatch`);
       }

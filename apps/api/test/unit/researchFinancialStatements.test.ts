@@ -8,6 +8,7 @@ import {
   researchFinancialStatementProcessingSequence,
   resolveLatestResearchFinancialStatementRecords,
   type ResearchFinancialStatementRecord,
+  type ResearchFinancialStatementFact,
   validateResearchFinancialStatementRecord,
 } from "../../src/services/research/financialStatements.js";
 import type { MopsFinancialStatementArtifact } from "../../src/services/research/providers/mopsXbrl.js";
@@ -614,6 +615,27 @@ describe("research financial statements", () => {
         },
       ],
     });
+  });
+
+  it("validation rejects facts owned by another listing, issuer, filing, or revision", () => {
+    const mismatches: Array<Partial<Pick<
+      ResearchFinancialStatementFact,
+      "listingId" | "issuerId" | "filingId" | "revisionId"
+    >>> = [
+      { listingId: "lst_other" },
+      { issuerId: "iss_other" },
+      { filingId: "mops-other-filing" },
+      { revisionId: "mops-2026q2-r99" },
+    ];
+
+    for (const mismatch of mismatches) {
+      const record = makeRecord();
+      const fact = record.statements[0]?.facts[0];
+      expect(fact).toBeDefined();
+      record.statements[0]!.facts[0] = { ...fact!, ...mismatch };
+
+      expect(() => validateResearchFinancialStatementRecord(record)).toThrow(/ownership mismatch/);
+    }
   });
 
   it("equal explicit precedence keeps replay immutable and marks the survivor as ambiguous", () => {
