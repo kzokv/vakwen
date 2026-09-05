@@ -616,9 +616,13 @@ export function parseMopsFinancialStatementArtifact(
     ? extractInlineFacts(content, contextsById)
     : extractXbrlFacts(content, contextsById);
   const unitsById = new Map(units.map((unit) => [unit.id, unit] as const));
-  const duplicateContextGroups = [...new Map(
-    contexts.map((context) => [context.signature, contexts.filter((item) => item.signature === context.signature).map((item) => item.id)] as const),
-  ).entries()]
+  const contextIdsBySignature = new Map<string, string[]>();
+  for (const context of contexts) {
+    const contextIds = contextIdsBySignature.get(context.signature) ?? [];
+    contextIds.push(context.id);
+    contextIdsBySignature.set(context.signature, contextIds);
+  }
+  const duplicateContextGroups = [...contextIdsBySignature.entries()]
     .filter(([, contextIds]) => contextIds.length > 1)
     .map(([signature, contextIds]) => ({ signature, contextIds }));
   const unknownUnitIds = [...new Set(facts

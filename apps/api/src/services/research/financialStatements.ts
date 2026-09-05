@@ -23,7 +23,7 @@ export type ResearchFinancialStatementAmbiguityFlag =
   | "filing_basis_ambiguous"
   | "taxonomy_change";
 
-export const RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION = "research-financial-statements-parser/1.0.1";
+export const RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION = "research-financial-statements-parser/1.0.2";
 
 export function researchFinancialStatementProcessingId(
   contentHash: string,
@@ -730,6 +730,7 @@ export function normalizeResearchFinancialStatementFact(input: {
       input.revisionId,
       input.statementKind,
       input.concept.qname,
+      input.taxonomy?.namespaceUri ?? "",
       input.contextId,
       input.rawValue,
       normalized.state === "present" ? `present:${normalized.value}` : `missing:${normalized.reason}`,

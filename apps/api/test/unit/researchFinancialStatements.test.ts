@@ -204,10 +204,10 @@ function makeRecord(overrides: Partial<ResearchFinancialStatementRecord> = {}): 
 
 describe("research financial statements", () => {
   it("processing identity changes with the canonical parser version", () => {
-    expect(researchFinancialStatementProcessingId("sha256:same", "research-financial-statements-parser/1.0.0"))
-      .not.toBe(researchFinancialStatementProcessingId("sha256:same", "research-financial-statements-parser/1.0.1"));
-    expect(researchFinancialStatementProcessingSequence("research-financial-statements-parser/1.0.1"))
-      .toBeGreaterThan(researchFinancialStatementProcessingSequence("research-financial-statements-parser/1.0.0"));
+    expect(researchFinancialStatementProcessingId("sha256:same", "research-financial-statements-parser/1.0.1"))
+      .not.toBe(researchFinancialStatementProcessingId("sha256:same", "research-financial-statements-parser/1.0.2"));
+    expect(researchFinancialStatementProcessingSequence("research-financial-statements-parser/1.0.2"))
+      .toBeGreaterThan(researchFinancialStatementProcessingSequence("research-financial-statements-parser/1.0.1"));
   });
 
   it("iXBRL transforms preserve decimal precision while applying scale and sign", () => {
@@ -381,6 +381,37 @@ describe("research financial statements", () => {
     });
 
     expect(twd.id).not.toBe(usd.id);
+  });
+
+  it("fact identity distinguishes lexical QNames rebound to different taxonomy namespaces", () => {
+    const baseInput = {
+      listingId: "lst_2330",
+      issuerId: "iss_2330",
+      filingId: "mops-2026q2",
+      revisionId: "mops-2026q2-r0",
+      statementKind: "income" as const,
+      concept: { qname: "ifrs:Revenue", label: "Revenue" },
+      metric: { state: "mapped" as const, metricId: "revenue" as const },
+      contextId: "ctx-duration",
+      period: {
+        kind: "duration" as const,
+        startAt: "2026-04-01T00:00:00.000Z",
+        endAt: "2026-06-30T23:59:59.999Z",
+      },
+      valueKind: "cumulative" as const,
+      rawValue: "1",
+      unit: { state: "known" as const, unitId: "TWD" },
+    };
+    const first = normalizeResearchFinancialStatementFact({
+      ...baseInput,
+      taxonomy: { namespaceUri: "https://example.test/taxonomy/2025/ifrs", version: "2025" },
+    });
+    const second = normalizeResearchFinancialStatementFact({
+      ...baseInput,
+      taxonomy: { namespaceUri: "https://example.test/taxonomy/2026/ifrs", version: "2026" },
+    });
+
+    expect(first.id).not.toBe(second.id);
   });
 
   it("fact identity distinguishes otherwise identical displays with different numeric transformations", () => {
