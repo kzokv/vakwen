@@ -286,12 +286,16 @@ async function canonicalizeFinancialStatementArtifact(
     artifact.issues.duplicateContextGroups.flatMap((group) => group.contextIds),
   );
   const statementFacts = new Map<ResearchFinancialStatementKind, ResearchFinancialStatementFact[]>();
+  const firstStatementFactById = new Map<ResearchFinancialStatementKind, Map<string, ResearchFinancialStatementFact>>();
   const pushFact = (statementKind: ResearchFinancialStatementKind, fact: ResearchFinancialStatementFact) => {
     const current = statementFacts.get(statementKind) ?? [];
-    const repeated = current.find((candidate) => candidate.id === fact.id);
+    const factsById = firstStatementFactById.get(statementKind) ?? new Map<string, ResearchFinancialStatementFact>();
+    const repeated = factsById.get(fact.id);
     if (repeated && JSON.stringify(repeated) === JSON.stringify(fact)) return;
+    if (!repeated) factsById.set(fact.id, fact);
     current.push(fact);
     statementFacts.set(statementKind, current);
+    firstStatementFactById.set(statementKind, factsById);
   };
   for (const fact of artifact.facts) {
     const statementKind = statementKindForMopsRole(fact.statementRole);

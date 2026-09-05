@@ -579,6 +579,26 @@ describe("research financial statement acquisition", () => {
       .map((descriptor) => descriptor.filing.fiscalYear)).toEqual([2023, 2023, 2024, 2024, 2025, 2025]);
     expect(descriptors.filter((descriptor) => descriptor.filing.fiscalPeriod !== "annual")).toHaveLength(16);
 
+    const financialIdentity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-09-01",
+      retrievedAt: "2026-09-01T00:00:00.000Z",
+      artifact: { contentHash: "sha256:financial-identity", sourceUrl: "https://openapi.twse.com.tw/company" },
+      row: {
+        kind: "company",
+        ticker: "2882",
+        legalName: "國泰金融控股股份有限公司",
+        displayName: "國泰金",
+        unifiedBusinessNumber: "03374707",
+        industryCode: "17",
+        listedAt: "2001-12-31",
+      },
+    });
+    expect(buildCurrentMopsFinancialStatementDescriptors(
+      [financialIdentity],
+      new Date("2026-09-01T00:00:00.000Z"),
+    ).every((descriptor) => descriptor.sector === "financial_institution")).toBe(true);
+
     const afterMidnightTaiwan = buildCurrentMopsFinancialStatementDescriptors(
       [identity],
       new Date("2026-08-31T17:30:00.000Z"),

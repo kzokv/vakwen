@@ -143,7 +143,9 @@ export function buildCurrentMopsFinancialStatementDescriptors(
           ticker: identity.listing.ticker,
           expectedEntityIdentifiers: [unifiedBusinessNumber.value],
           venue: identity.listing.venue,
-          sector: "operating_company" as const,
+          sector: identity.issuer.classification === "financial_institution"
+            ? "financial_institution" as const
+            : "operating_company" as const,
           sourceUrl: sourceUrl.toString(),
           filing: {
             filingId: `mops:${identity.listing.ticker}:${target.fiscalYear}:${target.fiscalPeriod}:${filingBasis}`,

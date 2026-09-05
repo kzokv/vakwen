@@ -65,6 +65,7 @@ export interface MopsUnitRecord {
 
 export interface MopsFactRecord {
   id: string;
+  inlineType: "nonFraction" | "nonNumeric" | null;
   statementRole: MopsStatementRole;
   concept: {
     qname: string;
@@ -398,6 +399,7 @@ function buildFactRecord(
   innerValue: string,
   namespaceMap: Record<string, string>,
   contextsById: ReadonlyMap<string, MopsContextRecord>,
+  inlineType: MopsFactRecord["inlineType"] = null,
 ): MopsFactRecord | null {
   const [prefix, localName] = qname.includes(":") ? qname.split(":", 2) : ["", qname];
   if (CORE_PREFIXES.has(prefix)) return null;
@@ -410,7 +412,10 @@ function buildFactRecord(
   const rawValue = stripMarkup(innerValue);
   return {
     id: `fact_${createHash("sha256").update([qname, contextRef, attributes.unitRef ?? "", rawValue].join("\u001f")).digest("hex").slice(0, 24)}`,
-    statementRole: statementRoleForConcept(localName, namespaceMap[prefix] ?? null, context),
+    inlineType,
+    statementRole: inlineType === "nonNumeric"
+      ? "notes"
+      : statementRoleForConcept(localName, namespaceMap[prefix] ?? null, context),
     concept: {
       qname,
       prefix,
@@ -424,12 +429,14 @@ function buildFactRecord(
     sign: attributes.sign ?? null,
     format: attributes.format ?? null,
     rawValue,
-    normalizedValue: normalizeFactValue(
-      rawValue,
-      attributes.sign ?? null,
-      attributes.scale ?? null,
-      attributes.format ?? null,
-    ),
+    normalizedValue: inlineType === "nonNumeric"
+      ? rawValue
+      : normalizeFactValue(
+          rawValue,
+          attributes.sign ?? null,
+          attributes.scale ?? null,
+          attributes.format ?? null,
+        ),
     periodEnd: context.endDate ?? context.instant ?? null,
     periodStart: context.startDate,
     contextDimensions: context.dimensions,
@@ -469,6 +476,7 @@ function extractInlineFacts(
 ): MopsFactRecord[] {
   const candidates: Array<{
     offset: number;
+    inlineType: "nonFraction" | "nonNumeric";
     qname: string;
     attributes: Record<string, string>;
     value: string;
@@ -482,19 +490,21 @@ function extractInlineFacts(
       ...(attributes.continuedAt ? { continuedAt: attributes.continuedAt } : {}),
     });
   }
-  for (const match of content.matchAll(/<ix:(?:nonFraction|nonNumeric)\b([^>]*?)(?<!\/)>([\s\S]*?)<\/ix:(?:nonFraction|nonNumeric)>/gi)) {
-    const attributes = parseAttributes(match[1] ?? "");
+  for (const match of content.matchAll(/<ix:(nonFraction|nonNumeric)\b([^>]*?)(?<!\/)>([\s\S]*?)<\/ix:\1>/gi)) {
+    const inlineType = match[1] as "nonFraction" | "nonNumeric";
+    const attributes = parseAttributes(match[2] ?? "");
     const qname = attributes.name;
     if (!qname) continue;
-    const value = inlineFactValue(match[2] ?? "", attributes.continuedAt, continuationsById);
-    candidates.push({ offset: match.index, qname, attributes, value });
+    const value = inlineFactValue(match[3] ?? "", attributes.continuedAt, continuationsById);
+    candidates.push({ offset: match.index, inlineType, qname, attributes, value });
   }
-  for (const match of content.matchAll(/<ix:(?:nonFraction|nonNumeric)\b([^>]*)\/>/gi)) {
-    const attributes = parseAttributes(match[1] ?? "");
+  for (const match of content.matchAll(/<ix:(nonFraction|nonNumeric)\b([^>]*)\/>/gi)) {
+    const inlineType = match[1] as "nonFraction" | "nonNumeric";
+    const attributes = parseAttributes(match[2] ?? "");
     const qname = attributes.name;
     if (!qname) continue;
     const value = inlineFactValue("", attributes.continuedAt, continuationsById);
-    candidates.push({ offset: match.index, qname, attributes, value });
+    candidates.push({ offset: match.index, inlineType, qname, attributes, value });
   }
   candidates.sort((left, right) => left.offset - right.offset);
   const namespaceMaps = namespaceMapsAtElementOffsets(content, candidates);
@@ -505,6 +515,7 @@ function extractInlineFacts(
       candidate.value,
       namespaceMaps.get(candidate.offset) ?? {},
       contextsById,
+      candidate.inlineType,
     );
     return fact ? [fact] : [];
   });
@@ -611,6 +622,7 @@ export function parseMopsFinancialStatementArtifact(
     .filter(([, contextIds]) => contextIds.length > 1)
     .map(([signature, contextIds]) => ({ signature, contextIds }));
   const unknownUnitIds = [...new Set(facts
+    .filter((fact) => fact.inlineType !== "nonNumeric")
     .map((fact) => fact.unitRef)
     .filter((unitRef): unitRef is string => unitRef !== null && !unitsById.has(unitRef)))].sort();
   const unmappedConcepts = [...new Set(facts

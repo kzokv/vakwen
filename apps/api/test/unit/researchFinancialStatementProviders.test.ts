@@ -235,8 +235,14 @@ describe("MOPS XBRL provider parser", () => {
       .toBe("cash_flow_statement");
     expect(artifact.facts.find((fact) => fact.concept.localName === "AdjustmentsForReconcileProfitLoss")?.statementRole)
       .toBe("cash_flow_statement");
-    expect(artifact.facts.find((fact) => fact.concept.localName === "NarrativeDisclosure")?.rawValue)
-      .toBe("Alpha Beta Gamma");
+    expect(artifact.facts.find((fact) => fact.concept.localName === "NarrativeDisclosure")).toMatchObject({
+      inlineType: "nonNumeric",
+      statementRole: "notes",
+      rawValue: "Alpha Beta Gamma",
+      normalizedValue: "Alpha Beta Gamma",
+      unitRef: null,
+    });
+    expect(artifact.issues.unmappedConcepts).not.toContain("custom:NarrativeDisclosure");
     expect(artifact.facts.find((fact) => fact.concept.localName === "EquityAtBeginningOfPeriod")?.statementRole)
       .toBe("equity_statement");
     expect(artifact.facts.find((fact) => fact.concept.localName === "IncreaseDecreaseInEquity")?.statementRole)
