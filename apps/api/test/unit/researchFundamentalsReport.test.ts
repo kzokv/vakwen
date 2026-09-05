@@ -1,0 +1,819 @@
+import { describe, expect, it } from "vitest";
+import { MemoryPersistence } from "../../src/persistence/memory.js";
+import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import {
+  buildFinancialStatementFundamentalsResearchReport,
+  renderFinancialStatementFundamentalsResearchReportMarkdown,
+} from "../../src/services/research/report.js";
+import type { ResearchFinancialStatementsOutput, ResearchFinancialStatementsQueryInput } from "../../src/services/research/contracts.js";
+
+function makeIdentity() {
+  return canonicalizeOfficialIdentityRow({
+    venue: "TWSE",
+    snapshotDate: "2026-08-31",
+    retrievedAt: "2026-08-31T02:00:00.000Z",
+    artifact: { contentHash: "sha256:financial-report", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+    row: {
+      kind: "company",
+      ticker: "2330",
+      legalName: "台灣積體電路製造股份有限公司",
+      displayName: "台積電",
+      unifiedBusinessNumber: "22099131",
+      industryCode: "24",
+      listedAt: "1994-09-05",
+    },
+  });
+}
+
+function makeFact(
+  periodEndDate: string,
+  fiscalYear: number,
+  fiscalQuarter: 1 | 2 | 3 | 4 | null,
+  metricId: string,
+  value: string,
+  statement: "income" | "balance_sheet" | "cash_flow",
+): ResearchFinancialStatementsOutput["periods"][number]["sourceFacts"][number] {
+  return {
+    observationId: `obs_${metricId}_${fiscalYear}_${fiscalQuarter ?? "annual"}`,
+    statement,
+    metricId,
+    concept: { raw: `ifrs-full:${metricId}`, normalized: { state: "present" as const, value: `ifrs-full:${metricId}` } },
+    label: { raw: metricId, normalized: { state: "present" as const, value: metricId } },
+    value: { raw: value, normalized: { state: "present" as const, value } },
+    unit: { raw: "iso4217:TWD", normalized: { state: "present" as const, value: "iso4217:TWD" } },
+    scale: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
+    decimals: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
+    precision: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
+    format: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
+    sign: { raw: null, normalized: { state: "missing" as const, reasonCode: "not_reported" } },
+    filingBasis: { raw: "consolidated", normalized: { state: "present" as const, value: "consolidated" as const } },
+    dimensions: {},
+    period: {
+      startDate: fiscalQuarter === null ? `${fiscalYear}-01-01` : `${fiscalYear}-${String(((fiscalQuarter - 1) * 3) + 1).padStart(2, "0")}-01`,
+      endDate: periodEndDate,
+      fiscalYear,
+      fiscalQuarter,
+      durationMonths: fiscalQuarter === null ? 12 : 3,
+    },
+    taxonomy: { namespace: "ifrs-full", conceptName: metricId, taxonomyVersion: "2026" },
+    provenanceId: `prv_${fiscalYear}_${fiscalQuarter ?? "annual"}`,
+    ambiguity: { status: "none" as const, relatedObservationIds: [] },
+    relations: { comparableObservationIds: [], supersededByObservationIds: [] },
+    revision: {
+      filingId: `filing_${fiscalYear}_${fiscalQuarter ?? "annual"}`,
+      accessionNumber: null,
+      amended: false,
+      restated: false,
+      revisionTag: `r0`,
+    },
+  };
+}
+
+function makePeriod(fiscalYear: number, fiscalQuarter: 1 | 2 | 3 | 4 | null, revenue: string): ResearchFinancialStatementsOutput["periods"][number] {
+  const periodEndDate = fiscalQuarter === null
+    ? `${fiscalYear}-12-31`
+    : `${fiscalYear}-${String(fiscalQuarter * 3).padStart(2, "0")}-${fiscalQuarter === 1 ? "31" : fiscalQuarter === 2 ? "30" : fiscalQuarter === 3 ? "30" : "31"}`;
+  return {
+    filingPeriodId: `period_${fiscalYear}_${fiscalQuarter ?? "annual"}`,
+    fiscalYear,
+    fiscalQuarter,
+    periodStartDate: fiscalQuarter === null ? `${fiscalYear}-01-01` : `${fiscalYear}-${String(((fiscalQuarter - 1) * 3) + 1).padStart(2, "0")}-01`,
+    periodEndDate,
+    publishedAt: periodEndDate,
+    filingDate: periodEndDate,
+    acceptedAt: `${periodEndDate}T12:00:00.000Z`,
+    filingBasis: "consolidated",
+    statements: ["income", "balance_sheet", "cash_flow"],
+    sourceFacts: [
+      makeFact(periodEndDate, fiscalYear, fiscalQuarter, "revenue", revenue, "income"),
+      makeFact(periodEndDate, fiscalYear, fiscalQuarter, "assets", "100", "balance_sheet"),
+      makeFact(periodEndDate, fiscalYear, fiscalQuarter, "operating_cash_flow", "10", "cash_flow"),
+    ],
+    quality: {
+      taxonomyChanges: { status: "clear", reasonCodes: [], observationIds: [] },
+      amendmentsRestatements: { status: "clear", reasonCodes: [], observationIds: [] },
+      duplicateContexts: { status: "clear", reasonCodes: [], observationIds: [] },
+      unmappedConcepts: { status: "clear", reasonCodes: [], observationIds: [] },
+      unknownUnits: { status: "clear", reasonCodes: [], observationIds: [] },
+      ambiguousBasis: { status: "clear", reasonCodes: [], observationIds: [] },
+    },
+  };
+}
+
+function buildStatementsOutput(
+  listingId: string,
+  periodicity: "annual" | "quarterly",
+  periods: ResearchFinancialStatementsOutput["periods"],
+  classification: "operating_company" | "financial_institution" = "operating_company",
+): ResearchFinancialStatementsOutput {
+  return {
+    contractVersion: "research-financial-statements/1.0.0",
+    selector: { kind: "listing_id", listingId },
+    context: {
+      knowledgeAt: "2026-09-01T00:00:00.000Z",
+      effectiveAt: "2026-09-01T00:00:00.000Z",
+      assessmentMode: "effective",
+    },
+    identity: {
+      issuer: { id: "iss_2330", classification },
+      security: { id: "sec_2330", issuerId: "iss_2330", type: "common_equity", rights: "common_shares" },
+      listing: { id: listingId, securityId: "sec_2330", venue: "TWSE", ticker: "2330", listedAt: "1994-09-05", status: "active" },
+      displayName: "台積電",
+      eligibility: { profile: "operating_company", state: "eligible", reasonCode: "supported_common_equity" },
+      availability: { status: "eligible", reasonCode: "operating_company" },
+    },
+    periodicity,
+    range: { kind: "latest_periods", count: periodicity === "annual" ? 3 : 8 },
+    basisPolicy: {
+      requested: "policy_selected",
+      selected: "consolidated",
+      policyId: "mops-xbrl-basis-selection/1.0.0",
+      fallbackApplied: false,
+    },
+    statements: ["income", "balance_sheet", "cash_flow"],
+    metricSelection: { base: "required_core", groups: [], explicitMetricIds: [] },
+    derivedMetricRequests: [],
+    coverage: { status: "complete", requestedPeriodCount: periodicity === "annual" ? 3 : 8, returnedPeriodCount: periods.length },
+    freshness: { state: "current", authoritativeAsOf: periods[0]?.filingDate ?? null, latestAcceptedAt: periods[0]?.acceptedAt ?? null },
+    completeness: { status: "complete", missingFactCount: 0, missingMetricCount: 0 },
+    confidence: { status: "high", reasonCodes: [] },
+    readiness: { status: "ready", reasonCodes: [] },
+    periods,
+    derivedOutcomes: [],
+    gaps: [],
+    conflicts: [],
+    recovery: [],
+    provenanceIndex: periods.map((period) => ({
+      provenanceId: period.sourceFacts[0]!.provenanceId,
+      publisher: "MOPS" as const,
+      accessProvider: "MOPS_XBRL" as const,
+      authorityRole: "authoritative" as const,
+      publisherDataset: "mops_xbrl",
+      sourceUrl: "https://mops.twse.com.tw/server-java/t164sb01",
+      contentHash: `sha256:${period.filingPeriodId}`,
+      retrievedAt: "2026-09-01T00:00:00.000Z",
+    })),
+    page: { limit: periodicity === "annual" ? 3 : 8, order: "desc", nextCursor: null, recordCount: periods.length, truncatedByBudget: false },
+  };
+}
+
+function availableFinancialStatementManifest(identity: ReturnType<typeof makeIdentity>) {
+  return {
+    contractVersion: "research-manifest/1.0.0",
+    selector: { kind: "listing_id" as const, listingId: identity.listing.id },
+    context: {
+      knowledgeAt: "2026-09-01T00:00:00.000Z",
+      effectiveAt: "2026-09-01T00:00:00.000Z",
+      assessmentMode: "effective" as const,
+    },
+    eligibility: identity.eligibility,
+    orchestration: { skillExposure: "enabled" as const },
+    datasets: [
+      { id: "research_identity", status: "available" as const },
+      { id: "price_series", status: "unavailable" as const, reasonCode: "no_authoritative_price_history" },
+      { id: "exchange_valuation_references", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "monthly_revenue", status: "unavailable" as const, reasonCode: "not_acquired" },
+      { id: "financial_statements", status: "available" as const },
+      { id: "institutional_trading", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "foreign_ownership", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "margin_and_short_balances", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "dividend_events", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "material_announcements", status: "unavailable" as const, reasonCode: "identity_only_release" },
+      { id: "investor_materials", status: "unavailable" as const, reasonCode: "identity_only_release" },
+    ],
+  };
+}
+
+describe("financial statement fundamentals report", () => {
+  it("operating company fixture: support YoY, annual trend, and quarterly trend from canonical statements only", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      {
+        subject: { kind: "listing_id", listingId: identity.listing.id },
+        context: {
+          knowledgeAt: "2026-09-01T00:00:00.000Z",
+          effectiveAt: "2026-09-01T00:00:00.000Z",
+          assessmentMode: "effective",
+        },
+      },
+      {
+        getResearchManifestImpl: async () => ({
+          contractVersion: "research-manifest/1.0.0",
+          selector: { kind: "listing_id", listingId: identity.listing.id },
+          context: {
+            knowledgeAt: "2026-09-01T00:00:00.000Z",
+            effectiveAt: "2026-09-01T00:00:00.000Z",
+            assessmentMode: "effective",
+          },
+          eligibility: identity.eligibility,
+          orchestration: { skillExposure: "enabled" as const },
+          datasets: [
+            { id: "research_identity", status: "available" as const },
+            { id: "price_series", status: "unavailable" as const, reasonCode: "no_authoritative_price_history" },
+            { id: "exchange_valuation_references", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "monthly_revenue", status: "unavailable" as const, reasonCode: "not_acquired" },
+            { id: "financial_statements", status: "available" as const },
+            { id: "institutional_trading", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "foreign_ownership", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "margin_and_short_balances", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "dividend_events", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "material_announcements", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "investor_materials", status: "unavailable" as const, reasonCode: "identity_only_release" },
+          ],
+        }) as never,
+        getFinancialStatementsImpl: async (_persistence, financialQuery: ResearchFinancialStatementsQueryInput) => (
+          financialQuery.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", [
+                makePeriod(2023, null, "140"),
+                makePeriod(2024, null, "160"),
+                makePeriod(2025, null, "200"),
+              ])
+            : buildStatementsOutput(identity.listing.id, "quarterly", [
+                makePeriod(2024, 1, "35"),
+                makePeriod(2024, 2, "38"),
+                makePeriod(2024, 3, "39"),
+                makePeriod(2024, 4, "48"),
+                makePeriod(2025, 1, "46"),
+                makePeriod(2025, 2, "49"),
+                makePeriod(2025, 3, "50"),
+                makePeriod(2025, 4, "55"),
+              ])
+        ),
+      },
+    );
+
+    expect(report.conclusions.map((item) => item.status)).toEqual(["supported", "supported", "supported"]);
+    expect(report.conclusions[0]?.statement).toContain("2025 changed 25%");
+    expect(report.conclusions[1]?.statement).toContain("3 complete periods");
+    expect(report.conclusions[2]?.statement).toContain("8 comparable discrete quarters");
+    const markdown = renderFinancialStatementFundamentalsResearchReportMarkdown(report);
+    expect(markdown).toContain("# Taiwan Financial Statement Fundamentals: 台積電");
+    expect(markdown).toContain("- latest_revenue_yoy: supported");
+  });
+
+  it("truncated source facts: withholds conclusions instead of treating retained facts as unique", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => {
+          const output = query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters);
+          output.page.truncatedByBudget = true;
+          return output;
+        },
+      },
+    );
+
+    expect(report.conclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "latest_revenue_yoy", status: "withheld", reasonCodes: ["source_facts_truncated"] }),
+      expect.objectContaining({ id: "multi_year_revenue_trend", status: "withheld", reasonCodes: ["source_facts_truncated"] }),
+      expect.objectContaining({ id: "quarterly_revenue_trend", status: "withheld", reasonCodes: ["source_facts_truncated"] }),
+    ]));
+  });
+
+  it("comparative filing facts: report calculations select the current filing context", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const latestAnnual = makePeriod(2025, null, "200");
+    const priorAnnual = makePeriod(2024, null, "160");
+    const comparativeRevenue = makeFact("2024-12-31", 2024, null, "revenue", "999", "income");
+    const segmentRevenue = makeFact("2025-12-31", 2025, null, "revenue", "777", "income");
+    segmentRevenue.dimensions = { OperatingSegmentsAxis: "FoundryMember" };
+    latestAnnual.sourceFacts.find((fact) => fact.metricId === "revenue")!.dimensions = {
+      StatementBasisAxis: "ConsolidatedEntitiesMember",
+    };
+    priorAnnual.sourceFacts.find((fact) => fact.metricId === "revenue")!.dimensions = {
+      StatementBasisAxis: "ConsolidatedEntitiesMember",
+    };
+    latestAnnual.sourceFacts.unshift(segmentRevenue, comparativeRevenue);
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      {
+        subject: { kind: "listing_id", listingId: identity.listing.id },
+        context: availableFinancialStatementManifest(identity).context,
+      },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", [
+                makePeriod(2023, null, "140"),
+                priorAnnual,
+                latestAnnual,
+              ])
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.statement).toContain("changed 25%");
+
+    const alternateRevenue = makeFact("2025-12-31", 2025, null, "revenue", "999", "income");
+    alternateRevenue.observationId = "obs_revenue_2025_annual_alternate_concept";
+    alternateRevenue.concept.raw = "ifrs-full:RevenueFromContractsWithCustomers";
+    alternateRevenue.dimensions = { StatementBasisAxis: "ConsolidatedEntitiesMember" };
+    latestAnnual.sourceFacts.push(alternateRevenue);
+    const ambiguousReport = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      {
+        subject: { kind: "listing_id", listingId: identity.listing.id },
+        context: availableFinancialStatementManifest(identity).context,
+      },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", [makePeriod(2023, null, "140"), priorAnnual, latestAnnual])
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+    expect(ambiguousReport.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.status).toBe("withheld");
+  });
+
+  it("stale annual history: withholds the latest-due YoY conclusion", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annualOutput = buildStatementsOutput(identity.listing.id, "annual", [
+      makePeriod(2020, null, "100"), makePeriod(2021, null, "120"), makePeriod(2022, null, "140"),
+    ]);
+    annualOutput.freshness.state = "stale";
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? annualOutput
+            : buildStatementsOutput(identity.listing.id, "quarterly", [])
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["stale_financial_statements"],
+    });
+  });
+
+  it("annual YoY: withholds revenue values with mismatched known units", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const priorRevenue = annuals[1]!.sourceFacts.find((fact) => fact.metricId === "revenue")!;
+    priorRevenue.unit = { raw: "iso4217:USD", normalized: { state: "present", value: "iso4217:USD" } };
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", [])
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.status).toBe("withheld");
+
+    priorRevenue.unit = { raw: "iso4217:TWD", normalized: { state: "present", value: "iso4217:TWD" } };
+    priorRevenue.taxonomy.taxonomyVersion = "2025";
+    const taxonomyReport = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", [])
+        ),
+      },
+    );
+    expect(taxonomyReport.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["taxonomy_ambiguity"],
+    });
+  });
+
+  it("quarterly trend: withholds nonconsecutive or cumulative-only quarter windows", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const nonconsecutive = Array.from({ length: 8 }, (_, index) => makePeriod(2018 + index, 1, String(100 + index)));
+    const cumulativeOnly = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+    for (const period of cumulativeOnly.filter((item) => item.fiscalQuarter !== 1)) {
+      const revenue = period.sourceFacts.find((fact) => fact.metricId === "revenue")!;
+      revenue.period.startDate = `${period.fiscalYear}-01-01`;
+    }
+
+    for (const quarters of [nonconsecutive, cumulativeOnly]) {
+      const report = await buildFinancialStatementFundamentalsResearchReport(
+        persistence,
+        { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+        {
+          getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+          getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+            query.periodicity === "annual"
+              ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+              : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+          ),
+        },
+      );
+
+      expect(report.conclusions.find((conclusion) => conclusion.id === "quarterly_revenue_trend")).toMatchObject({
+        status: "withheld",
+        reasonCodes: ["insufficient_quarterly_window"],
+      });
+    }
+  });
+
+  it("quarterly ambiguity: does not suppress clean annual conclusions", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+    quarters[0]!.quality.unknownUnits = { status: "present", reasonCodes: ["unknownUnits"], observationIds: [] };
+    const ambiguousRevenue = quarters[0]!.sourceFacts.find((fact) => fact.metricId === "revenue")!;
+    ambiguousRevenue.unit = { raw: "mystery", normalized: { state: "missing", reasonCode: "unknown_unit" } };
+    ambiguousRevenue.ambiguity.status = "unknown_unit";
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions.map((conclusion) => [conclusion.id, conclusion.status])).toEqual([
+      ["latest_revenue_yoy", "supported"],
+      ["multi_year_revenue_trend", "supported"],
+      ["quarterly_revenue_trend", "withheld"],
+    ]);
+
+    annuals[0]!.quality.ambiguousBasis = { status: "present", reasonCodes: ["ambiguousBasis"], observationIds: [] };
+    const oldestAnnualAmbiguousReport = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+    expect(oldestAnnualAmbiguousReport.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")?.status).toBe("supported");
+    expect(oldestAnnualAmbiguousReport.conclusions.find((conclusion) => conclusion.id === "multi_year_revenue_trend")?.status).toBe("withheld");
+  });
+
+  it("required statements: withholds conclusions when a core section lacks usable current-period facts", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const latestCashFlow = annuals[2]!.sourceFacts.find((fact) => fact.statement === "cash_flow")!;
+    latestCashFlow.period.endDate = "2024-12-31";
+    latestCashFlow.period.fiscalYear = 2024;
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["missing_required_statement"],
+    });
+    expect(report.conclusions.find((conclusion) => conclusion.id === "multi_year_revenue_trend")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["missing_required_statement"],
+    });
+  });
+
+  it("period-level duplicate contexts: withholds conclusions even when revenue itself is unambiguous", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const duplicateAsset = annuals[2]!.sourceFacts.find((fact) => fact.metricId === "assets")!;
+    duplicateAsset.ambiguity.status = "duplicate_context";
+    annuals[2]!.quality.duplicateContexts = {
+      status: "present",
+      reasonCodes: ["duplicateContexts"],
+      observationIds: [duplicateAsset.observationId],
+    };
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "latest_revenue_yoy")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["context_ambiguity"],
+    });
+    expect(report.conclusions.find((conclusion) => conclusion.id === "multi_year_revenue_trend")).toMatchObject({
+      status: "withheld",
+      reasonCodes: ["context_ambiguity"],
+    });
+  });
+
+  it("period-level unknown units: withholds conclusions when the affected fact is omitted from source facts", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+    for (const period of [annuals[2]!, quarters[7]!]) {
+      const assets = period.sourceFacts.find((fact) => fact.metricId === "assets")!;
+      assets.unit = { raw: "mystery", normalized: { state: "missing", reasonCode: "unknown_unit" } };
+      assets.ambiguity.status = "unknown_unit";
+      const currentAssets = makeFact(
+        period.periodEndDate,
+        period.fiscalYear,
+        period.fiscalQuarter as 1 | 2 | 3 | 4 | null,
+        "current_assets",
+        "80",
+        "balance_sheet",
+      );
+      period.sourceFacts.push(currentAssets);
+      period.quality.unknownUnits = { status: "present", reasonCodes: ["unknownUnits"], observationIds: [assets.observationId] };
+      period.sourceFacts.splice(period.sourceFacts.indexOf(assets), 1);
+    }
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "latest_revenue_yoy",
+        status: "withheld",
+        reasonCodes: ["unknown_unit"],
+      }),
+      expect.objectContaining({
+        id: "multi_year_revenue_trend",
+        status: "withheld",
+        reasonCodes: ["unknown_unit"],
+      }),
+      expect.objectContaining({
+        id: "quarterly_revenue_trend",
+        status: "withheld",
+        reasonCodes: ["unknown_unit"],
+      }),
+    ]));
+    expect(report.sections.find((section) => section.id === "independent_facts")).toMatchObject({
+      periods: expect.arrayContaining([
+        expect.objectContaining({
+          issues: expect.objectContaining({ unknownUnitIds: ["unknown"] }),
+        }),
+      ]),
+    });
+  });
+
+  it("season-four filing: reconstructs discrete Q4 revenue from annual less Q3 cumulative facts", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const annuals = [makePeriod(2023, null, "140"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")];
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "160"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "200"),
+    ];
+    for (const [year, q3Cumulative] of [[2024, "112"], [2025, "145"]] as const) {
+      const q3 = quarters.find((period) => period.fiscalYear === year && period.fiscalQuarter === 3)!;
+      const cumulative = makeFact(q3.periodEndDate, year, 3, "revenue", q3Cumulative, "income");
+      cumulative.period.startDate = `${year}-01-01`;
+      q3.sourceFacts.push(cumulative);
+      const q4Revenue = quarters.find((period) => period.fiscalYear === year && period.fiscalQuarter === 4)!
+        .sourceFacts.find((fact) => fact.metricId === "revenue")!;
+      q4Revenue.period.startDate = `${year}-01-01`;
+    }
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+
+    expect(report.conclusions.find((conclusion) => conclusion.id === "quarterly_revenue_trend")?.status).toBe("supported");
+
+    const duplicateQ4 = makeFact("2025-12-31", 2025, 4, "revenue", "999", "income");
+    duplicateQ4.observationId = "obs_revenue_2025_q4_duplicate";
+    duplicateQ4.period.startDate = "2025-01-01";
+    quarters.find((period) => period.fiscalYear === 2025 && period.fiscalQuarter === 4)!.sourceFacts.push(duplicateQ4);
+    const ambiguousReport = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      { subject: { kind: "listing_id", listingId: identity.listing.id }, context: availableFinancialStatementManifest(identity).context },
+      {
+        getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+        getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+          query.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+            : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+        ),
+      },
+    );
+    expect(ambiguousReport.conclusions.find((conclusion) => conclusion.id === "quarterly_revenue_trend")?.status).toBe("withheld");
+  });
+
+  it("annual trend: withholds nonconsecutive years and periods without usable revenue", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    const quarters = [
+      makePeriod(2024, 1, "35"), makePeriod(2024, 2, "38"), makePeriod(2024, 3, "39"), makePeriod(2024, 4, "48"),
+      makePeriod(2025, 1, "46"), makePeriod(2025, 2, "49"), makePeriod(2025, 3, "50"), makePeriod(2025, 4, "55"),
+    ];
+    const missingRevenue = makePeriod(2024, null, "160");
+    missingRevenue.sourceFacts = missingRevenue.sourceFacts.filter((fact) => fact.metricId !== "revenue");
+    const scenarios = [
+      {
+        annuals: [makePeriod(2022, null, "100"), makePeriod(2024, null, "160"), makePeriod(2025, null, "200")],
+        reasonCode: "insufficient_multi_year_window",
+      },
+      {
+        annuals: [makePeriod(2023, null, "140"), missingRevenue, makePeriod(2025, null, "200")],
+        reasonCode: "missing_required_statement",
+      },
+    ];
+
+    for (const { annuals, reasonCode } of scenarios) {
+      const report = await buildFinancialStatementFundamentalsResearchReport(
+        persistence,
+        {
+          subject: { kind: "listing_id", listingId: identity.listing.id },
+          context: availableFinancialStatementManifest(identity).context,
+        },
+        {
+          getResearchManifestImpl: async () => availableFinancialStatementManifest(identity) as never,
+          getFinancialStatementsImpl: async (_persistence, query: ResearchFinancialStatementsQueryInput) => (
+            query.periodicity === "annual"
+              ? buildStatementsOutput(identity.listing.id, "annual", annuals)
+              : buildStatementsOutput(identity.listing.id, "quarterly", quarters)
+          ),
+        },
+      );
+
+      expect(report.conclusions.find((conclusion) => conclusion.id === "multi_year_revenue_trend")).toMatchObject({
+        status: "withheld",
+        reasonCodes: [reasonCode],
+      });
+    }
+  });
+
+  it("unsupported sector fixture: withhold every conclusion explicitly", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+
+    const report = await buildFinancialStatementFundamentalsResearchReport(
+      persistence,
+      {
+        subject: { kind: "listing_id", listingId: identity.listing.id },
+        context: {
+          knowledgeAt: "2026-09-01T00:00:00.000Z",
+          effectiveAt: "2026-09-01T00:00:00.000Z",
+          assessmentMode: "effective",
+        },
+      },
+      {
+        getResearchManifestImpl: async () => ({
+          contractVersion: "research-manifest/1.0.0",
+          selector: { kind: "listing_id", listingId: identity.listing.id },
+          context: {
+            knowledgeAt: "2026-09-01T00:00:00.000Z",
+            effectiveAt: "2026-09-01T00:00:00.000Z",
+            assessmentMode: "effective",
+          },
+          eligibility: identity.eligibility,
+          orchestration: { skillExposure: "enabled" as const },
+          datasets: [
+            { id: "research_identity", status: "available" as const },
+            { id: "price_series", status: "unavailable" as const, reasonCode: "no_authoritative_price_history" },
+            { id: "exchange_valuation_references", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "monthly_revenue", status: "unavailable" as const, reasonCode: "not_acquired" },
+            { id: "financial_statements", status: "available" as const },
+            { id: "institutional_trading", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "foreign_ownership", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "margin_and_short_balances", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "dividend_events", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "material_announcements", status: "unavailable" as const, reasonCode: "identity_only_release" },
+            { id: "investor_materials", status: "unavailable" as const, reasonCode: "identity_only_release" },
+          ],
+        }) as never,
+        getFinancialStatementsImpl: async (_persistence, financialQuery: ResearchFinancialStatementsQueryInput) => (
+          financialQuery.periodicity === "annual"
+            ? buildStatementsOutput(identity.listing.id, "annual", [
+                makePeriod(2023, null, "140"),
+                makePeriod(2024, null, "160"),
+                makePeriod(2025, null, "200"),
+              ], "financial_institution")
+            : buildStatementsOutput(identity.listing.id, "quarterly", [
+                makePeriod(2024, 1, "35"),
+                makePeriod(2024, 2, "38"),
+                makePeriod(2024, 3, "39"),
+                makePeriod(2024, 4, "48"),
+                makePeriod(2025, 1, "46"),
+                makePeriod(2025, 2, "49"),
+                makePeriod(2025, 3, "50"),
+                makePeriod(2025, 4, "55"),
+              ], "financial_institution")
+        ),
+      },
+    );
+
+    expect(report.conclusions).toEqual([
+      expect.objectContaining({ id: "latest_revenue_yoy", status: "withheld", reasonCodes: ["unsupported_sector"] }),
+      expect.objectContaining({ id: "multi_year_revenue_trend", status: "withheld", reasonCodes: ["unsupported_sector"] }),
+      expect.objectContaining({ id: "quarterly_revenue_trend", status: "withheld", reasonCodes: ["unsupported_sector"] }),
+    ]);
+  });
+});

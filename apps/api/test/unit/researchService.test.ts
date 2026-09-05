@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import type { MarketCalendarExceptionInput } from "../../src/persistence/types.js";
 import { researchIdentityQuerySchema } from "../../src/services/research/contracts.js";
+import { normalizeResearchFinancialStatementFact, type ResearchFinancialStatementRecord } from "../../src/services/research/financialStatements.js";
 import {
   appendOfficialListingStatusRevision,
   canonicalizeOfficialIdentityRow,
 } from "../../src/services/research/identity.js";
 import { canonicalizeOfficialMonthlyRevenueRow } from "../../src/services/research/monthlyRevenue.js";
 import { canonicalizeOfficialPriceRow } from "../../src/services/research/price.js";
-import { getMonthlyRevenue, getPriceSeries, getResearchIdentity, getResearchManifest } from "../../src/services/research/service.js";
+import { getFinancialStatements, getMonthlyRevenue, getPriceSeries, getResearchIdentity, getResearchManifest } from "../../src/services/research/service.js";
 import { setResearchRolloutOverrideForTest } from "../../src/mcp/tools.js";
 
 function installAuthoritativeCalendarCoverage(
@@ -45,6 +46,127 @@ function installAuthoritativeCalendarCoverage(
         }]
       : []
   );
+}
+
+function makeFinancialStatementRecord(overrides: Partial<ResearchFinancialStatementRecord> = {}): ResearchFinancialStatementRecord {
+  const listingId = overrides.listingId ?? "lst_2330";
+  const issuerId = overrides.issuerId ?? "iss_2330";
+  const filingId = overrides.publicationContext?.filingId ?? "mops-2026-q2";
+  const revisionId = overrides.publicationContext?.revisionId ?? "mops-2026-q2-r0";
+  return {
+    listingId,
+    issuerId,
+    ticker: overrides.ticker ?? "2330",
+    venue: overrides.venue ?? "TWSE",
+    periodicity: overrides.periodicity ?? "quarterly",
+    fiscalPeriod: overrides.fiscalPeriod ?? {
+      fiscalYear: 2026,
+      fiscalQuarter: 2,
+      periodStart: "2026-04-01",
+      periodEnd: "2026-06-30",
+    },
+    filingBasis: overrides.filingBasis ?? "individual",
+    publicationContext: overrides.publicationContext ?? {
+      filingId,
+      revisionId,
+      publishedAt: "2026-08-14T10:00:00.000Z",
+      revisionPublishedAt: null,
+      filingSequence: 1,
+      revisionSequence: 0,
+      processingId: "proc-1",
+      processingSequence: 1,
+      restatement: false,
+      amendment: false,
+    },
+    statements: overrides.statements ?? [
+      {
+        kind: "income",
+        facts: [
+          normalizeResearchFinancialStatementFact({
+            listingId,
+            issuerId,
+            filingId,
+            revisionId,
+            statementKind: "income",
+            concept: { qname: "ifrs-full:Revenue", label: "Revenue" },
+            metric: { state: "mapped", metricId: "revenue" },
+            contextId: "ctx-income",
+            period: {
+              kind: "duration",
+              startAt: "2026-04-01T00:00:00.000Z",
+              endAt: "2026-06-30T23:59:59.999Z",
+            },
+            valueKind: "cumulative",
+            rawValue: "100",
+            unit: { state: "known", unitId: "iso4217:TWD" },
+          }),
+        ],
+      },
+      {
+        kind: "balance_sheet",
+        facts: [
+          normalizeResearchFinancialStatementFact({
+            listingId,
+            issuerId,
+            filingId,
+            revisionId,
+            statementKind: "balance_sheet",
+            concept: { qname: "ifrs-full:Assets", label: "Assets" },
+            metric: { state: "mapped", metricId: "assets" },
+            contextId: "ctx-balance",
+            period: { kind: "instant", instantAt: "2026-06-30T23:59:59.999Z" },
+            valueKind: "instant",
+            rawValue: "300",
+            unit: { state: "known", unitId: "iso4217:TWD" },
+          }),
+        ],
+      },
+      {
+        kind: "cash_flow",
+        facts: [
+          normalizeResearchFinancialStatementFact({
+            listingId,
+            issuerId,
+            filingId,
+            revisionId,
+            statementKind: "cash_flow",
+            concept: { qname: "ifrs-full:NetCashFlowsFromUsedInOperatingActivities", label: "Operating cash flow" },
+            metric: { state: "mapped", metricId: "operating_cash_flow" },
+            contextId: "ctx-cash",
+            period: {
+              kind: "duration",
+              startAt: "2026-04-01T00:00:00.000Z",
+              endAt: "2026-06-30T23:59:59.999Z",
+            },
+            valueKind: "cumulative",
+            rawValue: "50",
+            unit: { state: "known", unitId: "iso4217:TWD" },
+          }),
+        ],
+      },
+    ],
+    relations: overrides.relations ?? [],
+    ambiguityFlags: overrides.ambiguityFlags ?? [],
+    provenance: overrides.provenance ?? {
+      id: "prv_financial_policy_fallback",
+      publisher: "MOPS",
+      accessProvider: "MOPS_XBRL",
+      authorityRole: "authoritative",
+      canonicalDatasetId: "financial_statements",
+      publisherDataset: "mops_ixbrl",
+      sourceUrl: "https://mops.twse.com.tw/server-java/t164sb01",
+      contentHash: "sha256:financial-policy-fallback",
+      acquisitionPath: "scheduled_official_snapshot",
+      acquisitionRunId: "financial-policy-fallback",
+      retrievedAt: "2026-08-14T12:00:00.000Z",
+      processedAt: "2026-08-14T12:05:00.000Z",
+      parserVersion: "research-financial-statements-parser/1.0.0",
+      taxonomyVersion: "ifrs-full-2026",
+      usagePolicyVersion: "taiwan-open-data/1.0.0",
+      retentionStatus: "retained",
+      contentExposure: "allowed",
+    },
+  };
 }
 
 describe("Taiwan research store-only service", () => {
@@ -2200,5 +2322,52 @@ describe("Taiwan research store-only service", () => {
       id: "monthly_revenue",
       status: "available",
     });
+  });
+
+  it("financial statements policy selection: when only individual filings exist, report the fallback explicitly", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = canonicalizeOfficialIdentityRow({
+      venue: "TWSE",
+      snapshotDate: "2026-08-28",
+      retrievedAt: "2026-08-28T02:00:00.000Z",
+      artifact: { contentHash: "sha256:financial-policy-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: {
+        kind: "company",
+        ticker: "2330",
+        legalName: "台灣積體電路製造股份有限公司",
+        displayName: "台積電",
+        unifiedBusinessNumber: "22099131",
+        industryCode: "24",
+        listedAt: "1994-09-05",
+      },
+    });
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeFinancialStatementRecord({
+        listingId: identity.listing.id,
+        issuerId: identity.issuer.id,
+        filingBasis: "individual",
+      }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-08-28T23:59:59.999Z",
+        effectiveAt: "2026-08-28T23:59:59.999Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "quarterly",
+      range: { kind: "latest_periods", count: 1 },
+      page: { limit: 1, order: "desc" },
+    });
+
+    expect(result.basisPolicy).toEqual({
+      requested: "policy_selected",
+      selected: "individual",
+      policyId: "mops-xbrl-basis-selection/1.0.0",
+      fallbackApplied: true,
+    });
+    expect(result.periods[0]?.filingBasis).toBe("individual");
   });
 });
