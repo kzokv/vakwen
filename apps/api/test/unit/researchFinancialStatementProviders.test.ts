@@ -283,6 +283,27 @@ describe("MOPS XBRL provider parser", () => {
       .toContain("unknown_unit");
   });
 
+  it("plain XBRL textual facts do not raise artifact-wide unknown-unit state", () => {
+    const artifact = parseMopsFinancialStatementArtifact(
+      `<?xml version="1.0" encoding="utf-8"?>
+      <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+        xmlns:iso4217="http://www.xbrl.org/2003/iso4217"
+        xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full"
+        xmlns:custom="https://mops.twse.com.tw/taxonomy/2026/custom">
+        <xbrli:context id="duration"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
+        <xbrli:unit id="twd"><xbrli:measure>iso4217:TWD</xbrli:measure></xbrli:unit>
+        <ifrs-full:Revenue contextRef="duration" unitRef="twd">60</ifrs-full:Revenue>
+        <custom:NarrativeDisclosure contextRef="duration">Management expects growth</custom:NarrativeDisclosure>
+      </xbrli:xbrl>`,
+      xbrlDescriptor,
+      { retrievedAt: "2026-08-15T00:00:00.000Z", acquisitionRunId: "plain-text-fact-test" },
+    );
+
+    expect(artifact.facts.find((fact) => fact.concept.localName === "NarrativeDisclosure"))
+      .toMatchObject({ inlineType: "nonNumeric", statementRole: "notes", normalizedValue: "Management expects growth" });
+    expect(artifact.issues.unknownUnitIds).toEqual([]);
+  });
+
   it("rejects facts whose context reference cannot be resolved", () => {
     expect(() => parseMopsFinancialStatementArtifact(
       `<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"

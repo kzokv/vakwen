@@ -295,7 +295,7 @@ export function applyResearchFinancialStatementInlineFormat(
   return rawValue;
 }
 
-function financialStatementPublishedAtTimestamp(value: string): string {
+export function financialStatementPublishedAtTimestamp(value: string): string {
   if (isIsoDate(value)) {
     return new Date(`${value}T00:00:00+08:00`).toISOString();
   }

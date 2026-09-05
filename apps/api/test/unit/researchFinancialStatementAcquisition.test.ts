@@ -205,6 +205,23 @@ describe("research financial statement acquisition", () => {
     expect(appendSpy).not.toHaveBeenCalled();
   });
 
+  it("descriptor validation: rejects offsetless and impossible publication timestamps", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    for (const publishedAt of ["2026-01-01T00:00:00", "2026-02-30"]) {
+      const persistence = new MemoryPersistence();
+      const descriptor = acquisitionDescriptor(0);
+      descriptor.filing.publishedAt = publishedAt;
+
+      await expect(runOfficialFinancialStatementAcquisition(persistence, {
+        descriptors: [descriptor],
+        fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
+        retrievedAt: "2026-08-15T00:00:00.000Z",
+        processedAt: "2026-08-15T00:00:00.000Z",
+        acquisitionRunId: `invalid-publication-${publishedAt}`,
+      })).rejects.toThrow(/invalid published date or timestamp/i);
+    }
+  });
+
   it("period validation: accepts year-to-date duration contexts for the requested quarter", async () => {
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
     const persistence = new MemoryPersistence();

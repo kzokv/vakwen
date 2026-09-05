@@ -56,6 +56,7 @@ import {
 } from "./providers/twsePrice.js";
 import type { ResearchMonthlyRevenueRecord } from "./monthlyRevenue.js";
 import {
+  financialStatementPublishedAtTimestamp,
   normalizeResearchFinancialStatementFact,
   RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION,
   researchFinancialStatementProcessingId,
@@ -194,16 +195,6 @@ function timestampAtEndOfDay(date: string): string {
 
 function timestampAtStartOfDay(date: string): string {
   return `${date}T00:00:00.000Z`;
-}
-
-function financialStatementPublishedAtTimestamp(value: string): string {
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return new Date(`${value}T00:00:00+08:00`).toISOString();
-  }
-  if (value.includes("T") && !Number.isNaN(Date.parse(value))) {
-    return new Date(value).toISOString();
-  }
-  throw new Error(`Invalid financial statement publication date or timestamp: ${value}`);
 }
 
 function artifactAmbiguityFlags(
