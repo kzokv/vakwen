@@ -480,7 +480,7 @@ describe("research financial statement acquisition", () => {
     expect(transformedRevenue?.normalized).toEqual({ state: "present", value: "32000" });
     expect(transformedRevenue?.taxonomy).toEqual({
       namespaceUri: "http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full",
-      version: "2026-03",
+      version: "2026-03-01",
     });
     const earningsPerShare = q2Latest?.statements.flatMap((section) => section.facts)
       .find((fact) => fact.concept.qname === "custom:EarningsPerShare");
