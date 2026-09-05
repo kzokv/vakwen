@@ -201,8 +201,9 @@ function isIsoDate(value: string): boolean {
 }
 
 function isTimestamp(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return false;
   const date = new Date(value);
-  return !Number.isNaN(date.getTime()) && value.includes("T");
+  return !Number.isNaN(date.getTime());
 }
 
 function isNormalizedDecimal(value: string): boolean {
@@ -666,7 +667,16 @@ export function resolveLatestResearchFinancialStatementRecords(
   for (const record of [...records].sort(researchFinancialStatementRecordSortOrder)) {
     const periodKey = `${record.listingId}:${researchFinancialStatementPeriodKey(record)}:${record.filingBasis}`;
     const current = latestByPeriod.get(periodKey);
-    if (current && compareResearchFinancialStatementSourcePrecedence(current, record) === 0) {
+    const successiveProcessingRevision = current
+      && current.publicationContext.filingId === record.publicationContext.filingId
+      && current.publicationContext.revisionId === record.publicationContext.revisionId
+      && current.provenance.contentHash === record.provenance.contentHash
+      && current.publicationContext.processingSequence !== record.publicationContext.processingSequence;
+    if (
+      current
+      && compareResearchFinancialStatementSourcePrecedence(current, record) === 0
+      && !successiveProcessingRevision
+    ) {
       const flags = ambiguityByPeriod.get(periodKey) ?? new Set(current.ambiguityFlags);
       flags.add("duplicate_context");
       ambiguityByPeriod.set(periodKey, flags);

@@ -1255,9 +1255,14 @@ function deriveComparableMetricValue(
   metricId: ResearchFinancialStatementMetricId,
   record: ResearchFinancialStatementRecord,
 ): FinancialMetricValue | { reason: FinancialMetricFailureReason } {
-  if (record.filingBasis === "unknown" || record.ambiguityFlags.includes("filing_basis_ambiguous")) {
+  if (
+    record.filingBasis === "unknown"
+    || record.ambiguityFlags.includes("filing_basis_ambiguous")
+    || record.ambiguityFlags.includes("duplicate_context")
+  ) {
     return { reason: "ambiguous_inputs" };
   }
+  if (record.ambiguityFlags.includes("taxonomy_change")) return { reason: "incomparable_inputs" };
   const matches = facts.filter((fact) => {
     if (fact.metric.state !== "mapped" || fact.metric.metricId !== metricId) return false;
     const periodMatches = fact.context.period.kind === "instant"

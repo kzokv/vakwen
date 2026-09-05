@@ -542,4 +542,48 @@ describe("research financial statements", () => {
     expect(latest?.publicationContext.processingId).toBe("proc-2");
     expect(latest?.ambiguityFlags).toContain("duplicate_context");
   });
+
+  it("successive parser processing revisions do not create source-context ambiguity", () => {
+    const processedFirst = makeRecord();
+    const reprocessed = makeRecord({
+      publicationContext: {
+        ...processedFirst.publicationContext,
+        processingId: "proc-parser-v2",
+        processingSequence: processedFirst.publicationContext.processingSequence + 1,
+      },
+      provenance: {
+        ...processedFirst.provenance,
+        id: "prv_fin_stmt_2330_q2_parser_v2",
+        retrievedAt: "2026-08-18T00:00:00.000Z",
+        processedAt: "2026-08-18T00:05:00.000Z",
+        parserVersion: "research-financial-statements-parser/1.0.1",
+      },
+    });
+
+    const [latest] = resolveLatestResearchFinancialStatementRecords([processedFirst, reprocessed]);
+
+    expect(latest?.publicationContext.processingId).toBe("proc-parser-v2");
+    expect(latest?.ambiguityFlags).not.toContain("duplicate_context");
+  });
+
+  it("canonical timestamps require an explicit UTC designator or numeric offset", () => {
+    const offsetless = "2026-08-14T11:00:00";
+    const base = makeRecord();
+    expect(() => validateResearchFinancialStatementRecord({
+      ...base,
+      publicationContext: { ...base.publicationContext, publishedAt: offsetless },
+    })).toThrow(/ISO datetime/);
+    expect(() => validateResearchFinancialStatementRecord({
+      ...base,
+      publicationContext: { ...base.publicationContext, revisionPublishedAt: offsetless },
+    })).toThrow(/ISO datetime/);
+    expect(() => validateResearchFinancialStatementRecord({
+      ...base,
+      provenance: { ...base.provenance, retrievedAt: offsetless },
+    })).toThrow(/ISO datetime/);
+    expect(() => validateResearchFinancialStatementRecord({
+      ...base,
+      provenance: { ...base.provenance, processedAt: offsetless },
+    })).toThrow(/ISO datetime/);
+  });
 });
