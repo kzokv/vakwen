@@ -6,6 +6,7 @@ import {
   normalizeResearchFinancialStatementFact,
   researchFinancialStatementProcessingId,
   researchFinancialStatementProcessingSequence,
+  researchFinancialStatementTaxonomyVersion,
   resolveLatestResearchFinancialStatementRecords,
   type ResearchFinancialStatementRecord,
   type ResearchFinancialStatementFact,
@@ -437,6 +438,43 @@ describe("research financial statements", () => {
     });
 
     expect(first.id).not.toBe(second.id);
+  });
+
+  it("fact identity canonicalizes prefixes bound to the same taxonomy namespace", () => {
+    const baseInput = {
+      listingId: "lst_2330",
+      issuerId: "iss_2330",
+      filingId: "mops-2026q2",
+      revisionId: "mops-2026q2-r0",
+      statementKind: "income" as const,
+      concept: { qname: "ifrs:Revenue", label: "Revenue" },
+      taxonomy: { namespaceUri: "https://example.test/taxonomy/2026/ifrs", version: "2026" },
+      metric: { state: "mapped" as const, metricId: "revenue" as const },
+      contextId: "ctx-duration",
+      period: {
+        kind: "duration" as const,
+        startAt: "2026-04-01T00:00:00.000Z",
+        endAt: "2026-06-30T23:59:59.999Z",
+      },
+      valueKind: "cumulative" as const,
+      rawValue: "1",
+      unit: { state: "known" as const, unitId: "TWD" },
+    };
+
+    const first = normalizeResearchFinancialStatementFact(baseInput);
+    const second = normalizeResearchFinancialStatementFact({
+      ...baseInput,
+      concept: { ...baseInput.concept, qname: "ifrs-full:Revenue" },
+    });
+
+    expect(first.id).toBe(second.id);
+  });
+
+  it("taxonomy versions preserve complete release dates", () => {
+    expect(researchFinancialStatementTaxonomyVersion("https://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full"))
+      .toBe("2026-03-01");
+    expect(researchFinancialStatementTaxonomyVersion("https://xbrl.ifrs.org/taxonomy/2026-03-15/ifrs-full"))
+      .toBe("2026-03-15");
   });
 
   it("fact identity uses structural XBRL identity and rejects conflicting reported values", () => {

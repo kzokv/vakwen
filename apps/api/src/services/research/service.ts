@@ -1234,7 +1234,9 @@ function qualityStateForRecord(
 }
 
 function parseFactNumber(fact: ResearchFinancialStatementFact): number | null {
-  return fact.normalized.state === "present" ? Number(fact.normalized.value) : null;
+  if (fact.normalized.state !== "present") return null;
+  const value = Number(fact.normalized.value);
+  return Number.isFinite(value) ? value : null;
 }
 
 function factsHaveComparableTaxonomy(facts: readonly ResearchFinancialStatementFact[]): boolean {
@@ -1291,7 +1293,7 @@ function deriveComparableMetricValue(
   const present = contextPreferred.filter((fact) => fact.normalized.state === "present");
   if (present.length !== 1) return { reason: present.length === 0 ? "missing_inputs" : "ambiguous_inputs" };
   const value = parseFactNumber(present[0]);
-  if (value === null) return { reason: "missing_inputs" };
+  if (value === null) return { reason: "incomparable_inputs" };
   return { facts: [present[0]], value, unit: present[0].unit.state === "known" ? present[0].unit.unitId : "unknown" };
 }
 

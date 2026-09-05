@@ -405,7 +405,8 @@ export function resolveMopsArtifactFilingBasis(
 
 export function researchFinancialStatementTaxonomyVersion(namespaceUri: string | null): string {
   if (!namespaceUri) return "unknown";
-  return /\b(20\d{2}(?:[-/](?:Q?[1-4]|0[1-9]|1[0-2]))?)\b/.exec(namespaceUri)?.[1] ?? namespaceUri;
+  return /\b(20\d{2}(?:[-/](?:Q?[1-4]|0[1-9]|1[0-2])(?:[-/](?:0[1-9]|[12]\d|3[01]))?)?)\b/.exec(namespaceUri)?.[1]
+    ?? namespaceUri;
 }
 
 export function researchFinancialStatementUnitId(
@@ -727,6 +728,9 @@ export function normalizeResearchFinancialStatementFact(input: {
 }): ResearchFinancialStatementFact {
   const normalized = normalizeRawNumber(input.normalizedValue ?? input.rawValue);
   const ambiguityFlags = new Set(input.ambiguityFlags ?? []);
+  const conceptIdentity = input.taxonomy?.namespaceUri
+    ? input.concept.qname.split(":").at(-1) ?? input.concept.qname
+    : input.concept.qname;
   if (input.metric.state === "unmapped") ambiguityFlags.add("unmapped_concept");
   if (input.unit.state === "unknown") ambiguityFlags.add("unknown_unit");
   return {
@@ -736,7 +740,7 @@ export function normalizeResearchFinancialStatementFact(input: {
       input.filingId,
       input.revisionId,
       input.statementKind,
-      input.concept.qname,
+      conceptIdentity,
       input.taxonomy?.namespaceUri ?? "",
       input.contextId,
       input.unit.state === "known"

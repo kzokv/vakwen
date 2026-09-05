@@ -783,6 +783,35 @@ describe("research financial-statement service", () => {
     expect(JSON.stringify(result)).not.toContain("NaN");
   });
 
+  it("non-finite numeric inputs: withholds derived outcomes", async () => {
+    const persistence = new MemoryPersistence();
+    const identity = makeIdentity();
+    await persistence.appendResearchIdentityRecords([identity]);
+    await persistence.appendResearchFinancialStatementRecords([
+      makeAnnualRecord(identity, 2024, { revenue: "100" }),
+      makeAnnualRecord(identity, 2025, { revenue: "9".repeat(310) }),
+    ]);
+
+    const result = await getFinancialStatements(persistence, {
+      subject: { kind: "listing_id", listingId: identity.listing.id },
+      context: {
+        knowledgeAt: "2026-09-01T00:00:00.000Z",
+        effectiveAt: "2026-09-01T00:00:00.000Z",
+        assessmentMode: "effective",
+      },
+      periodicity: "annual",
+      range: { kind: "latest_periods", count: 2 },
+      derivedMetrics: [{ metricId: "period_over_period_change", parameters: { baseMetricId: "revenue" } }],
+    });
+
+    expect(result.derivedOutcomes[0]).toEqual(expect.objectContaining({
+      status: "withheld",
+      metricId: "period_over_period_change",
+      reasonCode: "incomparable_inputs",
+    }));
+    expect(JSON.stringify(result)).not.toMatch(/Infinity|NaN/);
+  });
+
   it("ascending pagination: freshness remains anchored to the latest selected filing", async () => {
     const persistence = new MemoryPersistence();
     const identity = makeIdentity();
