@@ -23,7 +23,7 @@ export type ResearchFinancialStatementAmbiguityFlag =
   | "filing_basis_ambiguous"
   | "taxonomy_change";
 
-export const RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION = "research-financial-statements-parser/1.0.3";
+export const RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION = "research-financial-statements-parser/1.0.4";
 
 export function researchFinancialStatementProcessingId(
   contentHash: string,
@@ -419,6 +419,7 @@ export function researchFinancialStatementUnitId(
 
 export function materializeResearchFinancialStatementRecord(
   input: ResearchFinancialStatementAppendInput,
+  options: { processedAt?: string } = {},
 ): ResearchFinancialStatementRecord {
   if ("publicationContext" in input) {
     validateResearchFinancialStatementRecord(input);
@@ -541,7 +542,7 @@ export function materializeResearchFinancialStatementRecord(
       acquisitionPath: "scheduled_official_snapshot",
       acquisitionRunId: input.artifact.acquisitionRunId,
       retrievedAt: input.artifact.retrievedAt,
-      processedAt: input.artifact.retrievedAt,
+      processedAt: options.processedAt ?? new Date().toISOString(),
       parserVersion: RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION,
       taxonomyVersion: input.artifact.taxonomyVersions[0] ?? input.artifact.primaryNamespace ?? "unknown",
       usagePolicyVersion: "taiwan-open-data/1.0.0",
@@ -797,6 +798,9 @@ export function validateResearchFinancialStatementRecord(
   }
   if (!isTimestamp(record.provenance.processedAt)) {
     throw invalidResearchFinancialStatementRecord("processedAt must be an ISO datetime");
+  }
+  if (Date.parse(record.provenance.processedAt) < Date.parse(record.provenance.retrievedAt)) {
+    throw invalidResearchFinancialStatementRecord("processedAt must be at or after retrievedAt");
   }
   if (record.publicationContext.filingSequence < 0 || record.publicationContext.revisionSequence < 0) {
     throw invalidResearchFinancialStatementRecord("publication sequences must be non-negative");

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import {
   applyResearchFinancialStatementTransform,
@@ -273,6 +273,24 @@ describe("research financial statements", () => {
     const record = materializeResearchFinancialStatementRecord(makeRawArtifact([repeated, { ...repeated }]));
 
     expect(record.statements[0]?.facts).toHaveLength(1);
+  });
+
+  it("raw artifact materialization: records the actual processing time", () => {
+    vi.useFakeTimers();
+    try {
+      const artifact = makeRawArtifact([makeRawRevenueFact()]);
+      artifact.artifact.retrievedAt = "2026-08-14T11:00:00.000Z";
+      vi.setSystemTime(new Date("2026-08-18T09:30:00.000Z"));
+
+      const record = materializeResearchFinancialStatementRecord(artifact);
+
+      expect(record.provenance).toMatchObject({
+        retrievedAt: "2026-08-14T11:00:00.000Z",
+        processedAt: "2026-08-18T09:30:00.000Z",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("raw amendment materialization: preserves original and revision publication timestamps", () => {
@@ -701,5 +719,9 @@ describe("research financial statements", () => {
       ...base,
       provenance: { ...base.provenance, processedAt: offsetless },
     })).toThrow(/ISO datetime/);
+    expect(() => validateResearchFinancialStatementRecord({
+      ...base,
+      provenance: { ...base.provenance, processedAt: "2026-08-14T10:59:59.999Z" },
+    })).toThrow(/at or after retrievedAt/);
   });
 });

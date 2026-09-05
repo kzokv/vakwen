@@ -627,8 +627,8 @@ export function parseMopsFinancialStatementArtifact(
     .map(([signature, contextIds]) => ({ signature, contextIds }));
   const unknownUnitIds = [...new Set(facts
     .filter((fact) => fact.inlineType !== "nonNumeric")
-    .map((fact) => fact.unitRef)
-    .filter((unitRef): unitRef is string => unitRef !== null && !unitsById.has(unitRef)))].sort();
+    .map((fact) => fact.unitRef ?? "<missing>")
+    .filter((unitRef) => unitRef === "<missing>" || !unitsById.has(unitRef)))].sort();
   const unmappedConcepts = [...new Set(facts
     .filter((fact) => fact.statementRole === "unknown")
     .map((fact) => fact.concept.qname))].sort();

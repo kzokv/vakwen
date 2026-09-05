@@ -128,6 +128,7 @@ interface IdentityAcquisitionOptions extends AcquisitionOptions {
 interface FinancialStatementAcquisitionOptions extends AcquisitionOptions {
   descriptors?: readonly MopsFinancialStatementDescriptor[];
   resolveDescriptors?: () => Promise<readonly MopsFinancialStatementDescriptor[]>;
+  processedAt?: string;
 }
 
 const FINANCIAL_STATEMENT_ACQUISITION_CONCURRENCY = 4;
@@ -240,6 +241,7 @@ function missingCurrentPeriodStatementRoles(
 async function canonicalizeFinancialStatementArtifact(
   persistence: Persistence,
   artifact: MopsFinancialStatementArtifact,
+  processedAt: string,
 ): Promise<ResearchFinancialStatementRecord> {
   const initialPeriodToken = artifact.filing.fiscalPeriod === "annual"
     ? String(artifact.filing.fiscalYear).padStart(4, "0")
@@ -433,7 +435,7 @@ async function canonicalizeFinancialStatementArtifact(
       acquisitionPath: "scheduled_official_snapshot",
       acquisitionRunId: artifact.artifact.acquisitionRunId,
       retrievedAt: artifact.artifact.retrievedAt,
-      processedAt: artifact.artifact.retrievedAt,
+      processedAt,
       parserVersion: RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION,
       taxonomyVersion: artifact.artifact.taxonomyVersions[0] ?? artifact.artifact.primaryNamespace ?? "unknown",
       usagePolicyVersion: "taiwan-open-data/1.0.0",
@@ -1380,7 +1382,11 @@ export async function runOfficialFinancialStatementAcquisition(
             `Official MOPS financial statement artifact ${descriptor.sourceUrl} entity identifiers do not match the requested issuer`,
           );
         }
-        const record = await canonicalizeFinancialStatementArtifact(persistence, parsed);
+        const record = await canonicalizeFinancialStatementArtifact(
+          persistence,
+          parsed,
+          options.processedAt ?? new Date().toISOString(),
+        );
         await persistence.appendResearchFinancialStatementRecords([record]);
         successfulRecordCount += 1;
       } catch (error) {

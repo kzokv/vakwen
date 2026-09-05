@@ -77,6 +77,10 @@ describe("research financial statement acquisition", () => {
         "2026-08-15T00:05:00.000Z",
       );
       expect(appendSpy.mock.calls[0]?.[0][0]).toHaveProperty(
+        "provenance.processedAt",
+        "2026-08-15T00:05:00.000Z",
+      );
+      expect(appendSpy.mock.calls[0]?.[0][0]).toHaveProperty(
         "publicationContext.publishedAt",
         "2026-08-15T00:05:00.000Z",
       );
@@ -106,6 +110,7 @@ describe("research financial statement acquisition", () => {
       descriptors,
       fetchImpl,
       retrievedAt: "2026-08-15T00:00:00.000Z",
+      processedAt: "2026-08-15T00:00:00.000Z",
       acquisitionRunId: "bounded-partial-run",
     });
 
@@ -132,6 +137,7 @@ describe("research financial statement acquisition", () => {
       descriptors: [acquisitionDescriptor(0), acquisitionDescriptor(1), acquisitionDescriptor(2)],
       fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
       retrievedAt: "2026-08-15T00:00:00.000Z",
+      processedAt: "2026-08-15T00:00:00.000Z",
       acquisitionRunId: "persistence-isolation-run",
     });
 
@@ -160,6 +166,7 @@ describe("research financial statement acquisition", () => {
       descriptors: [acquisitionDescriptor(0)],
       fetchImpl: async () => new Response("<html><body>maintenance</body></html>", { status: 200 }),
       retrievedAt: "2026-08-15T00:00:00.000Z",
+      processedAt: "2026-08-15T00:00:00.000Z",
       acquisitionRunId: "empty-artifact-run",
     })).rejects.toThrow(/statement facts|required statement roles/i);
     expect(appendSpy).not.toHaveBeenCalled();
@@ -174,6 +181,7 @@ describe("research financial statement acquisition", () => {
       descriptors: [acquisitionDescriptor(0)],
       fetchImpl: async () => new Response(validAcquisitionXbrl.replaceAll("22099131", "99999999"), { status: 200 }),
       retrievedAt: "2026-08-15T00:00:00.000Z",
+      processedAt: "2026-08-15T00:00:00.000Z",
       acquisitionRunId: "wrong-issuer-artifact-run",
     })).rejects.toThrow(/entity identifiers do not match/i);
     expect(appendSpy).not.toHaveBeenCalled();
@@ -191,6 +199,7 @@ describe("research financial statement acquisition", () => {
       descriptors: [acquisitionDescriptor(0)],
       fetchImpl: async () => new Response(wrongPeriodXbrl, { status: 200 }),
       retrievedAt: "2026-08-15T00:00:00.000Z",
+      processedAt: "2026-08-15T00:00:00.000Z",
       acquisitionRunId: "wrong-period-artifact-run",
     })).rejects.toThrow(/does not match requested period 2026:q2/i);
     expect(appendSpy).not.toHaveBeenCalled();
@@ -207,6 +216,7 @@ describe("research financial statement acquisition", () => {
         { status: 200 },
       ),
       retrievedAt: "2026-08-15T00:00:00.000Z",
+      processedAt: "2026-08-15T00:00:00.000Z",
       acquisitionRunId: "current-cumulative-period-run",
     })).resolves.toMatchObject({ recordCount: 1, failureCount: 0 });
   });
@@ -222,6 +232,7 @@ describe("research financial statement acquisition", () => {
       }],
       fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
       retrievedAt: observedAt,
+      processedAt: observedAt,
       acquisitionRunId: "exact-first-observation",
     });
 
@@ -248,6 +259,7 @@ describe("research financial statement acquisition", () => {
       }],
       fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
       retrievedAt: offsetInstant,
+      processedAt: offsetInstant,
       acquisitionRunId: "offset-timestamp-visibility",
     });
 
@@ -270,16 +282,19 @@ describe("research financial statement acquisition", () => {
       descriptors: [descriptor],
       fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
       retrievedAt: "2026-08-15T00:00:00.000Z",
+      processedAt: "2026-08-15T00:00:00.000Z",
     });
     await runOfficialFinancialStatementAcquisition(persistence, {
       descriptors: [{ ...descriptor, filing: { ...descriptor.filing, publishedAt: "2026-08-20" } }],
       fetchImpl: async () => new Response(validAcquisitionXbrl.replace(">60<", ">61<"), { status: 200 }),
       retrievedAt: "2026-08-20T00:00:00.000Z",
+      processedAt: "2026-08-20T00:00:00.000Z",
     });
     await runOfficialFinancialStatementAcquisition(persistence, {
       descriptors: [{ ...descriptor, filing: { ...descriptor.filing, publishedAt: "2026-08-25" } }],
       fetchImpl: async () => new Response(validAcquisitionXbrl, { status: 200 }),
       retrievedAt: "2026-08-25T00:00:00.000Z",
+      processedAt: "2026-08-25T00:00:00.000Z",
     });
 
     const records = await persistence.listResearchFinancialStatementRecords({
@@ -377,6 +392,7 @@ describe("research financial statement acquisition", () => {
       ],
       fetchImpl,
       retrievedAt: "2026-08-15T00:00:00.000Z",
+      processedAt: "2026-08-15T00:00:00.000Z",
       acquisitionRunId: "financial-statements-acquisition-q2-r1",
     });
 
@@ -425,6 +441,7 @@ describe("research financial statement acquisition", () => {
       ],
       fetchImpl,
       retrievedAt: "2026-11-15T00:00:00.000Z",
+      processedAt: "2026-11-15T00:00:00.000Z",
       acquisitionRunId: "financial-statements-acquisition-q2-r2-q3-r1",
     });
 

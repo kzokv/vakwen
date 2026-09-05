@@ -257,6 +257,23 @@ describe("MOPS XBRL provider parser", () => {
     expect(artifact.issues.taxonomyAmbiguity).toBe(false);
   });
 
+  it("numeric facts without unitRef raise artifact-wide unknown-unit state", () => {
+    const retrievedAt = "2026-08-15T00:00:00.000Z";
+    const artifact = parseMopsFinancialStatementArtifact(
+      `<?xml version="1.0" encoding="utf-8"?>
+      <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:ifrs-full="http://xbrl.ifrs.org/taxonomy/2026-03-01/ifrs-full">
+        <xbrli:context id="duration"><xbrli:entity><xbrli:identifier scheme="TWSE">22099131</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
+        <ifrs-full:Revenue contextRef="duration">60</ifrs-full:Revenue>
+      </xbrli:xbrl>`,
+      xbrlDescriptor,
+      { retrievedAt, acquisitionRunId: "missing-unit-test" },
+    );
+
+    expect(artifact.issues.unknownUnitIds).toEqual(["<missing>"]);
+    expect(materializeResearchFinancialStatementRecord(artifact, { processedAt: retrievedAt }).ambiguityFlags)
+      .toContain("unknown_unit");
+  });
+
   it("rejects facts whose context reference cannot be resolved", () => {
     expect(() => parseMopsFinancialStatementArtifact(
       `<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
