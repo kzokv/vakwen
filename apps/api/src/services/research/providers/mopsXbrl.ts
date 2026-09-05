@@ -21,6 +21,7 @@ export interface MopsFinancialStatementDescriptor {
   listingId: string;
   issuerId: string;
   ticker: string;
+  expectedEntityIdentifiers: string[];
   venue: MopsStatementVenue;
   sector: MopsStatementSector;
   sourceUrl: string;

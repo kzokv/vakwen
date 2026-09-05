@@ -22,6 +22,23 @@ export type ResearchFinancialStatementAmbiguityFlag =
   | "unknown_unit"
   | "filing_basis_ambiguous"
   | "taxonomy_change";
+
+export const RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION = "research-financial-statements-parser/1.0.1";
+
+export function researchFinancialStatementProcessingId(
+  contentHash: string,
+  parserVersion = RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION,
+): string {
+  return `proc_${createHash("sha256").update(`${contentHash}\u001f${parserVersion}`).digest("hex").slice(0, 32)}`;
+}
+
+export function researchFinancialStatementProcessingSequence(
+  parserVersion = RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION,
+): number {
+  const match = /\/(\d+)\.(\d+)\.(\d+)$/.exec(parserVersion);
+  if (!match) throw new Error(`Invalid financial statement parser version: ${parserVersion}`);
+  return (Number(match[1]) * 1_000_000) + (Number(match[2]) * 1_000) + Number(match[3]);
+}
 export type ResearchFinancialStatementMetricId =
   | "revenue"
   | "gross_profit"
@@ -145,7 +162,7 @@ export interface ResearchFinancialStatementRecord {
     acquisitionRunId: string;
     retrievedAt: string;
     processedAt: string;
-    parserVersion: "research-financial-statements-parser/1.0.0";
+    parserVersion: string;
     taxonomyVersion: string;
     usagePolicyVersion: "taiwan-open-data/1.0.0";
     retentionStatus: "retained";
@@ -485,8 +502,8 @@ export function materializeResearchFinancialStatementRecord(
         : null,
       filingSequence: 0,
       revisionSequence: input.filing.revision,
-      processingId: input.artifact.contentHash,
-      processingSequence: 0,
+      processingId: researchFinancialStatementProcessingId(input.artifact.contentHash),
+      processingSequence: researchFinancialStatementProcessingSequence(),
       restatement: input.filing.amendmentType === "restatement",
       amendment: input.filing.amendmentType === "amendment",
     },
@@ -506,7 +523,13 @@ export function materializeResearchFinancialStatementRecord(
       ...(input.issues.unmappedConcepts.length > 0 ? ["unmapped_concept" as const] : []),
     ],
     provenance: {
-      id: opaqueId("fin_stmt_prov", input.listingId, input.filing.filingId, input.artifact.contentHash),
+      id: opaqueId(
+        "fin_stmt_prov",
+        input.listingId,
+        input.filing.filingId,
+        input.artifact.contentHash,
+        RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION,
+      ),
       publisher: "MOPS",
       accessProvider: "MOPS_XBRL",
       authorityRole: "authoritative",
@@ -518,7 +541,7 @@ export function materializeResearchFinancialStatementRecord(
       acquisitionRunId: input.artifact.acquisitionRunId,
       retrievedAt: input.artifact.retrievedAt,
       processedAt: input.artifact.retrievedAt,
-      parserVersion: "research-financial-statements-parser/1.0.0",
+      parserVersion: RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION,
       taxonomyVersion: input.artifact.taxonomyVersions[0] ?? input.artifact.primaryNamespace ?? "unknown",
       usagePolicyVersion: "taiwan-open-data/1.0.0",
       retentionStatus: "retained",

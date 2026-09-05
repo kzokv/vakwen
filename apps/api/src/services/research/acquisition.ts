@@ -57,6 +57,9 @@ import {
 import type { ResearchMonthlyRevenueRecord } from "./monthlyRevenue.js";
 import {
   normalizeResearchFinancialStatementFact,
+  RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION,
+  researchFinancialStatementProcessingId,
+  researchFinancialStatementProcessingSequence,
   researchFinancialStatementMetricForConcept,
   researchFinancialStatementTaxonomyVersion,
   researchFinancialStatementUnitId,
@@ -381,8 +384,8 @@ async function canonicalizeFinancialStatementArtifact(
       revisionPublishedAt,
       filingSequence: 0,
       revisionSequence: artifact.filing.revision,
-      processingId: artifact.artifact.contentHash,
-      processingSequence: 0,
+      processingId: researchFinancialStatementProcessingId(artifact.artifact.contentHash),
+      processingSequence: researchFinancialStatementProcessingSequence(),
       restatement: artifact.filing.amendmentType === "restatement",
       amendment: artifact.filing.amendmentType === "amendment",
     },
@@ -390,7 +393,12 @@ async function canonicalizeFinancialStatementArtifact(
     relations,
     ambiguityFlags: artifactAmbiguityFlags(artifact),
     provenance: {
-      id: `prv_${createHash("sha256").update([artifact.listingId, artifact.filing.filingId, artifact.artifact.contentHash].join("\u001f")).digest("hex").slice(0, 32)}`,
+      id: `prv_${createHash("sha256").update([
+        artifact.listingId,
+        artifact.filing.filingId,
+        artifact.artifact.contentHash,
+        RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION,
+      ].join("\u001f")).digest("hex").slice(0, 32)}`,
       publisher: "MOPS",
       accessProvider: "MOPS_XBRL",
       authorityRole: "authoritative",
@@ -402,7 +410,7 @@ async function canonicalizeFinancialStatementArtifact(
       acquisitionRunId: artifact.artifact.acquisitionRunId,
       retrievedAt: artifact.artifact.retrievedAt,
       processedAt: artifact.artifact.retrievedAt,
-      parserVersion: "research-financial-statements-parser/1.0.0",
+      parserVersion: RESEARCH_FINANCIAL_STATEMENT_PARSER_VERSION,
       taxonomyVersion: artifact.artifact.taxonomyVersions[0] ?? artifact.artifact.primaryNamespace ?? "unknown",
       usagePolicyVersion: "taiwan-open-data/1.0.0",
       retentionStatus: "retained",
@@ -1327,6 +1335,19 @@ export async function runOfficialFinancialStatementAcquisition(
         if (parsed.issues.missingStatementRoles.length > 0) {
           throw new Error(
             `Official MOPS financial statement artifact ${descriptor.sourceUrl} is missing required statement roles: ${parsed.issues.missingStatementRoles.join(",")}`,
+          );
+        }
+        const parsedEntityIdentifiers = new Set(
+          parsed.contexts.flatMap((context) => context.entityIdentifiers).filter(Boolean),
+        );
+        const expectedEntityIdentifiers = new Set(descriptor.expectedEntityIdentifiers.filter(Boolean));
+        if (
+          parsedEntityIdentifiers.size === 0
+          || expectedEntityIdentifiers.size === 0
+          || [...parsedEntityIdentifiers].some((identifier) => !expectedEntityIdentifiers.has(identifier))
+        ) {
+          throw new Error(
+            `Official MOPS financial statement artifact ${descriptor.sourceUrl} entity identifiers do not match the requested issuer`,
           );
         }
         const record = await canonicalizeFinancialStatementArtifact(persistence, parsed);

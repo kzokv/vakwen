@@ -118,42 +118,52 @@ export function buildCurrentMopsFinancialStatementDescriptors(
       && identity.security.type === "common_equity"
       && identity.eligibility.profile === "operating_company"
     ))
-    .flatMap((identity) => targets.flatMap((target) => ([
-      { reportId: "C", filingBasis: "consolidated" as const },
-      { reportId: "A", filingBasis: "individual" as const },
-    ]).map(({ reportId, filingBasis }) => {
-      const sourceUrl = new URL(OFFICIAL_FINANCIAL_STATEMENT_BASE_URL);
-      sourceUrl.searchParams.set("functionName", "t164sb01");
-      sourceUrl.searchParams.set("step", "9");
-      sourceUrl.searchParams.set("co_id", identity.listing.ticker);
-      sourceUrl.searchParams.set("year", String(target.fiscalYear - 1911));
-      sourceUrl.searchParams.set("season", String(target.season));
-      sourceUrl.searchParams.set("report_id", reportId);
-      return {
-        listingId: identity.listing.id,
-        issuerId: identity.issuer.id,
-        ticker: identity.listing.ticker,
-        venue: identity.listing.venue,
-        sector: "operating_company" as const,
-        sourceUrl: sourceUrl.toString(),
-        filing: {
-          filingId: `mops:${identity.listing.ticker}:${target.fiscalYear}:${target.fiscalPeriod}:${filingBasis}`,
-          fiscalYear: target.fiscalYear,
-          fiscalPeriod: target.fiscalPeriod,
-          periodStart: target.periodStart,
-          periodEnd: target.periodEnd,
-          filingBasis,
-          // The direct artifact endpoint does not expose a filing timestamp.
-          // Preserve the exact first-observation instant rather than making the
-          // artifact visible from the start of its Taiwan calendar date.
-          publishedAt: observedAt,
-          // The canonicalizer compares content hashes with stored revisions and
-          // promotes changed artifacts to the next amendment revision.
-          revision: 0,
-          amendmentType: "unknown" as const,
-        },
-      };
-    })))
+    .flatMap((identity) => {
+      const unifiedBusinessNumber = identity.observations.find((observation) => (
+        observation.subject.kind === "issuer"
+        && observation.subject.id === identity.issuer.id
+        && observation.field === "unified_business_number"
+        && observation.normalized.state === "present"
+      ))?.normalized;
+      if (!unifiedBusinessNumber || unifiedBusinessNumber.state !== "present") return [];
+      return targets.flatMap((target) => ([
+        { reportId: "C", filingBasis: "consolidated" as const },
+        { reportId: "A", filingBasis: "individual" as const },
+      ]).map(({ reportId, filingBasis }) => {
+        const sourceUrl = new URL(OFFICIAL_FINANCIAL_STATEMENT_BASE_URL);
+        sourceUrl.searchParams.set("functionName", "t164sb01");
+        sourceUrl.searchParams.set("step", "9");
+        sourceUrl.searchParams.set("co_id", identity.listing.ticker);
+        sourceUrl.searchParams.set("year", String(target.fiscalYear - 1911));
+        sourceUrl.searchParams.set("season", String(target.season));
+        sourceUrl.searchParams.set("report_id", reportId);
+        return {
+          listingId: identity.listing.id,
+          issuerId: identity.issuer.id,
+          ticker: identity.listing.ticker,
+          expectedEntityIdentifiers: [unifiedBusinessNumber.value],
+          venue: identity.listing.venue,
+          sector: "operating_company" as const,
+          sourceUrl: sourceUrl.toString(),
+          filing: {
+            filingId: `mops:${identity.listing.ticker}:${target.fiscalYear}:${target.fiscalPeriod}:${filingBasis}`,
+            fiscalYear: target.fiscalYear,
+            fiscalPeriod: target.fiscalPeriod,
+            periodStart: target.periodStart,
+            periodEnd: target.periodEnd,
+            filingBasis,
+            // The direct artifact endpoint does not expose a filing timestamp.
+            // Preserve the exact first-observation instant rather than making the
+            // artifact visible from the start of its Taiwan calendar date.
+            publishedAt: observedAt,
+            // The canonicalizer compares content hashes with stored revisions and
+            // promotes changed artifacts to the next amendment revision.
+            revision: 0,
+            amendmentType: "unknown" as const,
+          },
+        };
+      }));
+    })
     .sort((left, right) => `${left.venue}:${left.ticker}:${left.filing.periodEnd}:${left.filing.fiscalPeriod}:${left.filing.filingBasis}`
       .localeCompare(`${right.venue}:${right.ticker}:${right.filing.periodEnd}:${right.filing.fiscalPeriod}:${right.filing.filingBasis}`));
 }

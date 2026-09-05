@@ -9,6 +9,7 @@ const xbrlDescriptor: MopsFinancialStatementDescriptor = {
   listingId: "lst_2330_twse",
   issuerId: "iss_22099131",
   ticker: "2330",
+  expectedEntityIdentifiers: ["22099131"],
   venue: "TWSE",
   sector: "operating_company",
   sourceUrl: "https://mops.twse.com.tw/server-java/t164sb01?co_id=2330&year=2026&season=2",

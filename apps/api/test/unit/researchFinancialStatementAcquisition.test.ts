@@ -22,6 +22,7 @@ function acquisitionDescriptor(index: number): MopsFinancialStatementDescriptor 
     listingId: `lst_${index}`,
     issuerId: `iss_${index}`,
     ticker: String(2300 + index),
+    expectedEntityIdentifiers: ["22099131"],
     venue: "TWSE",
     sector: "operating_company",
     sourceUrl: `${OFFICIAL_FINANCIAL_STATEMENT_BASE_URL}?case=${index}`,
@@ -161,6 +162,20 @@ describe("research financial statement acquisition", () => {
       retrievedAt: "2026-08-15T00:00:00.000Z",
       acquisitionRunId: "empty-artifact-run",
     })).rejects.toThrow(/statement facts|required statement roles/i);
+    expect(appendSpy).not.toHaveBeenCalled();
+  });
+
+  it("issuer validation: rejects statement facts belonging to another entity", async () => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true });
+    const persistence = new MemoryPersistence();
+    const appendSpy = vi.spyOn(persistence, "appendResearchFinancialStatementRecords");
+
+    await expect(runOfficialFinancialStatementAcquisition(persistence, {
+      descriptors: [acquisitionDescriptor(0)],
+      fetchImpl: async () => new Response(validAcquisitionXbrl.replaceAll("22099131", "99999999"), { status: 200 }),
+      retrievedAt: "2026-08-15T00:00:00.000Z",
+      acquisitionRunId: "wrong-issuer-artifact-run",
+    })).rejects.toThrow(/entity identifiers do not match/i);
     expect(appendSpy).not.toHaveBeenCalled();
   });
 
@@ -311,6 +326,7 @@ describe("research financial statement acquisition", () => {
           listingId: "lst_2330",
           issuerId: "iss_2330",
           ticker: "2330",
+          expectedEntityIdentifiers: ["22099131"],
           venue: "TWSE",
           sector: "operating_company",
           sourceUrl: q2Revision1Url,
@@ -338,6 +354,7 @@ describe("research financial statement acquisition", () => {
           listingId: "lst_2330",
           issuerId: "iss_2330",
           ticker: "2330",
+          expectedEntityIdentifiers: ["22099131"],
           venue: "TWSE",
           sector: "operating_company",
           sourceUrl: q2Revision2Url,
@@ -357,6 +374,7 @@ describe("research financial statement acquisition", () => {
           listingId: "lst_2330",
           issuerId: "iss_2330",
           ticker: "2330",
+          expectedEntityIdentifiers: ["22099131"],
           venue: "TWSE",
           sector: "operating_company",
           sourceUrl: q3Revision1Url,
@@ -501,6 +519,7 @@ describe("research financial statement acquisition", () => {
         listingId: identity.listing.id,
         issuerId: identity.issuer.id,
         ticker: "2330",
+        expectedEntityIdentifiers: ["22099131"],
         venue: "TWSE",
         sector: "operating_company",
         sourceUrl: expect.stringMatching(/functionName=t164sb01&step=9&co_id=2330&year=115&season=2&report_id=C/),

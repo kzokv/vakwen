@@ -4,6 +4,8 @@ import {
   applyResearchFinancialStatementTransform,
   materializeResearchFinancialStatementRecord,
   normalizeResearchFinancialStatementFact,
+  researchFinancialStatementProcessingId,
+  researchFinancialStatementProcessingSequence,
   resolveLatestResearchFinancialStatementRecords,
   type ResearchFinancialStatementRecord,
   validateResearchFinancialStatementRecord,
@@ -200,6 +202,13 @@ function makeRecord(overrides: Partial<ResearchFinancialStatementRecord> = {}): 
 }
 
 describe("research financial statements", () => {
+  it("processing identity changes with the canonical parser version", () => {
+    expect(researchFinancialStatementProcessingId("sha256:same", "research-financial-statements-parser/1.0.0"))
+      .not.toBe(researchFinancialStatementProcessingId("sha256:same", "research-financial-statements-parser/1.0.1"));
+    expect(researchFinancialStatementProcessingSequence("research-financial-statements-parser/1.0.1"))
+      .toBeGreaterThan(researchFinancialStatementProcessingSequence("research-financial-statements-parser/1.0.0"));
+  });
+
   it("iXBRL transforms preserve decimal precision while applying scale and sign", () => {
     expect(applyResearchFinancialStatementTransform("1,234", "3", null)).toBe("1234000");
     expect(applyResearchFinancialStatementTransform("0.001", "3", null)).toBe("1");
