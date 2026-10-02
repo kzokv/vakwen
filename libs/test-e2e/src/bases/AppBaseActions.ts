@@ -19,8 +19,10 @@ export class AppBaseActions extends BaseActions {
     // App-specific readiness is driven by explicit shell markers. Cap the "load"
     // probe so slow route resources do not consume the whole test timeout budget.
     await this.page.waitForLoadState("load", { timeout: Math.min(timeoutMs, LOAD_EVENT_PROBE_TIMEOUT_MS) }).catch(() => {});
-    await expect(this.page.getByTestId("app-shell-ready")).toBeAttached({ timeout: timeoutMs });
-    await expect(this.page.getByTestId("app-shell-client-ready")).toBeAttached({ timeout: timeoutMs });
+    // Streaming reloads can briefly retain both shell trees. Wait for a unique
+    // marker; persistent duplicates must still fail readiness.
+    await expect(this.page.getByTestId("app-shell-ready")).toHaveCount(1, { timeout: timeoutMs });
+    await expect(this.page.getByTestId("app-shell-client-ready")).toHaveCount(1, { timeout: timeoutMs });
 
     const globalError = this.page.getByTestId(SHARED_TEST_IDS.globalErrorBanner);
     if (await globalError.isVisible().catch(() => false)) {

@@ -56,6 +56,8 @@ The new regression reproduced duplicate-finalization exposure in both OAuth clie
 
 A fifth Codex finding identified persistence-only fields in consent replacement candidates. Consent and settings now share an explicit public connection DTO projection. The real consent-response regression failed before the fix for both OAuth clients and passes afterward; it checks the serialized key allowlist and preserves the identifying context needed for selection.
 
+A full browser run exposed a readiness assertion that failed immediately when reload briefly produced two shell markers. The shared E2E wait now retries until each marker has exactly one match, while persistent duplicates still fail. Five repetitions each of the theme reload and mobile settings navigation cases passed with retries disabled (10 passed, 5 viewport skips).
+
 The root agent owns clean commits, PR metadata, review requests after each push, detailed review replies/thread resolution, and CI monitoring. PR #305 targets dev, is assigned to @kzokv, and uses bug/documentation plus the authorized Linear waiver. Its live state is the delivery record rather than a frozen claim in this document.
 
 ## Separate rollout gate
