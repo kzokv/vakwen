@@ -17,6 +17,7 @@ import {
 } from "../../src/mcp/oauth.js";
 import { loadMigrationManifest } from "../../src/persistence/migrationManifest.js";
 import { PostgresPersistence } from "../../src/persistence/postgres.js";
+import { hashGeneratedBearerToken } from "../../src/services/mcpConnectorLifecycle.js";
 
 const authorizationWrites = vi.hoisted(() => ({ enabled: true }));
 vi.mock("@vakwen/config", async (importOriginal) => {
@@ -264,6 +265,80 @@ function registerIndependentOAuthRegressions() {
         expect(failed.body).not.toContain("private SQL");
         expect(failed.body).not.toContain("P0001");
       } finally { spy.mockRestore(); }
+      await read(a.access_token);
+      expect((await refresh(a.refresh_token)).statusCode).toBe(200);
+    });
+    it.each(["save", "activation"] as const)("implicit %s expiry: completes terminal effects without presenting the old credential", async (phase) => {
+      await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1, maxActiveConnectionsPerUser: 1 });
+      const a = (await authorize()).json();
+      const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      const prepared = phase === "activation" ? await prepare() : null;
+      await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      if (phase === "save") {
+        await app.persistence.saveAiConnectorConnection({ ...original, id: "implicit-expiry-successor", status: "pending" });
+      } else {
+        expect((await prepared!()).statusCode).toBe(200);
+      }
+      const expired = (await app.persistence.getAiConnectorConnection(original.id))!;
+      expect(expired.status).toBe("expired");
+      expect(expired.expiryProcessedAt).toBeTruthy();
+      expect((await app.persistence.getAiConnectorCredentialByHash(hashMcpOAuthToken(mcpOAuthTokenSecret, a.refresh_token)))?.revokedAt).toBeTruthy();
+      const audits = await app.persistence.listAuditLog({ page: 1, limit: 100 });
+      expect(audits.items.filter(item => item.action === "ai_connector_expired" && item.metadata?.connectionId === original.id)).toHaveLength(1);
+      const notifications = await app.persistence.getNotificationsForUser("user-1", { page: 1, limit: 100 });
+      expect(notifications.notifications.filter(item => item.sourceRef === original.id && item.title === "AI connector expired")).toHaveLength(1);
+    });
+    it.each(["save", "activation"] as const)("implicit %s expiry failure: rolls back successor and terminal effects", async (phase) => {
+      await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });
+      const a = (await authorize()).json();
+      const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      const exchange = phase === "activation" ? await prepare() : null;
+      const pendingId = phase === "activation"
+        ? (await app.persistence.listAiConnectorConnectionsForUser("user-1")).find(item => item.status === "pending")!.id
+        : "pending-expiry-failure";
+      await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      const faultPool = app.persistence instanceof PostgresPersistence ? new Pool({ connectionString: databaseUrl }) : null;
+      const failure = faultPool ? null : vi.spyOn(app.persistence, "createNotification").mockRejectedValueOnce(new Error("expiry notification unavailable"));
+      try {
+        if (faultPool) await faultPool.query(`CREATE FUNCTION fail_implicit_expiry() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected expiry notification failure'; END $$;
+          CREATE TRIGGER fail_implicit_expiry BEFORE INSERT ON notifications FOR EACH ROW EXECUTE FUNCTION fail_implicit_expiry()`);
+        if (exchange) expect((await exchange()).statusCode).toBe(503);
+        else await expect(app.persistence.saveAiConnectorConnection({ ...original, id: pendingId, status: "pending" })).rejects.toThrow();
+      } finally {
+        failure?.mockRestore();
+        if (faultPool) {
+          await faultPool.query("DROP TRIGGER IF EXISTS fail_implicit_expiry ON notifications; DROP FUNCTION IF EXISTS fail_implicit_expiry()");
+          await faultPool.end();
+        }
+      }
+      expect((await app.persistence.getAiConnectorConnection(original.id))?.expiryProcessedAt).toBeFalsy();
+      expect((await app.persistence.getAiConnectorCredentialByHash(hashMcpOAuthToken(mcpOAuthTokenSecret, a.refresh_token)))?.revokedAt).toBeNull();
+      const successor = await app.persistence.getAiConnectorConnection(pendingId);
+      if (phase === "activation") expect(successor?.status).toBe("pending");
+      else expect(successor).toBeNull();
+      const audits = await app.persistence.listAuditLog({ page: 1, limit: 100 });
+      expect(audits.items.filter(item => item.action === "ai_connector_expired" && item.metadata?.connectionId === original.id)).toHaveLength(0);
+      const notifications = await app.persistence.getNotificationsForUser("user-1", { page: 1, limit: 100 });
+      expect(notifications.notifications.filter(item => item.sourceRef === original.id && item.title === "AI connector expired")).toHaveLength(0);
+      expect((await authorize()).statusCode).toBe(200);
+      expect((await app.persistence.getAiConnectorConnection(original.id))?.expiryProcessedAt).toBeTruthy();
+    });
+    it("bearer credential expiry: finalizes only its bound connection and remains idempotent", async () => {
+      await app.persistence.saveAiConnectorPolicySettings({ bearerFallback: { enabled: true, allowedClientKinds: ["codex_cli"], allowedToolGroups: ["read"], maxLifetimeDays: 7, maxActiveConnectorsPerUser: 1 } });
+      const a = (await authorize()).json();
+      const created = await app.inject({ remoteAddress: testIp, method: "POST", url: "/ai/connectors/bearer", payload: { clientKind: "codex_cli", displayName: "CLI", scopes: ["portfolio:mcp_read"], lifetimeDays: 7 } });
+      expect(created.statusCode).toBe(200);
+      const { bearerToken, connection } = created.json();
+      const hash = hashGeneratedBearerToken(bearerToken);
+      const credential = (await app.persistence.getAiConnectorCredentialByHash(hash))!;
+      await app.persistence.saveAiConnectorCredential({ ...credential, expiresAt: new Date(Date.now() - 60_000).toISOString() });
+      const request = () => app.inject({ remoteAddress: testIp, method: "POST", url: "/mcp", headers: { authorization: `Bearer ${bearerToken}`, accept: "application/json, text/event-stream" }, payload: { jsonrpc: "2.0", id: "expired-bearer", method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "CLI", version: "1.0.0" } } } });
+      expect((await request()).statusCode).toBe(401);
+      expect((await app.persistence.getAiConnectorConnection(connection.id))?.status).toBe("expired");
+      expect((await app.persistence.getAiConnectorCredentialByHash(hash))?.revokedAt).toBeTruthy();
+      expect((await request()).statusCode).toBe(401);
+      const notifications = await app.persistence.getNotificationsForUser("user-1", { page: 1, limit: 100 });
+      expect(notifications.notifications.filter(item => item.sourceRef === connection.id && item.title === "AI connector expired")).toHaveLength(1);
       await read(a.access_token);
       expect((await refresh(a.refresh_token)).statusCode).toBe(200);
     });

@@ -1948,8 +1948,10 @@ export class MemoryPersistence implements Persistence {
 
   async saveAiConnectorConnection(input: SaveAiConnectorConnectionInput): Promise<AiConnectorConnectionRecord> {
     return this.withConnectorUserLock(input.userId, async () => {
+      const expiries = await this.prepareDueAiConnectorExpiries(input.userId);
+      const due = (id: string) => expiries.some(expiry => expiry.current.id === id && expiry.canCommit());
       const previous = this.aiConnectorConnections.get(input.id);
-      if (input.status === "active" && previous && (["revoked", "expired"].includes(previous.status) || (previous.status === "active" && !this.activeConnector(previous)))) {
+      if (input.status === "active" && previous && (["revoked", "expired"].includes(previous.status) || (previous.status === "active" && (!this.activeConnector(previous) || due(previous.id))))) {
         throw routeError(409, "mcp_connection_inactive", "An inactive connector cannot be reactivated");
       }
       if (previous?.expiryProcessedAt) {
@@ -1961,7 +1963,7 @@ export class MemoryPersistence implements Persistence {
           revocationReason: previous.revocationReason, replacedByConnectionId: previous.replacedByConnectionId };
       }
       if (input.status === "active" && previous?.status !== "active") {
-        const active = [...this.aiConnectorConnections.values()].filter(c => c.userId === input.userId && this.activeConnector(c));
+        const active = [...this.aiConnectorConnections.values()].filter(c => c.userId === input.userId && this.activeConnector(c) && !due(c.id));
         if (active.length >= this.aiConnectorPolicySettings.maxActiveConnectionsPerUser) {
           throw routeError(409, "mcp_connection_limit_exceeded", "AI connector connection limit exceeded");
         }
@@ -1975,54 +1977,85 @@ export class MemoryPersistence implements Persistence {
           throw routeError(409, "mcp_bearer_connection_limit_exceeded", "Bearer connector connection limit exceeded");
         }
       }
-      return this.saveAiConnectorConnectionUnlocked(input);
+      // Build and validate the new row before any expiry effects become visible.
+      const saved = this.saveAiConnectorConnectionUnlocked(input, false);
+      for (const expiry of expiries) expiry.commit();
+      const finalizedPrevious = this.aiConnectorConnections.get(input.id);
+      if (finalizedPrevious?.expiryProcessedAt) {
+        saved.expiryProcessedAt = finalizedPrevious.expiryProcessedAt;
+        saved.expiryNotifiedAt = finalizedPrevious.expiryNotifiedAt;
+        if (saved.status !== "revoked") saved.status = finalizedPrevious.status;
+      }
+      this.aiConnectorConnections.set(saved.id, saved);
+      return { ...saved, capabilities: [...saved.capabilities], scopes: [...saved.scopes], toolToggles: { ...saved.toolToggles } };
     });
   }
 
   async finalizeAiConnectorExpiry(input: FinalizeAiConnectorExpiryInput): Promise<FinalizeAiConnectorExpiryResult> {
     return this.withConnectorUserLock(input.userId, async () => {
-      const current = this.aiConnectorConnections.get(input.connectionId);
-      if (!current || current.userId !== input.userId) {
-        throw routeError(404, "ai_connector_connection_not_found", "AI connector connection not found");
-      }
-      if (current.status === "revoked" || current.status === "pending" || current.expiryProcessedAt || this.activeConnector(current)) {
-        return { connection: (await this.getAiConnectorConnection(current.id))!, notificationId: null };
-      }
-      // Stage effects locally. Failure discards only this finalization, never unrelated users' events.
-      const auditEntries: MemoryAuditLogEntry[] = [];
-      const notifications: MemoryNotification[] = [];
-      await this.appendAuditLog({
-        actorUserId: null, action: "ai_connector_expired", targetUserId: current.userId,
-        metadata: { connectionId: current.id, provider: current.provider, reason: input.reason },
-      }, auditEntries);
-      const notificationId = await this.createNotification({
-        userId: current.userId, severity: "info", source: "ai_connector", sourceRef: current.id,
-        title: "AI connector expired", body: `${current.displayName} (${current.provider}) was expired.`,
-        detail: { connectionId: current.id, provider: current.provider, status: "expired", reason: input.reason },
-      }, notifications);
-      // Security-wide revocation can run outside this user lock while effects are prepared.
-      if (this.aiConnectorConnections.get(current.id) !== current || this.activeConnector(current)) {
-        const latest = await this.getAiConnectorConnection(current.id);
-        if (!latest) throw routeError(404, "ai_connector_connection_not_found", "AI connector connection not found");
-        return { connection: latest, notificationId: null };
-      }
+      const prepared = await this.prepareAiConnectorExpiry(input);
+      const result = prepared?.commit();
+      if (result) return result;
+      const connection = await this.getAiConnectorConnection(input.connectionId);
+      if (!connection || connection.userId !== input.userId) throw routeError(404, "ai_connector_connection_not_found", "AI connector connection not found");
+      return { connection, notificationId: null };
+    });
+  }
+
+  private async prepareDueAiConnectorExpiries(userId: string) {
+    const prepared = [];
+    for (const current of this.aiConnectorConnections.values()) {
+      if (current.userId !== userId || !["active", "expired"].includes(current.status) || current.expiryProcessedAt) continue;
+      const expiry = await this.prepareAiConnectorExpiry({ connectionId: current.id, userId,
+        reason: current.expiresAt && Date.parse(current.expiresAt) <= Date.now() ? "absolute_expiry" : "inactivity_expiry" });
+      if (expiry) prepared.push(expiry);
+    }
+    return prepared;
+  }
+
+  private async prepareAiConnectorExpiry(input: FinalizeAiConnectorExpiryInput) {
+    const current = this.aiConnectorConnections.get(input.connectionId);
+    if (!current || current.userId !== input.userId) {
+      throw routeError(404, "ai_connector_connection_not_found", "AI connector connection not found");
+    }
+    const hasExpiredBearerCredential = () => current.authMode === "bearer"
+      && [...this.aiConnectorCredentials.values()].some(credential => credential.connectionId === current.id
+        && credential.credentialType === "bearer_token" && !credential.revokedAt && !credential.replacedByCredentialId
+        && credential.expiresAt !== null && Date.parse(credential.expiresAt) <= Date.now());
+    const canCommit = () => this.aiConnectorConnections.get(current.id) === current
+      && current.status !== "revoked" && current.status !== "pending" && !current.expiryProcessedAt
+      && (!this.activeConnector(current) || hasExpiredBearerCredential());
+    if (!canCommit()) return null;
+    const reason = hasExpiredBearerCredential() ? "absolute_expiry" : input.reason;
+    // Local staging permits the caller to commit all expiries together with a save or activation.
+    const auditEntries: MemoryAuditLogEntry[] = [];
+    const notifications: MemoryNotification[] = [];
+    await this.appendAuditLog({
+      actorUserId: null, action: "ai_connector_expired", targetUserId: current.userId,
+      metadata: { connectionId: current.id, provider: current.provider, reason },
+    }, auditEntries);
+    const notificationId = await this.createNotification({
+      userId: current.userId, severity: "info", source: "ai_connector", sourceRef: current.id,
+      title: "AI connector expired", body: `${current.displayName} (${current.provider}) was expired.`,
+      detail: { connectionId: current.id, provider: current.provider, status: "expired", reason },
+    }, notifications);
+    return { current, canCommit, commit: (): FinalizeAiConnectorExpiryResult | null => {
+      // Revalidate after awaited preparation; policy changes and provider resets must win.
+      if (!canCommit()) return null;
       const now = new Date().toISOString();
       const finalized: AiConnectorConnectionRecord = { ...current, status: "expired",
         expiryNotifiedAt: current.expiryNotifiedAt ?? now, expiryProcessedAt: now, updatedAt: now };
-      // Commit synchronously, after all fallible preparation completed.
       this.aiConnectorConnections.set(current.id, finalized);
       for (const [id, credential] of this.aiConnectorCredentials) {
-        if (credential.connectionId === current.id && !credential.revokedAt) {
-          this.aiConnectorCredentials.set(id, { ...credential, revokedAt: now });
-        }
+        if (credential.connectionId === current.id && !credential.revokedAt) this.aiConnectorCredentials.set(id, { ...credential, revokedAt: now });
       }
       this.auditLog.push(...auditEntries);
       this.notifications.set(current.userId, [...(this.notifications.get(current.userId) ?? []), ...notifications]);
       return { connection: { ...finalized, capabilities: [...finalized.capabilities], scopes: [...finalized.scopes], toolToggles: { ...finalized.toolToggles } }, notificationId };
-    });
+    } };
   }
 
-  private async saveAiConnectorConnectionUnlocked(input: SaveAiConnectorConnectionInput): Promise<AiConnectorConnectionRecord> {
+  private saveAiConnectorConnectionUnlocked(input: SaveAiConnectorConnectionInput, persist = true): AiConnectorConnectionRecord {
     this.assertUserExists(input.userId);
     if (input.revokedByUserId) this.assertUserExists(input.revokedByUserId);
     const now = new Date().toISOString();
@@ -2054,7 +2087,7 @@ export class MemoryPersistence implements Persistence {
       createdAt: input.createdAt ?? this.aiConnectorConnections.get(input.id)?.createdAt ?? now,
       updatedAt: input.updatedAt ?? now,
     };
-    this.aiConnectorConnections.set(record.id, record);
+    if (persist) this.aiConnectorConnections.set(record.id, record);
     return { ...record, capabilities: [...record.capabilities], scopes: [...record.scopes], toolToggles: { ...record.toolToggles } };
   }
 
@@ -2311,6 +2344,8 @@ export class MemoryPersistence implements Persistence {
 
   async activateAiConnectorOAuthConnection(input: ActivateAiConnectorOAuthConnectionInput) {
     return this.withConnectorUserLock(input.userId, async () => {
+      const expiries = await this.prepareDueAiConnectorExpiries(input.userId);
+      const due = (id: string) => expiries.some(expiry => expiry.current.id === id && expiry.canCommit());
       const current = this.aiConnectorConnections.get(input.connectionId);
       if (!current || current.userId !== input.userId || current.status !== "pending"
         || current.authMode !== "oauth" || current.vendor !== input.vendor || current.clientKind !== input.clientKind
@@ -2325,7 +2360,7 @@ export class MemoryPersistence implements Persistence {
         throw routeError(409, "mcp_oauth_replacement_target_invalid", "Selected connection is no longer eligible; restart authorization");
       }
       if (input.connectionAction === "create" && input.replacementConnectionId) throw routeError(400, "mcp_oauth_invalid_transition", "Create cannot select a replacement");
-      const active = [...this.aiConnectorConnections.values()].filter(c => c.userId === input.userId && this.activeConnector(c));
+      const active = [...this.aiConnectorConnections.values()].filter(c => c.userId === input.userId && this.activeConnector(c) && !due(c.id));
       if (active.length - (target ? 1 : 0) >= this.aiConnectorPolicySettings.maxActiveConnectionsPerUser) throw routeError(409, "mcp_connection_limit_exceeded", "Connection limit reached; select a connection to replace");
       if (input.refreshCredential.connectionId !== current.id) throw routeError(400, "mcp_oauth_invalid_transition", "Credential must belong to new authorization");
       // Persist before changing either grant; a failed insert cannot revoke the target.
@@ -2336,12 +2371,13 @@ export class MemoryPersistence implements Persistence {
         this.aiConnectorCredentials.delete(input.refreshCredential.id);
         throw routeError(409, "mcp_oauth_replacement_target_invalid", "Authorization state changed; restart authorization");
       }
-      const latestActiveCount = [...this.aiConnectorConnections.values()].filter(c => c.userId === input.userId && this.activeConnector(c)).length;
+      const latestActiveCount = [...this.aiConnectorConnections.values()].filter(c => c.userId === input.userId && this.activeConnector(c) && !due(c.id)).length;
       if (latestActiveCount - (target ? 1 : 0) >= this.aiConnectorPolicySettings.maxActiveConnectionsPerUser) {
         this.aiConnectorCredentials.delete(input.refreshCredential.id);
         throw routeError(409, "mcp_connection_limit_exceeded", "Connection limit reached; select a connection to replace");
       }
 
+      for (const expiry of expiries) expiry.commit();
       const now = new Date().toISOString();
       if (target) {
         this.aiConnectorConnections.set(target.id, { ...target, status: "revoked", revokedAt: now,
