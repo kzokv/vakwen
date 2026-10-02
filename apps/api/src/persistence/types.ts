@@ -657,6 +657,18 @@ export interface SaveAiConnectorCredentialInput {
   lastUsedAt?: string | null;
 }
 
+export interface FinalizeAiConnectorExpiryInput {
+  connectionId: string;
+  userId: string;
+  reason: "absolute_expiry" | "inactivity_expiry";
+}
+
+export interface FinalizeAiConnectorExpiryResult {
+  connection: AiConnectorConnectionRecord;
+  /** Only the caller that committed expiry receives the durable notification ID. */
+  notificationId: string | null;
+}
+
 export interface SaveAiConnectorConnectionInput {
   expiryProcessedAt?: string | null;
   replacedByConnectionId?: string | null;
@@ -2967,6 +2979,7 @@ export interface Persistence {
   getPendingShareInviteCapabilities(inviteCode: string): Promise<ShareCapability[]>;
   setPendingShareInviteCapabilities(input: SetPendingShareInviteCapabilitiesInput): Promise<ShareCapability[]>;
   saveAiConnectorConnection(input: SaveAiConnectorConnectionInput): Promise<AiConnectorConnectionRecord>;
+  finalizeAiConnectorExpiry(input: FinalizeAiConnectorExpiryInput): Promise<FinalizeAiConnectorExpiryResult>;
   getAiConnectorConnection(id: string): Promise<AiConnectorConnectionRecord | null>;
   listAiConnectorConnectionsForUser(userId: string): Promise<AiConnectorConnectionRecord[]>;
   getAiConnectorPolicySettings(): Promise<AiConnectorPolicySettingsRecord>;

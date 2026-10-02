@@ -471,27 +471,23 @@ export async function expireAiConnectorConnection(
   connection: AiConnectorConnectionRecord,
   reason: "absolute_expiry" | "inactivity_expiry",
 ): Promise<AiConnectorConnectionRecord> {
-  if (connection.status === "revoked" || connection.expiryProcessedAt) return connection;
-  const now = nowIso();
-  const next = await app.persistence.saveAiConnectorConnection({
-    ...connection,
-    status: "expired",
-    expiryNotifiedAt: connection.expiryNotifiedAt ?? now,
-    updatedAt: now,
+  const finalized = await app.persistence.finalizeAiConnectorExpiry({
+    connectionId: connection.id, userId: connection.userId, reason,
   });
-  await app.persistence.revokeAiConnectorCredentialsForConnection(connection.id);
-  await app.persistence.appendAuditLog({
-    actorUserId: null,
-    action: "ai_connector_expired",
-    targetUserId: connection.userId,
-    metadata: {
-      connectionId: connection.id,
-      provider: connection.provider,
-      reason,
-    },
-  });
-  await createConnectorNotification(app, next, "expired", { reason });
-  return app.persistence.saveAiConnectorConnection({ ...next, expiryProcessedAt: nowIso() });
+  if (finalized.notificationId) {
+    try {
+      await app.eventBus.publishEvent(finalized.connection.userId, "ai_connector_notification", {
+        connectionId: finalized.connection.id,
+        provider: finalized.connection.provider,
+        status: "expired",
+        notificationId: finalized.notificationId,
+      });
+    } catch (error) {
+      // Durable expiry and notification already committed. Live delivery must not repeat finalization.
+      app.log.warn({ err: error, connectionId: finalized.connection.id, notificationId: finalized.notificationId }, "ai_connector_expiry_event_delivery_failed");
+    }
+  }
+  return finalized.connection;
 }
 
 export async function maybeNotifyAiConnectorExpiringSoon(

@@ -267,16 +267,81 @@ function registerIndependentOAuthRegressions() {
       await read(a.access_token);
       expect((await refresh(a.refresh_token)).statusCode).toBe(200);
     });
-    it("expiry processing failure: leaves completion unset and retries terminal effects", async () => {
+    it("stale inactivity decision: extended policy preserves the currently eligible grant", async () => {
       await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });
       const a = (await authorize()).json();
       const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
       await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
-      const failure = vi.spyOn(app.persistence, "appendAuditLog").mockRejectedValueOnce(new Error("expiry audit unavailable"));
-      try { expect((await refresh(a.refresh_token)).statusCode).toBe(500); } finally { failure.mockRestore(); }
+      expect((await app.persistence.getAiConnectorConnection(original.id))?.status).toBe("expired");
+      await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 90 });
+      const result = await app.persistence.finalizeAiConnectorExpiry({ connectionId: original.id, userId: original.userId, reason: "inactivity_expiry" });
+      expect(result.connection.status).toBe("active");
+      expect(result.connection.expiryProcessedAt).toBeNull();
+      expect(result.notificationId).toBeNull();
+      expect((await refresh(a.refresh_token)).statusCode).toBe(200);
+      const audits = await app.persistence.listAuditLog({ page: 1, limit: 100 });
+      expect(audits.items.filter(item => item.action === "ai_connector_expired" && item.metadata?.connectionId === original.id)).toHaveLength(0);
+    });
+    it("concurrent expiry: one terminal audit and notification survive stale saves", async () => {
+      await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });
+      const a = (await authorize()).json();
+      const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      const stale = (await app.persistence.getAiConnectorConnection(original.id))!;
+      const responses = await Promise.all([refresh(a.refresh_token), refresh(a.refresh_token), refresh(a.refresh_token)]);
+      expect(responses.map(response => response.statusCode)).toEqual([400, 400, 400]);
+      const completed = (await app.persistence.getAiConnectorConnection(original.id))!;
+      expect(completed.expiryProcessedAt).toBeTruthy();
+      await app.persistence.saveAiConnectorConnection({ ...stale, displayName: "Renamed expired connection" });
+      expect((await app.persistence.getAiConnectorConnection(original.id))?.expiryProcessedAt).toBe(completed.expiryProcessedAt);
+      expect((await refresh(a.refresh_token)).statusCode).toBe(400);
+      const audits = await app.persistence.listAuditLog({ page: 1, limit: 100 });
+      expect(audits.items.filter(item => item.action === "ai_connector_expired" && item.metadata?.connectionId === original.id)).toHaveLength(1);
+      const notifications = await app.persistence.getNotificationsForUser("user-1", { page: 1, limit: 100 });
+      expect(notifications.notifications.filter(item => item.sourceRef === original.id && item.title === "AI connector expired")).toHaveLength(1);
+    });
+    it.each(["audit", "notification"] as const)("expiry %s failure: rolls back terminal effects and retry completes", async (phase) => {
+      await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });
+      const a = (await authorize()).json();
+      const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      const faultPool = app.persistence instanceof PostgresPersistence ? new Pool({ connectionString: databaseUrl }) : null;
+      const failure = faultPool ? null : vi.spyOn(app.persistence, phase === "audit" ? "appendAuditLog" : "createNotification")
+        .mockRejectedValueOnce(new Error("expiry effect unavailable"));
+      const table = phase === "audit" ? "audit_log" : "notifications";
+      try {
+        if (faultPool) {
+          await faultPool.query(`CREATE FUNCTION fail_expiry_effect() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected expiry effect failure'; END $$;
+            CREATE TRIGGER fail_expiry_effect BEFORE INSERT ON ${table} FOR EACH ROW EXECUTE FUNCTION fail_expiry_effect()`);
+        }
+        expect((await refresh(a.refresh_token)).statusCode).toBe(500);
+      } finally {
+        failure?.mockRestore();
+        if (faultPool) {
+          await faultPool.query(`DROP TRIGGER IF EXISTS fail_expiry_effect ON ${table}; DROP FUNCTION IF EXISTS fail_expiry_effect()`);
+          await faultPool.end();
+        }
+      }
       expect((await app.persistence.getAiConnectorConnection(original.id))?.expiryProcessedAt).toBeFalsy();
+      expect((await app.persistence.getAiConnectorCredentialByHash(hashMcpOAuthToken(mcpOAuthTokenSecret, a.refresh_token)))?.revokedAt).toBeNull();
+      const audits = await app.persistence.listAuditLog({ page: 1, limit: 100 });
+      expect(audits.items.filter(item => item.action === "ai_connector_expired" && item.metadata?.connectionId === original.id)).toHaveLength(0);
+      const notifications = await app.persistence.getNotificationsForUser("user-1", { page: 1, limit: 100 });
+      expect(notifications.notifications.filter(item => item.sourceRef === original.id && item.title === "AI connector expired")).toHaveLength(0);
       expect((await refresh(a.refresh_token)).statusCode).toBe(400);
       expect((await app.persistence.getAiConnectorConnection(original.id))?.expiryProcessedAt).toBeTruthy();
+    });
+    it("expiry event publication fails after commit: durable effects remain completed without duplicates", async () => {
+      await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });
+      const a = (await authorize()).json();
+      const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      const publication = vi.spyOn(app.eventBus, "publishEvent").mockRejectedValueOnce(new Error("event bus unavailable"));
+      try { expect((await refresh(a.refresh_token)).statusCode).toBe(400); } finally { publication.mockRestore(); }
+      expect((await app.persistence.getAiConnectorConnection(original.id))?.expiryProcessedAt).toBeTruthy();
+      expect((await refresh(a.refresh_token)).statusCode).toBe(400);
+      const notifications = await app.persistence.getNotificationsForUser("user-1", { page: 1, limit: 100 });
+      expect(notifications.notifications.filter(item => item.sourceRef === original.id && item.title === "AI connector expired")).toHaveLength(1);
     });
     it("refresh diagnostics: inactivity expiry is distinct from absolute lifetime expiry", async () => {
       await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });

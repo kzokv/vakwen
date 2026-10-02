@@ -3,8 +3,10 @@
 ## Scope and baseline
 
 Source of truth: approved fix-plan.md and 2026-10-02 implementation handoff.
-Current checkout requested by user: research/kzo-244-v1-acceptance-evidence at 5d4334c77af1ca37ca80f705c17ce95c7fa1c7cb.
+Original checkout requested by user: research/kzo-244-v1-acceptance-evidence at 5d4334c77af1ca37ca80f705c17ce95c7fa1c7cb.
 Remote dev verified using authenticated GitHub API: b664a9494a9cef9fe5513ba6bc1a6ef944fca13f. SSH lookup failed host-key verification; GitHub API succeeded. Relevant OAuth/persistence/consent/settings source matches pinned production baseline.
+Integration branch: `fix/independent-oauth-connections`, rebased onto the dev revision above. Final delivery evidence, current CI, and review resolution are recorded in [PR #305](https://github.com/kzokv/vakwen/pull/305).
+
 No live orphan dev/test processes or child-agent sessions found during preflight. Existing unrelated edits preserved. Previous team state archived locally. No mockup path supplied; existing UI patterns apply.
 
 ## Authorized post-team work
@@ -25,28 +27,38 @@ These checks include the team implementation and focused integrated validation, 
 - [x] Settled mobile/tablet detail-panel visual follow-up: **2 passed with retries disabled** (32.5s), `/private/tmp/vakwen-reauthorization-sheet-visual.log`. Added deterministic progress-bar disappearance and dialog viewport-bound checks; screenshot capture disables animation. Desktop consent, mobile zh-TW consent/rename, and settled tablet details were visually inspected. No tooltip controls exist on the changed surfaces; visible help, keyboard radio selection, rename focus, and Escape dismissal were checked.
 - [x] Browser failure/fix ledger closed for the focused scope: `.worklog/team/reauthorization-qa-issues.md`. The final retry-free runs supersede the earlier 13-pass/1-flaky run affected by a concurrent API watcher restart. Durable local evidence is retained in `.worklog/team/evidence/reauthorization/`: 11 screenshots, `focused-15-pass.log`, and `settled-sheet-2-pass.log`. Real OAuth traces may contain ephemeral local credentials and are not included in that shareable screenshot/log set.
 
-## Remaining verification and delivery gates
+## Repository gates and delivery evidence
 
-- [x] Final Standards and Spec review resolved memory/Postgres expiry and capacity parity, persisted consent bindings, profile effective-access ordering, structured OAuth URL logging, database exception classification, and retryable expiry completion. Focused integrated API tests passed; broad managed Postgres remains separately pending below.
-- [ ] Final managed Postgres gate: integrated run passed 1,300 tests with 1 skip and one unrelated research-calendar fixture failure. OAuth, capacity/concurrency, rollback, and migration 123 preservation tests passed. The missing historical calendar was seeded in both stores; its parity test passed in the active full rerun, `/private/tmp/vakwen-integrated-postgres-final.log`. Final suite completion remains pending.
-- [x] Renumbered the append-only migration to `123_independent_oauth_connections.sql` after latest dev migration 122 and updated its preservation regression. Final managed validation remains pending.
-- [x] Focused clean browser rerun, settled screenshots, issue closure, and real local browser/API OAuth coverage completed as detailed above. The complete standard/OAuth E2E and API HTTP suites also passed as recorded below.
-- [ ] Final root eight-suite gate on the final integrated revision, using the exact commands below. Existing in-progress/partial runs do not establish full pass.
-- [ ] Dev hosted-client acceptance for ChatGPT and Claude.ai: independent creation, selected replacement, cancellation, refresh, remaining entries and profile recognition where supported. Requires separately authorized dev rollout/access; local browser mocks and memory/Postgres results cannot substitute.
-- [ ] Root-only post-team integration, review/CI and PR workflow authorized by the later user instruction. Deployment remains unauthorized.
+All eight exact repository gates passed on integrated revision `fb656725`, before the final Codex expiry review fix. The table records that completed baseline. The final review-fix reruns and their terminal results are recorded in [PR #305](https://github.com/kzokv/vakwen/pull/305); readiness requires all eight gates, addressed review feedback, and green CI on the delivered revision.
 
-| Required suite | Exact repository command | Final status |
+| Required suite | Exact repository command | Completed baseline result |
 |---|---|---|
-| Lint | `npx eslint .` | Passed: 0 errors, 46 warnings |
-| Typecheck | `npm run typecheck` | Passed on rebased implementation |
-| Web unit | `npm run test --prefix apps/web` | Passed: 746 + 639 passed, 2 skipped across two phases |
-| API unit/memory integration | `npm run test --prefix apps/api` | Passed: 2,426 passed, 572 skipped |
-| Managed Postgres | `npm run test:integration:full:host` | Pending |
-| Standard E2E | `npm run test:e2e:bypass:mem --prefix apps/web` | Passed: 443 passed, 21 skipped, no retries |
-| OAuth E2E | `npm run test:e2e:oauth:mem --prefix apps/web` | Passed: 121 passed, no retries |
-| API HTTP | `npm run test:http --prefix apps/api` | Passed: 313 passed, 2 skipped; isolated API_PORT=4400 |
+| Lint | `npx eslint .` | 0 errors, 46 warnings |
+| Typecheck | `npm run typecheck` | Passed |
+| Web unit | `npm run test --prefix apps/web` | 746 + 639 passed, 2 skipped across two phases |
+| API unit/memory integration | `npm run test --prefix apps/api` | 2,426 passed, 572 skipped |
+| Managed Postgres | `npm run test:integration:full:host` | 1,302 passed, 1 skipped |
+| Standard E2E | `npm run test:e2e:bypass:mem --prefix apps/web` | 443 passed, 21 skipped, no retries |
+| OAuth E2E | `npm run test:e2e:oauth:mem --prefix apps/web` | 121 passed, no retries |
+| API HTTP | `npm run test:http --prefix apps/api` | 313 passed, 2 skipped; isolated API_PORT=4400 |
 
-Use the container variant of managed Postgres only when running in Linux containers, as root policy requires. The API unit/memory suite does not replace managed Postgres.
+Use the container variant of managed Postgres only when running in Linux containers, as root policy requires. The API unit/memory suite does not replace managed Postgres. Skipped tests are not claimed as passing coverage.
+
+The first integrated managed run exposed a missing historical calendar fixture in the research monthly-revenue parity test. Seeding the historical calendar through the normal preview/confirm services in both stores resolved it. The full rerun completed successfully (`/private/tmp/vakwen-integrated-postgres-final.log`). Migration 123 preservation, rerun safety, bearer constraints, and OAuth concurrency/rollback cases are included in the managed suite.
+
+## Review follow-through
+
+Standards and specification review resolved expiry/capacity parity, persisted consent bindings, profile effective-access ordering, structured OAuth URL logging, database exception classification, and direct delegated-portfolio profile identity. Durable lessons were reviewed and promoted only as two scoped MCP rules, with memory pointers.
+
+Codex identified a further race in expiry processing: concurrent requests could duplicate terminal audit/notification effects, and stale saves could clear the completion marker. The fix finalizes expiry, credential revocation, audit, notification, and marker under one memory user lock or PostgreSQL transaction. Generic saves retain a committed marker. Event publication occurs after commit; a delivery failure cannot repeat durable effects. Finalization rechecks the current expiry policy, so an administrator's lifetime-policy change cannot be overridden by a stale inactivity decision.
+
+The new regression reproduced duplicate-finalization exposure in both OAuth client groups before the fix. A separate stale-policy regression failed for both clients before its guard. Ten focused memory cases now pass: concurrent expiry and stale saves; audit and notification failure rollback/retry; postcommit event failure; and current-policy revalidation. These same cases run against real PostgreSQL, including database-trigger fault injection, in the managed gate. Final managed results are in the PR evidence.
+
+The root agent owns clean commits, PR metadata, review requests after each push, detailed review replies/thread resolution, and CI monitoring. PR #305 targets dev, is assigned to @kzokv, and uses bug/documentation plus the authorized Linear waiver. Its live state is the delivery record rather than a frozen claim in this document.
+
+## Separate rollout gate
+
+- [ ] Dev hosted-client acceptance for ChatGPT and Claude.ai: independent creation, selected replacement, cancellation, refresh, remaining entries, and profile recognition where supported. This requires separately authorized rollout/access. Local browser and memory/Postgres results do not establish hosted-client recognition or routing behavior.
 
 ## Operational boundaries
 
@@ -56,6 +68,6 @@ The initial diagnosis and red/control experiments in the [approved fix plan](fix
 
 ## Integrated validation notes
 
-The task-only commit was rebased onto dev `b664a9494a9cef9fe5513ba6bc1a6ef944fca13f` in an isolated worktree. Research alternative scopes and date formatting were preserved; the AI Connections glossary moved to [glossary.md](glossary.md) because dev has no CONTEXT.md. Focused integrated API validation passed 141 tests (58 Postgres cases skipped). The research consent fixture now supplies the required explicit create action. Initial worktree checks exposed a missing nested recharts dependency and sandbox-denied SSE listeners; copying the existing installed dependency and allowing loopback access resolved those environment failures. Logs: `/private/tmp/vakwen-integrated-{lint,typecheck-final,api-unit-final,http}.log`. Full remaining gates are pending.
+The task-only commit was rebased onto dev `b664a9494a9cef9fe5513ba6bc1a6ef944fca13f` in an isolated worktree. Research alternative scopes and date formatting were preserved; the AI Connections glossary moved to [glossary.md](glossary.md) because dev has no CONTEXT.md. Focused integrated API validation passed 141 tests (58 Postgres cases skipped). The research consent fixture now supplies the required explicit create action. Initial worktree checks exposed a missing nested recharts dependency and sandbox-denied SSE listeners; copying the existing installed dependency and allowing loopback access resolved those environment failures. Logs: `/private/tmp/vakwen-integrated-{lint,typecheck-final,api-unit-final,http}.log`. The completed baseline gate results are listed above; final review-fix evidence is recorded in PR #305.
 
-Final requirement audit added a direct delegated-portfolio read followed by profile lookup in the same MCP session. The profile remains the authenticated user and differs from the owner profile; all six profile tests passed. The full API rerun passed 2,426 tests with 572 skips (`/private/tmp/vakwen-integrated-api-unit-audit.log`). Lint was rechecked; typecheck and the full managed Postgres rerun remain in progress before draft PR readiness.
+Final requirement audit added a direct delegated-portfolio read followed by profile lookup in the same MCP session. The profile remains the authenticated user and differs from the owner profile; all six profile tests passed. The full API rerun passed 2,426 tests with 572 skips (`/private/tmp/vakwen-integrated-api-unit-audit.log`). Lint, typecheck, and the full managed Postgres rerun subsequently passed on the integrated baseline. The later atomic expiry fix has its own final validation record in PR #305.

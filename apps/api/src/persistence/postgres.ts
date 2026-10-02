@@ -198,6 +198,8 @@ import type {
   UpdatePostedCashDividendInput,
   HoldingSnapshot,
   AggregatedSnapshotPoint,
+  FinalizeAiConnectorExpiryInput,
+  FinalizeAiConnectorExpiryResult,
   ActivateAiConnectorOAuthConnectionInput,
   ActivateAiConnectorOAuthConnectionResult,
   AiConnectorAccessLogRecord,
@@ -3317,9 +3319,14 @@ export class PostgresPersistence implements Persistence {
       await client.query(`UPDATE ai_connector_connections c SET status = 'expired', updated_at = NOW()
         WHERE c.user_id = $1 AND c.status = 'active' AND ((c.expires_at IS NOT NULL AND c.expires_at <= NOW())
           OR COALESCE(c.last_used_at, c.created_at) < NOW() - (SELECT inactivity_expiry_days FROM ai_connector_policy_settings WHERE id = TRUE) * INTERVAL '1 day')`, [input.userId]);
+      // Provider-wide resets bypass the user advisory lock; lock the row before reading its terminal state.
+      await client.query("SELECT id FROM ai_connector_connections WHERE id = $1 FOR UPDATE", [input.id]);
       const previous = await this.getAiConnectorConnectionTx(client, input.id);
       if (input.status === "active" && previous && ["revoked", "expired"].includes(previous.status)) {
         throw routeError(409, "mcp_connection_inactive", "An inactive connector cannot be reactivated");
+      }
+      if (previous?.expiryProcessedAt) {
+        input = { ...input, expiryProcessedAt: previous.expiryProcessedAt };
       }
       if (previous?.status === "revoked") {
         // A stale touch/revoke/rename must retain the committed replacement lineage.
@@ -3444,6 +3451,45 @@ export class PostgresPersistence implements Persistence {
       const record = await this.getAiConnectorConnectionTx(client, input.id);
       await client.query("COMMIT");
       return record!;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async finalizeAiConnectorExpiry(input: FinalizeAiConnectorExpiryInput): Promise<FinalizeAiConnectorExpiryResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`ai-connector:${input.userId}`]);
+      const locked = await client.query<{ status: string }>("SELECT status FROM ai_connector_connections WHERE id = $1 AND user_id = $2 FOR UPDATE", [input.connectionId, input.userId]);
+      // Keep the freshly read inactivity policy stable until the expiry transaction commits.
+      await client.query("SELECT id FROM ai_connector_policy_settings WHERE id = TRUE FOR SHARE");
+      const current = await this.getAiConnectorConnectionTx(client, input.connectionId);
+      if (!current || current.userId !== input.userId) {
+        throw routeError(404, "ai_connector_connection_not_found", "AI connector connection not found");
+      }
+      if (locked.rows[0]?.status === "pending" || current.status !== "expired" || current.expiryProcessedAt) {
+        await client.query("COMMIT");
+        return { connection: current, notificationId: null };
+      }
+      await client.query(`UPDATE ai_connector_connections SET status = 'expired', expiry_notified_at = COALESCE(expiry_notified_at, NOW()),
+        expiry_processed_at = NOW(), updated_at = NOW() WHERE id = $1`, [current.id]);
+      await client.query("UPDATE ai_connector_credentials SET revoked_at = COALESCE(revoked_at, NOW()) WHERE connection_id = $1", [current.id]);
+      await this.appendAuditLogTx(client, {
+        actorUserId: null, action: "ai_connector_expired", targetUserId: current.userId,
+        metadata: { connectionId: current.id, provider: current.provider, reason: input.reason },
+      });
+      const notificationId = await this.createNotificationTx(client, {
+        userId: current.userId, severity: "info", source: "ai_connector", sourceRef: current.id,
+        title: "AI connector expired", body: `${current.displayName} (${current.provider}) was expired.`,
+        detail: { connectionId: current.id, provider: current.provider, status: "expired", reason: input.reason },
+      });
+      const connection = (await this.getAiConnectorConnectionTx(client, current.id))!;
+      await client.query("COMMIT");
+      return { connection, notificationId };
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       throw error;

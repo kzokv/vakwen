@@ -1,6 +1,6 @@
 # ChatGPT reauthorization: approved fix plan
 
-Date: 2026-10-02 (Asia/Taipei). Status: complete plan approved in the 2026-10-02 implementation handoff; implementation and validation in progress. No deployment authorized. Production baseline: `main` at `28fa1b7380545ee340e7282dee4213609b3c5f4c`.
+Date: 2026-10-02 (Asia/Taipei). Status: complete plan approved in the 2026-10-02 implementation handoff; implementation delivered through PR #305, with final repository gates and review tracked there. Hosted-client rollout validation remains separate. No deployment authorized. Production baseline: `main` at `28fa1b7380545ee340e7282dee4213609b3c5f4c`.
 
 ## Verified diagnosis
 

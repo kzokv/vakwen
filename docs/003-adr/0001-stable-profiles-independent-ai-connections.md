@@ -1,6 +1,6 @@
 # ADR-0001: Stable profiles with independent AI connections
 
-Status: Accepted 2026-10-02. Implementation present in the working checkout; final integration and rollout validation pending. See [implementation evidence](../notes/chatgpt-reauthorization/implementation-evidence.md).
+Status: Accepted 2026-10-02. Implementation delivered through PR #305; repository validation and review evidence are tracked there. Hosted-client rollout validation remains a separate gate. See [implementation evidence](../notes/chatgpt-reauthorization/implementation-evidence.md).
 
 Vakwen presents one stable Connected Profile per Vakwen User and permits independently manageable AI Connections for that profile, subject to an explicit connection limit. Creating or reconnecting one connection must not silently revoke another. Portfolio delegation remains within the user's existing access model; chats and selected portfolios do not create new profiles.
 
