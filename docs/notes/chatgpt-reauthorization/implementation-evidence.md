@@ -60,6 +60,8 @@ A full browser run exposed a readiness assertion that failed immediately when re
 
 A subsequent responsive-flow retry showed the test helper waiting only for server-rendered shell markup before clicking a client router control. Responsive navigation now uses the existing client-readiness wait while retaining its deliberate omission of breadcrumb visibility. Five repetitions of the affected mobile settings and mobile/tablet account-setup flows passed without retries (15 passed, 5 viewport skips).
 
+A sixth Codex finding identified a generated-bearer authentication rejection when an administrator removes every data group granted to an existing credential. Authentication now retains an empty effective scope set so the scope-free profile contract still works; data tools retain their group and scope checks. A real generated-token regression fails before the fix and passes afterward, checking stable profile identity, denied portfolio access, and continued rejection when bearer fallback itself is disabled. Both focused MCP suites pass (60 tests); full gate reruns remain required before readiness.
+
 The root agent owns clean commits, PR metadata, review requests after each push, detailed review replies/thread resolution, and CI monitoring. PR #305 targets dev, is assigned to @kzokv, and uses bug/documentation plus the authorized Linear waiver. Its live state is the delivery record rather than a frozen claim in this document.
 
 ## Separate rollout gate

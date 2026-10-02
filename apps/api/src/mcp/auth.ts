@@ -251,9 +251,8 @@ export class DefaultMcpAuthService implements McpAuthService {
     const bearerAllowedScopes = credential.scopes.filter((scope) =>
       policySettings.bearerFallback.allowedToolGroups.includes(connectorGroupForScope(scope))
     );
-    if (credential.scopes.length > 0 && bearerAllowedScopes.length === 0) {
-      throw routeError(403, "mcp_bearer_tool_group_disabled", "MCP bearer fallback is disabled for token tool groups");
-    }
+    // An empty effective scope set still permits authenticated get_profile.
+    // Data tools retain their bearer group and scope checks in the tool policy.
     const notified = await this.validateConnection(app, req, connection, policySettings);
     return {
       token,
