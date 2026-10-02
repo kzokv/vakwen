@@ -3311,12 +3311,30 @@ export class PostgresPersistence implements Persistence {
     }
   }
 
+  private implicitAiConnectorExpiryPublisher?: (expiry: FinalizeAiConnectorExpiryResult) => Promise<void>;
+
+  setImplicitAiConnectorExpiryPublisher(publisher: (expiry: FinalizeAiConnectorExpiryResult) => Promise<void>): void {
+    this.implicitAiConnectorExpiryPublisher = publisher;
+  }
+
+  private async publishImplicitAiConnectorExpiries(expiries: FinalizeAiConnectorExpiryResult[]): Promise<void> {
+    for (const expiry of expiries) {
+      try {
+        await this.implicitAiConnectorExpiryPublisher?.(expiry);
+      } catch {
+        // Delivery is best effort after commit; the app publisher logs failures.
+      }
+    }
+  }
+
   async saveAiConnectorConnection(input: SaveAiConnectorConnectionInput): Promise<AiConnectorConnectionRecord> {
     const client = await this.pool.connect();
+    let committed = false;
+    let committedExpiries: FinalizeAiConnectorExpiryResult[] = [];
     try {
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`ai-connector:${input.userId}`]);
-      await this.finalizeDueAiConnectorExpiriesTx(client, input.userId);
+      committedExpiries = await this.finalizeDueAiConnectorExpiriesTx(client, input.userId);
       // Provider-wide resets bypass the user advisory lock; lock the row before reading its terminal state.
       const stored = await client.query<{ status: AiConnectorStatus }>("SELECT status FROM ai_connector_connections WHERE id = $1 FOR UPDATE", [input.id]);
       // Keep never-activated consent rows pending in storage; reads still project expired codes.
@@ -3450,12 +3468,14 @@ export class PostgresPersistence implements Persistence {
       }
       const record = await this.getAiConnectorConnectionTx(client, input.id);
       await client.query("COMMIT");
+      committed = true;
       return record!;
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       throw error;
     } finally {
       client.release();
+      if (committed) await this.publishImplicitAiConnectorExpiries(committedExpiries);
     }
   }
 
@@ -3475,16 +3495,19 @@ export class PostgresPersistence implements Persistence {
     }
   }
 
-  private async finalizeDueAiConnectorExpiriesTx(client: PoolClient, userId: string): Promise<void> {
+  private async finalizeDueAiConnectorExpiriesTx(client: PoolClient, userId: string): Promise<FinalizeAiConnectorExpiryResult[]> {
     // Lock connections in a stable order before policy/credential effects, sharing the caller's transaction.
     const candidates = await client.query<{ id: string; expires_at: string | null }>(
       `SELECT id, expires_at::text FROM ai_connector_connections
        WHERE user_id = $1 AND status IN ('active', 'expired') AND expiry_processed_at IS NULL
        ORDER BY id FOR UPDATE`, [userId]);
+    const finalized: FinalizeAiConnectorExpiryResult[] = [];
     for (const candidate of candidates.rows) {
-      await this.finalizeAiConnectorExpiryTx(client, { connectionId: candidate.id, userId,
+      const expiry = await this.finalizeAiConnectorExpiryTx(client, { connectionId: candidate.id, userId,
         reason: candidate.expires_at && Date.parse(candidate.expires_at) <= Date.now() ? "absolute_expiry" : "inactivity_expiry" });
+      if (expiry.notificationId) finalized.push(expiry);
     }
+    return finalized;
   }
 
   private async finalizeAiConnectorExpiryTx(client: PoolClient, input: FinalizeAiConnectorExpiryInput): Promise<FinalizeAiConnectorExpiryResult> {
@@ -4309,10 +4332,12 @@ export class PostgresPersistence implements Persistence {
     input: ActivateAiConnectorOAuthConnectionInput,
   ): Promise<ActivateAiConnectorOAuthConnectionResult | null> {
     const client = await this.pool.connect();
+    let committed = false;
+    let committedExpiries: FinalizeAiConnectorExpiryResult[] = [];
     try {
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`ai-connector:${input.userId}`]);
-      await this.finalizeDueAiConnectorExpiriesTx(client, input.userId);
+      committedExpiries = await this.finalizeDueAiConnectorExpiriesTx(client, input.userId);
       const policyResult = await client.query<{ max_active_connections_per_user: number; inactivity_expiry_days: number }>(
         "SELECT max_active_connections_per_user, inactivity_expiry_days FROM ai_connector_policy_settings WHERE id = TRUE FOR SHARE");
       const policy = policyResult.rows[0]!;
@@ -4344,9 +4369,13 @@ export class PostgresPersistence implements Persistence {
       await client.query(`UPDATE ai_connector_connections SET status = 'active', last_used_at = $2::timestamptz, updated_at = $2::timestamptz WHERE id = $1`, [current.id, input.lastUsedAt ?? now]);
       const connection = await this.getAiConnectorConnectionTx(client, current.id);
       await client.query("COMMIT");
+      committed = true;
       return connection ? { connection, revokedConnectionIds: target ? [target.id] : [] } : null;
     } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
-    finally { client.release(); }
+    finally {
+      client.release();
+      if (committed) await this.publishImplicitAiConnectorExpiries(committedExpiries);
+    }
   }
 
   async saveAiConnectorCredential(input: SaveAiConnectorCredentialInput, executor: Pick<PoolClient, "query"> = this.pool): Promise<AiConnectorCredentialRecord> {

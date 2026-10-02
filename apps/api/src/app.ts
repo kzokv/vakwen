@@ -6,6 +6,7 @@ import { Env, type GoogleOAuthEnvConfig } from "@vakwen/config";
 import { createPersistence } from "./persistence/index.js";
 import type { Persistence } from "./persistence/types.js";
 import { createEventBus, type BufferedEventBus } from "./events/index.js";
+import { registerImplicitAiConnectorExpiryPublisher } from "./services/mcpConnectorLifecycle.js";
 import {
   CONTEXT_FALLBACK_HEADER,
   contextClearCookieString,
@@ -227,6 +228,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<AppInstan
   if ("init" in app.eventBus && typeof (app.eventBus as { init?: () => Promise<void> }).init === "function") {
     await (app.eventBus as { init: () => Promise<void> }).init();
   }
+  registerImplicitAiConnectorExpiryPublisher(app);
   app.oauthConfig = options.oauthConfig !== undefined ? options.oauthConfig : Env.getGoogleOAuthEnvConfig();
   app.appBaseUrl = options.appBaseUrl ?? Env.APP_BASE_URL ?? "http://localhost:3000";
   // KZO-198: a defensive `onReady` re-warm guards the ready-chain transition.

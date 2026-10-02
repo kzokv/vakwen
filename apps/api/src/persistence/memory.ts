@@ -1946,8 +1946,25 @@ export class MemoryPersistence implements Persistence {
     }
   }
 
+  private implicitAiConnectorExpiryPublisher?: (expiry: FinalizeAiConnectorExpiryResult) => Promise<void>;
+
+  setImplicitAiConnectorExpiryPublisher(publisher: (expiry: FinalizeAiConnectorExpiryResult) => Promise<void>): void {
+    this.implicitAiConnectorExpiryPublisher = publisher;
+  }
+
+  private async publishImplicitAiConnectorExpiries(expiries: FinalizeAiConnectorExpiryResult[]): Promise<void> {
+    for (const expiry of expiries) {
+      try {
+        await this.implicitAiConnectorExpiryPublisher?.(expiry);
+      } catch {
+        // Delivery is best effort after commit; the app publisher logs failures.
+      }
+    }
+  }
+
   async saveAiConnectorConnection(input: SaveAiConnectorConnectionInput): Promise<AiConnectorConnectionRecord> {
-    return this.withConnectorUserLock(input.userId, async () => {
+    const committedExpiries: FinalizeAiConnectorExpiryResult[] = [];
+    const result = await this.withConnectorUserLock(input.userId, async () => {
       const expiries = await this.prepareDueAiConnectorExpiries(input.userId);
       const due = (id: string) => expiries.some(expiry => expiry.current.id === id && expiry.canCommit());
       const previous = this.aiConnectorConnections.get(input.id);
@@ -1982,7 +1999,10 @@ export class MemoryPersistence implements Persistence {
       }
       // Build and validate the new row before any expiry effects become visible.
       const saved = this.saveAiConnectorConnectionUnlocked(input, false);
-      for (const expiry of expiries) expiry.commit();
+      for (const expiry of expiries) {
+        const finalized = expiry.commit();
+        if (finalized?.notificationId) committedExpiries.push(finalized);
+      }
       const finalizedPrevious = this.aiConnectorConnections.get(input.id);
       if (finalizedPrevious?.expiryProcessedAt) {
         saved.expiryProcessedAt = finalizedPrevious.expiryProcessedAt;
@@ -1992,6 +2012,9 @@ export class MemoryPersistence implements Persistence {
       this.aiConnectorConnections.set(saved.id, saved);
       return { ...saved, status: preservePending ? this.connectorStatus(saved) : saved.status, capabilities: [...saved.capabilities], scopes: [...saved.scopes], toolToggles: { ...saved.toolToggles } };
     });
+    // The user lock is released before callbacks can read or save through persistence.
+    await this.publishImplicitAiConnectorExpiries(committedExpiries);
+    return result;
   }
 
   async finalizeAiConnectorExpiry(input: FinalizeAiConnectorExpiryInput): Promise<FinalizeAiConnectorExpiryResult> {
@@ -2346,7 +2369,8 @@ export class MemoryPersistence implements Persistence {
   }
 
   async activateAiConnectorOAuthConnection(input: ActivateAiConnectorOAuthConnectionInput) {
-    return this.withConnectorUserLock(input.userId, async () => {
+    const committedExpiries: FinalizeAiConnectorExpiryResult[] = [];
+    const result = await this.withConnectorUserLock(input.userId, async () => {
       const expiries = await this.prepareDueAiConnectorExpiries(input.userId);
       const due = (id: string) => expiries.some(expiry => expiry.current.id === id && expiry.canCommit());
       const current = this.aiConnectorConnections.get(input.connectionId);
@@ -2380,7 +2404,10 @@ export class MemoryPersistence implements Persistence {
         throw routeError(409, "mcp_connection_limit_exceeded", "Connection limit reached; select a connection to replace");
       }
 
-      for (const expiry of expiries) expiry.commit();
+      for (const expiry of expiries) {
+        const finalized = expiry.commit();
+        if (finalized?.notificationId) committedExpiries.push(finalized);
+      }
       const now = new Date().toISOString();
       if (target) {
         this.aiConnectorConnections.set(target.id, { ...target, status: "revoked", revokedAt: now,
@@ -2393,6 +2420,9 @@ export class MemoryPersistence implements Persistence {
       this.aiConnectorConnections.set(current.id, activated);
       return { connection: { ...activated, scopes: [...activated.scopes] }, revokedConnectionIds: target ? [target.id] : [] };
     });
+    // The user lock is released before callbacks can read or save through persistence.
+    await this.publishImplicitAiConnectorExpiries(committedExpiries);
+    return result;
   }
 
   async saveAiConnectorCredential(input: SaveAiConnectorCredentialInput): Promise<AiConnectorCredentialRecord> {

@@ -17,7 +17,7 @@ import {
 } from "../../src/mcp/oauth.js";
 import { loadMigrationManifest } from "../../src/persistence/migrationManifest.js";
 import { PostgresPersistence } from "../../src/persistence/postgres.js";
-import { hashGeneratedBearerToken } from "../../src/services/mcpConnectorLifecycle.js";
+import { hashGeneratedBearerToken, registerImplicitAiConnectorExpiryPublisher } from "../../src/services/mcpConnectorLifecycle.js";
 
 const authorizationWrites = vi.hoisted(() => ({ enabled: true }));
 vi.mock("@vakwen/config", async (importOriginal) => {
@@ -300,6 +300,8 @@ function registerIndependentOAuthRegressions() {
       const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
       const prepared = phase === "activation" ? await prepare() : null;
       await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      const events: Array<{ type: string; data: unknown }> = [];
+      const unsubscribe = app.eventBus.subscribe("user-1", event => events.push(event));
       if (phase === "save") {
         await app.persistence.saveAiConnectorConnection({ ...original, id: "implicit-expiry-successor", status: "pending" });
       } else {
@@ -312,7 +314,12 @@ function registerIndependentOAuthRegressions() {
       const audits = await app.persistence.listAuditLog({ page: 1, limit: 100 });
       expect(audits.items.filter(item => item.action === "ai_connector_expired" && item.metadata?.connectionId === original.id)).toHaveLength(1);
       const notifications = await app.persistence.getNotificationsForUser("user-1", { page: 1, limit: 100 });
-      expect(notifications.notifications.filter(item => item.sourceRef === original.id && item.title === "AI connector expired")).toHaveLength(1);
+      const expiryNotifications = notifications.notifications.filter(item => item.sourceRef === original.id && item.title === "AI connector expired");
+      expect(expiryNotifications).toHaveLength(1);
+      expect(events.filter(event => event.type === "ai_connector_notification" && (event.data as { status?: string }).status === "expired")).toEqual([
+        expect.objectContaining({ data: { connectionId: original.id, provider: original.provider, status: "expired", notificationId: expiryNotifications[0]!.id } }),
+      ]);
+      unsubscribe();
     });
     it.each(["save", "activation"] as const)("implicit %s expiry failure: rolls back successor and terminal effects", async (phase) => {
       await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });
@@ -323,6 +330,8 @@ function registerIndependentOAuthRegressions() {
         ? (await app.persistence.listAiConnectorConnectionsForUser("user-1")).find(item => item.status === "pending")!.id
         : "pending-expiry-failure";
       await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      const events: Array<{ type: string; data: unknown }> = [];
+      const unsubscribe = app.eventBus.subscribe("user-1", event => events.push(event));
       const faultPool = app.persistence instanceof PostgresPersistence ? new Pool({ connectionString: databaseUrl }) : null;
       const failure = faultPool ? null : vi.spyOn(app.persistence, "createNotification").mockRejectedValueOnce(new Error("expiry notification unavailable"));
       try {
@@ -346,8 +355,59 @@ function registerIndependentOAuthRegressions() {
       expect(audits.items.filter(item => item.action === "ai_connector_expired" && item.metadata?.connectionId === original.id)).toHaveLength(0);
       const notifications = await app.persistence.getNotificationsForUser("user-1", { page: 1, limit: 100 });
       expect(notifications.notifications.filter(item => item.sourceRef === original.id && item.title === "AI connector expired")).toHaveLength(0);
+      expect(events.filter(event => event.type === "ai_connector_notification" && (event.data as { status?: string }).status === "expired")).toHaveLength(0);
       expect((await authorize()).statusCode).toBe(200);
       expect((await app.persistence.getAiConnectorConnection(original.id))?.expiryProcessedAt).toBeTruthy();
+      expect(events.filter(event => event.type === "ai_connector_notification" && (event.data as { status?: string }).status === "expired")).toHaveLength(1);
+      unsubscribe();
+    });
+    it.each(["save", "activation"] as const)("implicit %s expiry event: permits persistence reentry after releasing locks and a single-client pool", async (phase) => {
+      if (app.persistence instanceof PostgresPersistence) {
+        const previous = app.persistence;
+        app.persistence = new PostgresPersistence({ databaseUrl: databaseUrl!, redisUrl: redisUrl!, poolMax: 1 });
+        await app.persistence.init();
+        registerImplicitAiConnectorExpiryPublisher(app);
+        await previous.close();
+      }
+      await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });
+      const a = (await authorize()).json();
+      const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      const exchange = phase === "activation" ? await prepare() : null;
+      await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      const publish = app.eventBus.publishEvent.bind(app.eventBus);
+      let expiryEvents = 0;
+      const publication = vi.spyOn(app.eventBus, "publishEvent").mockImplementation(async (userId, type, data) => {
+        if (type === "ai_connector_notification" && (data as { status?: string }).status === "expired") {
+          expiryEvents++;
+          const committed = (await app.persistence.getAiConnectorConnection(original.id))!;
+          expect(committed.expiryProcessedAt).toBeTruthy();
+          await app.persistence.saveAiConnectorConnection({ ...committed, displayName: "Observed after commit" });
+        }
+        return publish(userId, type, data);
+      });
+      try {
+        if (exchange) expect((await exchange()).statusCode).toBe(200);
+        else await app.persistence.saveAiConnectorConnection({ ...original, id: "postcommit-event-successor", status: "pending" });
+        expect(expiryEvents).toBe(1);
+        expect((await app.persistence.getAiConnectorConnection(original.id))?.displayName).toBe("Observed after commit");
+      } finally { publication.mockRestore(); }
+    });
+    it.each(["save", "activation"] as const)("implicit %s expiry event failure: preserves the committed mutation without repeating effects", async (phase) => {
+      await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });
+      const a = (await authorize()).json();
+      const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      const exchange = phase === "activation" ? await prepare() : null;
+      await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      const publication = vi.spyOn(app.eventBus, "publishEvent").mockRejectedValueOnce(new Error("event bus unavailable"));
+      try {
+        if (exchange) expect((await exchange()).statusCode).toBe(200);
+        else await app.persistence.saveAiConnectorConnection({ ...original, id: "failed-event-successor", status: "pending" });
+      } finally { publication.mockRestore(); }
+      const committed = (await app.persistence.getAiConnectorConnection(original.id))!;
+      expect(committed.expiryProcessedAt).toBeTruthy();
+      await app.persistence.saveAiConnectorConnection({ ...committed, displayName: "Renamed after event failure" });
+      const notifications = await app.persistence.getNotificationsForUser("user-1", { page: 1, limit: 100 });
+      expect(notifications.notifications.filter(item => item.sourceRef === original.id && item.title === "AI connector expired")).toHaveLength(1);
     });
     it("bearer credential expiry: finalizes only its bound connection and remains idempotent", async () => {
       await app.persistence.saveAiConnectorPolicySettings({ bearerFallback: { enabled: true, allowedClientKinds: ["codex_cli"], allowedToolGroups: ["read"], maxLifetimeDays: 7, maxActiveConnectorsPerUser: 1 } });
@@ -2259,6 +2319,7 @@ describePostgres("MCP OAuth Postgres replacement semantics", () => {
     app = await buildApp({ persistenceBackend: "memory", oauthConfig: testOAuthConfig, appBaseUrl: "http://localhost:3000" });
     await app.persistence.close();
     app.persistence = persistence;
+    registerImplicitAiConnectorExpiryPublisher(app);
     await persistence.setAppConfigEncryptedSecret("mcpOauthTokenSecret", mcpOAuthTokenSecret);
   });
 

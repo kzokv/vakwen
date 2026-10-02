@@ -2979,6 +2979,8 @@ export interface Persistence {
   getPendingShareInviteCapabilities(inviteCode: string): Promise<ShareCapability[]>;
   setPendingShareInviteCapabilities(input: SetPendingShareInviteCapabilitiesInput): Promise<ShareCapability[]>;
   saveAiConnectorConnection(input: SaveAiConnectorConnectionInput): Promise<AiConnectorConnectionRecord>;
+  /** Optional delivery callback, invoked only for committed implicit expiry after storage locks are released. */
+  setImplicitAiConnectorExpiryPublisher(publisher: (expiry: FinalizeAiConnectorExpiryResult) => Promise<void>): void;
   finalizeAiConnectorExpiry(input: FinalizeAiConnectorExpiryInput): Promise<FinalizeAiConnectorExpiryResult>;
   getAiConnectorConnection(id: string): Promise<AiConnectorConnectionRecord | null>;
   listAiConnectorConnectionsForUser(userId: string): Promise<AiConnectorConnectionRecord[]>;
