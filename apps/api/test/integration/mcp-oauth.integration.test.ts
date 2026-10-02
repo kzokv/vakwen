@@ -223,6 +223,23 @@ function registerIndependentOAuthRegressions() {
       expect(body.result.isError).not.toBe(true);
       return body.result.structuredContent.id;
     }
+    it("consent candidates: serializes only the public connection DTO", async () => {
+      const token = (await authorize()).json();
+      const stored = (await app.persistence.getAiConnectorConnection(connectionId(token.access_token)))!;
+      const request = await createAuthorizationRequest({ headers, resource, verifier, redirectUri, clientId });
+      const response = await app.inject({ remoteAddress: testIp, method: "GET", url: `/oauth/consent/${request.requestId}`, headers });
+      expect(response.statusCode).toBe(200);
+      const candidates = response.json().replacementCandidates;
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]).toMatchObject({ id: stored.id, displayName: stored.displayName,
+        scopes: stored.scopes, createdAt: stored.createdAt, lastUsedAt: stored.lastUsedAt, expiresAt: stored.expiresAt });
+      // The JSON boundary must not expose internal identity or lifecycle fields, including future additions.
+      expect(Object.keys(candidates[0]).sort()).toEqual([
+        "id", "provider", "vendor", "clientKind", "authMode", "capabilities", "displayName", "status",
+        "hiddenAt", "scopes", "toolToggles", "expiresAt", "expiryNotifiedAt", "lastUsedAt", "revokedAt",
+        "revocationReason", "replacedByConnectionId", "createdAt", "updatedAt",
+      ].sort());
+    });
     it.each([1, 2, 3])("create B: preserves A existing session and both refresh independently (run %i)", async () => {
       const a = (await authorize()).json();
       const session = await read(a.access_token);

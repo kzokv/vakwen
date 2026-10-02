@@ -11,6 +11,7 @@ import type {
 } from "@vakwen/shared-types";
 import { Env } from "@vakwen/config";
 import { routeError } from "../lib/routeError.js";
+import { toAiConnectorConnectionDto } from "../services/aiConnectorDto.js";
 import { connectorGroupForScope } from "../services/mcpConnectorLifecycle.js";
 import { getMcpClientByKind } from "./clientRegistry.js";
 import { ALL_MCP_SCOPES, researchScopeAcquisitionAllowed } from "./tools.js";
@@ -310,7 +311,7 @@ export async function getMcpOAuthConsentRequest(
   return {
     activeConnectionCount: active.length,
     maxActiveConnectionsPerUser: settings.maxActiveConnectionsPerUser,
-    replacementCandidates: active.filter(connection => connection.authMode === "oauth" && connection.vendor === oauthClient.identity.vendor && connection.clientKind === oauthClient.identity.clientKind),
+    replacementCandidates: active.filter(connection => connection.authMode === "oauth" && connection.vendor === oauthClient.identity.vendor && connection.clientKind === oauthClient.identity.clientKind).map(toAiConnectorConnectionDto),
     requestId: request.id,
     clientId: request.clientId,
     clientKind: oauthClient.identity.clientKind,

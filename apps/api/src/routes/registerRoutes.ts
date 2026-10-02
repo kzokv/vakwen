@@ -222,6 +222,7 @@ import { enqueueCloseRefresh } from "../services/market-data/closeRefreshWorker.
 import { TwseStockDayCloseProvider, YahooChartCloseProvider } from "../services/market-data/providers/index.js";
 import { MockTwelveDataAuCatalogProvider } from "../services/market-data/providers/mockTwelveDataAu.js";
 import { routeError } from "../lib/routeError.js";
+import { toAiConnectorConnectionDto } from "../services/aiConnectorDto.js";
 import { groupsForListedTool, listMcpToolDefinitions, researchScopeAcquisitionAllowed } from "../mcp/tools.js";
 import { scopesForToolAccess } from "../mcp/policy.js";
 import {
@@ -1397,30 +1398,6 @@ function assertDelegableShareCapabilities(
       delegationShareId: context.delegationShareId,
     },
   );
-}
-
-function toAiConnectorConnectionDto(record: AiConnectorConnectionRecord) {
-  return {
-    id: record.id,
-    provider: record.provider,
-    vendor: record.vendor,
-    clientKind: record.clientKind,
-    authMode: record.authMode,
-    capabilities: record.capabilities,
-    displayName: record.displayName,
-    status: record.status,
-    hiddenAt: record.hiddenAt ?? null,
-    scopes: record.scopes,
-    toolToggles: record.toolToggles,
-    expiresAt: record.expiresAt,
-    expiryNotifiedAt: record.expiryNotifiedAt,
-    lastUsedAt: record.lastUsedAt,
-    revokedAt: record.revokedAt,
-    revocationReason: record.revocationReason,
-    replacedByConnectionId: record.replacedByConnectionId ?? null,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-  };
 }
 
 function connectorVisibleInOperationalView(connection: AiConnectorConnectionRecord): boolean {
