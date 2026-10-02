@@ -58,6 +58,8 @@ A fifth Codex finding identified persistence-only fields in consent replacement 
 
 A full browser run exposed a readiness assertion that failed immediately when reload briefly produced two shell markers. The shared E2E wait now retries until each marker has exactly one match, while persistent duplicates still fail. Five repetitions each of the theme reload and mobile settings navigation cases passed with retries disabled (10 passed, 5 viewport skips).
 
+A subsequent responsive-flow retry showed the test helper waiting only for server-rendered shell markup before clicking a client router control. Responsive navigation now uses the existing client-readiness wait while retaining its deliberate omission of breadcrumb visibility. Five repetitions of the affected mobile settings and mobile/tablet account-setup flows passed without retries (15 passed, 5 viewport skips).
+
 The root agent owns clean commits, PR metadata, review requests after each push, detailed review replies/thread resolution, and CI monitoring. PR #305 targets dev, is assigned to @kzokv, and uses bug/documentation plus the authorized Linear waiver. Its live state is the delivery record rather than a frozen claim in this document.
 
 ## Separate rollout gate

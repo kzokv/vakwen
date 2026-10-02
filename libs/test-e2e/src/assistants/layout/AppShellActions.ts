@@ -51,15 +51,14 @@ export class AppShellActions extends AppBaseActions {
    * the DOM and contains the expected `Dashboard` link (verified via the
    * Playwright snapshot dump).
    *
-   * For mobile / tablet shell tests we only need the AppShell to be
-   * mounted (so the sidebar tree is queryable). Wait on `app-shell-ready`
-   * attachment instead — the same signal that `appShell.assert.appIsReady()`
-   * uses.
+   * Wait for shell client readiness without requiring the breadcrumb to be
+   * visible. Server-rendered controls can appear before their handlers are
+   * hydrated, so the server shell marker alone is insufficient for clicks.
    */
   @Step()
   async navigateToRouteForResponsiveTest(path: string): Promise<void> {
     await this.mxGotoUrl(new URL(path, TestEnv.appBaseUrl).href);
-    await expect(this.el.appReady).toBeAttached({ timeout: 30_000 });
+    await this.mxWaitForShellClientReady(30_000);
   }
 
   /**
