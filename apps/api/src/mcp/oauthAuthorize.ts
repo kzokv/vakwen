@@ -58,6 +58,9 @@ const authorizeQuerySchema = z.object({
 }).passthrough();
 
 const approveBodySchema = z.object({
+  connectionAction: z.enum(["create", "replace"]),
+  replacementConnectionId: z.string().min(1).optional(),
+  displayName: z.string().trim().min(1).max(120).optional(),
   csrfToken: z.string().min(1),
   scopes: z.array(scopeSchema).min(1),
   lifetimeDays: z.number().int().min(1).optional(),
@@ -180,6 +183,7 @@ export async function handleMcpOAuthAuthorize(
   reply: FastifyReply,
 ): Promise<FastifyReply | void> {
   setMcpOAuthNoStoreHeaders(reply);
+  if (!Env.MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED) return sendOAuthError(reply, 503, "temporarily_unavailable", "New authorizations are temporarily paused; existing connections remain available");
   const rawQuery = req.query as Record<string, string | undefined>;
   const returnTo = `/connectors/chatgpt/authorize?${new URLSearchParams(
     Object.entries(rawQuery).flatMap(([key, value]) => value === undefined ? [] : [[key, value]]),
@@ -278,9 +282,7 @@ export async function handleMcpOAuthAuthorize(
   req.log.info({
     mcpOAuth: {
       requestId,
-      clientId: query.client_id,
-      redirectUri: query.redirect_uri,
-      resource,
+      clientKind: oauthClient.identity.clientKind,
       scopes: policyScopes,
     },
   }, "mcp_oauth_authorize_started");
@@ -303,7 +305,12 @@ export async function getMcpOAuthConsentRequest(
   }
   const settings = await app.persistence.getAiConnectorPolicySettings();
   const oauthClient = await inspectOAuthClient(request.clientId, request.redirectUri);
+  const connections = await app.persistence.listAiConnectorConnectionsForUser(request.userId);
+  const active = connections.filter(connection => connection.status === "active" && (!connection.expiresAt || Date.parse(connection.expiresAt) > Date.now()));
   return {
+    activeConnectionCount: active.length,
+    maxActiveConnectionsPerUser: settings.maxActiveConnectionsPerUser,
+    replacementCandidates: active.filter(connection => connection.authMode === "oauth" && connection.vendor === oauthClient.identity.vendor && connection.clientKind === oauthClient.identity.clientKind),
     requestId: request.id,
     clientId: request.clientId,
     clientKind: oauthClient.identity.clientKind,
@@ -337,6 +344,7 @@ export async function approveMcpOAuthConsent(
   body: unknown,
 ): Promise<McpOAuthConsentDecisionDto> {
   if (!req.authContext) throw routeError(401, "auth_required", "authentication required");
+  if (!Env.MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED) throw routeError(503, "mcp_oauth_authorizations_paused", "New authorizations are temporarily paused; existing connections remain available");
   const parsed = approveBodySchema.parse(body);
   const request = await app.persistence.getMcpOAuthAuthorizationRequest(requestId);
   if (!request || request.userId !== req.authContext.sessionUserId) {
@@ -350,6 +358,18 @@ export async function approveMcpOAuthConsent(
   const settings = await app.persistence.getAiConnectorPolicySettings();
   const oauthClient = await inspectOAuthClient(request.clientId, request.redirectUri);
   const client = getMcpClientByKind(oauthClient.identity.clientKind);
+  if ((parsed.connectionAction === "replace") !== Boolean(parsed.replacementConnectionId)) {
+    throw routeError(400, "mcp_oauth_replacement_target_required", "Select a connection to replace, or choose create without a replacement target");
+  }
+  if (parsed.replacementConnectionId) {
+    const target = await app.persistence.getAiConnectorConnection(parsed.replacementConnectionId);
+    if (!target || target.userId !== request.userId || target.status !== "active"
+      || target.authMode !== "oauth" || target.vendor !== client.vendor || target.clientKind !== client.clientKind
+      || (target.expiresAt && Date.parse(target.expiresAt) <= Date.now())) {
+      throw routeError(409, "mcp_oauth_replacement_target_invalid", "The selected connection is no longer eligible; reload and select another connection");
+    }
+  }
+
   const requestedScopeSet = new Set(request.scopes);
   const selectedScopes = parsed.scopes.filter((scope) => requestedScopeSet.has(scope));
   const allowedScopes = filterScopesByPolicy(selectedScopes, settings);
@@ -378,7 +398,7 @@ export async function approveMcpOAuthConsent(
       clientKind: client.clientKind,
       authMode: client.defaultAuthMode,
       capabilities: [...client.capabilities],
-      displayName: client.defaultDisplayName,
+      displayName: parsed.displayName ?? `${client.defaultDisplayName} · ${connectionId}`,
       status: "pending",
       oauthClientId: request.clientId,
       oauthSubject: request.userId,
@@ -386,6 +406,9 @@ export async function approveMcpOAuthConsent(
       expiresAt,
     },
     code: {
+      authorizationRequestId: request.id,
+      connectionAction: parsed.connectionAction,
+      replacementConnectionId: parsed.replacementConnectionId ?? null,
       id: randomUUID(),
       codeHash: hashMcpOAuthToken(secret, code),
       connectionId,
@@ -411,13 +434,13 @@ export async function approveMcpOAuthConsent(
   });
   req.log.info({
     mcpOAuth: {
-      requestId: request.id,
-      clientId: request.clientId,
-      redirectUri: request.redirectUri,
-      resource: request.resource,
+      requestId: req.id,
+      authorizationRequestId: request.id,
+      connectionId,
+      connectionAction: parsed.connectionAction,
+      replacementConnectionId: parsed.replacementConnectionId ?? null,
+      clientKind: oauthClient.identity.clientKind,
       scopes: allowedScopes,
-      issuer,
-      authorizationResponseIssuer: getAuthorizationResponseIssuer(issuer) ?? null,
     },
   }, "mcp_oauth_approval_redirect_issued");
   return {

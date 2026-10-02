@@ -135,3 +135,63 @@ export const chatGptConnectorAuthorizeCopy: Record<LocaleCode, {
 export function getAiConnectorScopeLabel(locale: LocaleCode, scope: AiConnectorScope): string {
   return aiConnectorScopeLabels[locale][scope];
 }
+
+export const connectionLifecycleCopy = {
+  en: {
+    choice: "Connection action", create: "Create another connection", replace: "Replace an existing connection",
+    cap: "The active connection limit has been reached. Select an eligible connection to replace, or revoke an unused connection in settings.",
+    capacity: "Active connections", select: "Select the connection to replace", noTargets: "No eligible connections are available for this AI client.",
+    impact: "Only the selected authorization stops working after the new connection is activated. Other connections keep working. Cancellation preserves the existing connection. Vakwen cannot remove the old entry from your AI client's settings.",
+    name: "Connection name (optional)", nameHint: "Leave blank for an automatic name. This label is for Vakwen and may differ from the name in your AI client.",
+    created: "Created", lastUsed: "Last used", expires: "Expires", never: "Never", active: "Active", permissions: "Permissions",
+    refresh: "Refresh available connections", capacityChanged: "Connection capacity changed. Refresh available connections and select a replacement or free a slot in settings.",
+    targetChanged: "The selected connection is no longer eligible. Refresh available connections and choose a target again.",
+    rename: "Rename", save: "Save name", cancel: "Cancel", label: "Connection name", saved: "Connection name saved.",
+  },
+  "zh-TW": {
+    choice: "連線操作", create: "建立另一個連線", replace: "取代現有連線",
+    cap: "已達有效連線數上限。請選擇可取代的連線，或在設定中撤銷不再使用的連線。",
+    capacity: "有效連線", select: "選擇要取代的連線", noTargets: "此 AI 客戶端沒有可取代的連線。",
+    impact: "新連線啟用後，只有所選的舊授權會停止運作，其他連線不受影響。取消會保留原有連線。Vakwen 無法移除 AI 客戶端設定中的舊項目。",
+    name: "連線名稱（選填）", nameHint: "留空會自動命名。此名稱用於 Vakwen，可能與 AI 客戶端顯示的名稱不同。",
+    created: "建立時間", lastUsed: "上次使用", expires: "到期時間", never: "無", active: "有效", permissions: "權限",
+    refresh: "重新整理可用連線", capacityChanged: "連線容量已變更。請重新整理可用連線並選擇取代，或在設定中釋出空間。",
+    targetChanged: "所選連線已無法取代。請重新整理可用連線，再重新選擇。",
+    rename: "重新命名", save: "儲存名稱", cancel: "取消", label: "連線名稱", saved: "已儲存連線名稱。",
+  },
+} as const;
+
+const connectionReasonCopy: Record<LocaleCode, Record<string, string>> = {
+  en: {
+    mcp_connection_replaced: "This connection was replaced by a new authorization.",
+    mcp_connection_revoked: "This connection was revoked. Reconnect to authorize access again.",
+    mcp_connection_expired: "This connection has expired. Reconnect to renew access.",
+    mcp_auth_expired: "The access token expired. Your AI client needs to refresh its credentials.",
+    mcp_auth_invalid_session: "Your account session changed. Reconnect to authorize access again.",
+    mcp_auth_invalid_user: "The account is no longer available for this connection.",
+    replaced_by_oauth_authorization: "Replaced by a new authorization.",
+    manual: "Revoked by the user.",
+    absolute_expiry: "The connection lifetime ended.",
+    inactivity_expiry: "The connection expired after inactivity.",
+    session_version_changed: "Revoked after an account session security change.",
+    refresh_token_reuse: "Revoked because a previously used refresh token was replayed.",
+  },
+  "zh-TW": {
+    mcp_connection_replaced: "此連線已由新的授權取代。",
+    mcp_connection_revoked: "此連線已撤銷。請重新連線以再次授權存取。",
+    mcp_connection_expired: "此連線已到期。請重新連線以更新存取權。",
+    mcp_auth_expired: "存取權杖已到期。AI 客戶端需要更新驗證資訊。",
+    mcp_auth_invalid_session: "帳戶工作階段已變更。請重新連線以再次授權存取。",
+    mcp_auth_invalid_user: "此連線使用的帳戶已無法使用。",
+    replaced_by_oauth_authorization: "已由新的授權取代。",
+    manual: "由使用者撤銷。",
+    absolute_expiry: "連線有效期限已結束。",
+    inactivity_expiry: "連線因長時間未使用而到期。",
+    session_version_changed: "因帳戶工作階段安全性變更而撤銷。",
+    refresh_token_reuse: "因重複使用已用過的更新權杖而撤銷。",
+  },
+};
+
+export function getConnectionReasonLabel(locale: LocaleCode, reason: string | null): string {
+  return reason ? connectionReasonCopy[locale][reason] ?? reason : "-";
+}

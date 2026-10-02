@@ -142,3 +142,7 @@
 ## Promoted to .claude/rules/ (configured portfolio capabilities, 2026-07-26)
 - `account-capability-authority.md` — Active viewed-owner accounts are the capability authority; initiating mutation responses apply immediately, while buffered lifecycle events invalidate and refetch rather than replaying possibly stale payload state.
 - `bounded-account-mutations.md` — Account create/update remain narrow atomic persistence operations, protected by structural tests and representative PostgreSQL benchmark artifacts rather than CI wall-clock assertions.
+
+## Promoted to .claude/rules/ (independent OAuth connections, 2026-10-02)
+- `mcp-strict-object-registration.md` — Preserve object-level unknown-key rejection across MCP SDK registration; verify through the real tool-call route.
+- `mcp-trusted-auth-failure-attribution.md` — Attribute failed authentication only after verified credential bindings; keep rejection intact when audit persistence fails and use safe correlation.

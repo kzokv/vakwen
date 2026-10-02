@@ -3296,6 +3296,7 @@ export type AiTransactionDraftEventType =
 export type McpDraftPostingOutcome = "posted" | "blocked" | "confirmation_required";
 
 export interface AiConnectorConnectionDto {
+  replacedByConnectionId?: string | null;
   id: string;
   /**
    * Transitional compatibility field. New code should prefer
@@ -3463,6 +3464,9 @@ export interface McpOAuthRedirectUriRepairDto {
 }
 
 export interface McpOAuthConsentRequestDto {
+  activeConnectionCount: number;
+  maxActiveConnectionsPerUser: number;
+  replacementCandidates: AiConnectorConnectionDto[];
   requestId: string;
   clientId: string;
   clientKind?: AiConnectorClientKind;
@@ -3739,6 +3743,7 @@ export interface PostedTransactionMutationRunDto {
 }
 
 export interface AiConnectorAccessLogDto {
+  requestId?: string | null;
   id: string;
   connectionId: string | null;
   connectionDisplayName: string | null;

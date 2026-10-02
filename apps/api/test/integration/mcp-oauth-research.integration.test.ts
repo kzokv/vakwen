@@ -139,6 +139,7 @@ describe("MCP OAuth research scope", () => {
       headers: authHeaders,
       payload: {
         csrfToken: consentBody.csrfToken,
+        connectionAction: "create",
         scopes: ["research:read"],
         lifetimeDays: 7,
       },

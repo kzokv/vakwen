@@ -5,7 +5,7 @@ export interface EnvGroup {
 
 // Root env groups (matches .env.example section ordering)
 export const envGroups: EnvGroup[] = [
-  { label: "Environment & modes", keys: ["NODE_ENV", "AUTH_MODE", "PERSISTENCE_BACKEND"] },
+  { label: "Environment & modes", keys: ["NODE_ENV", "AUTH_MODE", "PERSISTENCE_BACKEND", "MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED"] },
   { label: "Application ports", keys: ["API_PORT", "WEB_PORT", "DB_PORT", "REDIS_PORT"] },
   { label: "Database/Redis URLs", keys: ["DB_URL", "REDIS_URL"] },
   { label: "Market data providers", keys: ["DATA_PROVIDER_TIMEOUT_MS", "PRIMARY_PROVIDER", "FALLBACK_PROVIDER"] },
@@ -56,6 +56,7 @@ export const dockerCloudGroups: EnvGroup[] = [
     keys: [
       "NODE_ENV",
       "AUTH_MODE",
+      "MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED",
       "PERSISTENCE_BACKEND",
       "DEPLOY_ENV",
       "API_PORT",
@@ -107,6 +108,7 @@ export const dockerLocalGroups: EnvGroup[] = [
     keys: [
       "NODE_ENV",
       "AUTH_MODE",
+      "MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED",
       "PERSISTENCE_BACKEND",
       "API_PORT",
       "WEB_PORT",

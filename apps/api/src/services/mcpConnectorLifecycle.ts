@@ -471,7 +471,7 @@ export async function expireAiConnectorConnection(
   connection: AiConnectorConnectionRecord,
   reason: "absolute_expiry" | "inactivity_expiry",
 ): Promise<AiConnectorConnectionRecord> {
-  if (connection.status === "expired") return connection;
+  if (connection.status === "revoked" || connection.expiryProcessedAt) return connection;
   const now = nowIso();
   const next = await app.persistence.saveAiConnectorConnection({
     ...connection,
@@ -491,7 +491,7 @@ export async function expireAiConnectorConnection(
     },
   });
   await createConnectorNotification(app, next, "expired", { reason });
-  return next;
+  return app.persistence.saveAiConnectorConnection({ ...next, expiryProcessedAt: nowIso() });
 }
 
 export async function maybeNotifyAiConnectorExpiringSoon(

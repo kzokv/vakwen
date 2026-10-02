@@ -233,6 +233,11 @@ export class DefaultMcpPolicyService implements McpPolicyService {
         throw routeError(403, "mcp_client_kind_disabled", `AI connector client kind ${clientKind} is disabled`);
       }
     }
+    if (toolName === "get_profile") {
+      const context = await resolveSharedContext(app, auth.sessionUserId, undefined);
+      enforceRateLimit(auth, accessKind, context, req.ip);
+      return context;
+    }
     const searchPath = toolName === "search_instruments" ? resolveSearchInstrumentScopePath(auth, settings) : null;
     const group = searchPath?.group ?? connectorGroupForScope(toolScope);
     if (group === "research" && !researchMcpExposureEnabled()) {

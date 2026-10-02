@@ -58,7 +58,7 @@ import {
   updateAiConnector,
   type AiConnectorSummaryResponse,
 } from "../../features/ai-inbox/service";
-import { getAiConnectorScopeLabel } from "../connectors/i18n";
+import { connectionLifecycleCopy, getConnectionReasonLabel, getAiConnectorScopeLabel } from "../connectors/i18n";
 import { McpStatusChip, mcpStatusTone } from "../connectors/McpUiPrimitives";
 import {
   AiClientGlyph,
@@ -82,6 +82,7 @@ type BearerClientKind = Exclude<AiConnectorClientKind, "chatgpt_app" | "claude_a
 
 type LocalizedCopy = {
   pageEyebrow: string;
+  locale: "en" | "zh-TW";
   pageTitle: string;
   pageDescription: string;
   refresh: string;
@@ -196,6 +197,8 @@ type LocalizedCopy = {
   details: string;
   connectionDetails: string;
   statusReason: string;
+  replacedBy: string;
+  requestId: string;
   connectorId: string;
   permissions: string;
   backToConnection: string;
@@ -273,6 +276,7 @@ type LocalizedCopy = {
 const COPY: Record<"en" | "zh-TW", LocalizedCopy> = {
   en: {
     pageEyebrow: "AI settings",
+    locale: "en",
     pageTitle: "AI Connectors",
     pageDescription: "One MCP command center for setup, connection health, permissions, tool access, and recent activity.",
     refresh: "Refresh",
@@ -387,6 +391,8 @@ const COPY: Record<"en" | "zh-TW", LocalizedCopy> = {
     details: "Details",
     connectionDetails: "Connection details",
     statusReason: "Status reason",
+    replacedBy: "Replaced by connection",
+    requestId: "Request ID",
     connectorId: "Connector ID",
     permissions: "Permissions",
     backToConnection: "Back to connection",
@@ -462,6 +468,7 @@ const COPY: Record<"en" | "zh-TW", LocalizedCopy> = {
   },
   "zh-TW": {
     pageEyebrow: "AI 設定",
+    locale: "zh-TW",
     pageTitle: "AI 連接器",
     pageDescription: "以單一 MCP 指揮台集中管理設定、連線狀態、權限、工具存取與最近活動。",
     refresh: "重新整理",
@@ -576,6 +583,8 @@ const COPY: Record<"en" | "zh-TW", LocalizedCopy> = {
     details: "詳情",
     connectionDetails: "連線詳情",
     statusReason: "狀態原因",
+    replacedBy: "取代此授權的連線",
+    requestId: "請求識別碼",
     connectorId: "連接器 ID",
     permissions: "權限",
     backToConnection: "回到連線",
@@ -1123,8 +1132,8 @@ export function AiConnectorsSettingsClient() {
   } | null>(null);
 
   async function load() {
-    setIsLoading(true);
-    setIsLoadingLogs(true);
+    if (!summary) setIsLoading(true);
+    if (!summary) setIsLoadingLogs(true);
     setError("");
     try {
       const [nextSummary, history, logs] = await Promise.all([
@@ -1146,10 +1155,12 @@ export function AiConnectorsSettingsClient() {
       setActivityHasMore(logs.hasMore);
     } catch (err) {
       setError(err instanceof Error ? err.message : copy.loadError);
-      setHistoryConnections([]);
-      setAccessLogs([]);
-      setActivityNextOffset(null);
-      setActivityHasMore(false);
+      if (!summary) {
+        setHistoryConnections([]);
+        setAccessLogs([]);
+        setActivityNextOffset(null);
+        setActivityHasMore(false);
+      }
     } finally {
       setIsLoading(false);
       setIsLoadingLogs(false);
@@ -1358,6 +1369,23 @@ export function AiConnectorsSettingsClient() {
       setMessage(copy.toolSaved);
     } catch (err) {
       setError(err instanceof Error ? err.message : copy.toolError);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function rename(connection: AiConnectorConnectionDto, displayName: string): Promise<boolean> {
+    if (!displayName.trim()) return false;
+    setBusyId(connection.id);
+    setError("");
+    try {
+      const updated = await updateAiConnector(connection.id, { displayName: displayName.trim() });
+      setSummary((current) => current ? { ...current, connections: current.connections.map((item) => item.id === updated.id ? updated : item) } : current);
+      setMessage(connectionLifecycleCopy[locale].saved);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : copy.updateError);
+      return false;
     } finally {
       setBusyId(null);
     }
@@ -1911,6 +1939,8 @@ export function AiConnectorsSettingsClient() {
                             onDetails={() => void openConnectionDetails(connection, "connections")}
                             onInspect={() => openPermissionsForConnection(connection)}
                             onRevoke={() => void revoke(connection)}
+                            locale={locale}
+                            onRename={(name) => rename(connection, name)}
                           />
                         ))}
                       </div>
@@ -2353,8 +2383,9 @@ export function AiConnectorsSettingsClient() {
                           <p className="mt-1 text-sm text-muted-foreground">
                             {accessLogContextLabel(copy, log)} · {accessLogDetailLabel(copy, log)}
                           </p>
+                          {log.requestId ? <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{copy.requestId}: {log.requestId}</p> : null}
                           {log.denialReason ? (
-                            <p className="mt-1 text-sm text-amber-800">{log.denialReason}</p>
+                            <p className="mt-1 text-sm text-amber-800">{getConnectionReasonLabel(copy.locale, log.denialReason)}</p>
                           ) : null}
                         </div>
                         <div className="text-sm text-muted-foreground">
@@ -2420,6 +2451,8 @@ function ConnectionSummaryCard({
   onDetails,
   onInspect,
   onRevoke,
+  locale,
+  onRename,
 }: {
   busy: boolean;
   connection: AiConnectorConnectionDto;
@@ -2428,7 +2461,12 @@ function ConnectionSummaryCard({
   onDetails: () => void;
   onInspect: () => void;
   onRevoke: () => void;
+  locale: "en" | "zh-TW";
+  onRename: (name: string) => Promise<boolean>;
 }) {
+  const lifecycle = connectionLifecycleCopy[locale];
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(connection.displayName);
   const metadata = getAiClientMetadataFromConnection(connection);
   return (
     <div
@@ -2442,12 +2480,13 @@ function ConnectionSummaryCard({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <AiClientGlyph connection={connection} className="h-9 w-9 rounded-xl" />
-            <h3 className="text-base font-semibold text-foreground">{connection.displayName}</h3>
+            <h3 className="break-words text-base font-semibold text-foreground">{connection.displayName}</h3>
             <span className={cn("rounded-full border px-2 py-0.5 text-xs capitalize", statusClassName(connection.status))}>
               {connection.status}
             </span>
             <McpStatusChip tone="slate">{clientKindLabel(connection)}</McpStatusChip>
           </div>
+          <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{copy.connectorId}: {connection.id}</p>
           <p className="mt-2 text-sm text-muted-foreground">{copy.vendor}: {vendorLabel(connection)} · {copy.authMode}: {authModeLabel(connection)}</p>
           <div className="mt-2 grid gap-1 text-sm text-muted-foreground sm:grid-cols-3">
             <span>{copy.lastUsed}: {formatTime(connection.lastUsedAt, copy)}</span>
@@ -2456,6 +2495,7 @@ function ConnectionSummaryCard({
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={() => { setName(connection.displayName); setEditing(true); }} disabled={busy}>{lifecycle.rename}</Button>
           <Button variant="outline" size="sm" onClick={onDetails}>
             <Eye className="h-4 w-4" aria-hidden="true" />
             {copy.details}
@@ -2470,6 +2510,15 @@ function ConnectionSummaryCard({
           </Button>
         </div>
       </div>
+      {editing ? (
+        <form className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={(event) => { event.preventDefault(); void onRename(name).then((saved) => { if (saved) setEditing(false); }); }}>
+          <label className="min-w-0 flex-1 text-sm font-medium">{lifecycle.label}
+            <Input autoFocus value={name} maxLength={120} onChange={(event) => setName(event.target.value)} disabled={busy} />
+          </label>
+          <Button type="submit" size="sm" disabled={busy || !name.trim()}>{lifecycle.save}</Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => setEditing(false)} disabled={busy}>{lifecycle.cancel}</Button>
+        </form>
+      ) : null}
       {connection.authMode === "oauth" ? (
         <div className="mt-4 rounded-2xl border border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
           <p>{copy.reconnectPrompt}</p>
@@ -2564,7 +2613,7 @@ function HistoryConnectionsTable({
                   <span className={cn("rounded-full border px-2 py-0.5 text-xs capitalize", statusClassName(connection.status))}>
                     {connection.status}
                   </span>
-                  <p className="mt-2 text-xs text-muted-foreground">{connection.revocationReason ?? "-"}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">{getConnectionReasonLabel(copy.locale, connection.revocationReason)}</p>
                 </td>
                 <td className="px-4 py-4 text-muted-foreground">{authModeLabel(connection)}</td>
                 <td className="px-4 py-4 text-muted-foreground">
@@ -2677,7 +2726,8 @@ function ConnectionDetailPanel({
         <DetailItem label={copy.vendor} value={vendorLabel(connection)} />
         <DetailItem label={copy.authMode} value={authModeLabel(connection)} />
         <DetailItem label={copy.clientKind} value={clientKindLabel(connection)} />
-        <DetailItem label={copy.statusReason} value={connection.revocationReason ?? "-"} />
+        <DetailItem label={copy.statusReason} value={getConnectionReasonLabel(copy.locale, connection.revocationReason)} />
+        {connection.replacedByConnectionId ? <DetailItem label={copy.replacedBy} value={connection.replacedByConnectionId} /> : null}
         <DetailItem label={copy.created} value={formatTime(connection.createdAt, copy)} />
         <DetailItem label={copy.lastUsed} value={formatTime(connection.lastUsedAt, copy)} />
         <DetailItem label={copy.expires} value={formatTime(connection.expiresAt, copy)} />
@@ -2716,7 +2766,8 @@ function ConnectionDetailPanel({
                 <McpStatusChip tone={log.result === "ok" ? "emerald" : log.result === "denied" ? "amber" : "rose"}>{log.result}</McpStatusChip>
               </div>
               <p className="mt-1 text-muted-foreground">{accessLogDetailLabel(copy, log)}</p>
-              {log.denialReason ? <p className="mt-1 text-amber-800">{log.denialReason}</p> : null}
+              {log.requestId ? <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{copy.requestId}: {log.requestId}</p> : null}
+              {log.denialReason ? <p className="mt-1 text-amber-800">{getConnectionReasonLabel(copy.locale, log.denialReason)}</p> : null}
             </div>
           )) : (
             <p className="text-sm text-muted-foreground">{copy.noActivity}</p>
@@ -3046,7 +3097,7 @@ function ToolDetailPanel({
                 <span className="text-muted-foreground">{accessLogContextLabel(copy, log)}</span>
               </div>
               <p className="mt-1 text-muted-foreground">{accessLogDetailLabel(copy, log)}</p>
-              {log.denialReason ? <p className="mt-1 text-amber-800">{log.denialReason}</p> : null}
+              {log.denialReason ? <p className="mt-1 text-amber-800">{getConnectionReasonLabel(copy.locale, log.denialReason)}</p> : null}
             </div>
           )) : <p className="text-sm text-muted-foreground">0</p>}
         </div>

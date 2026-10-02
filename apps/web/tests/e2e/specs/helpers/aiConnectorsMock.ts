@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 
-export async function mockAiConnectorApi(page: Page): Promise<void> {
+export async function mockAiConnectorApi(page: Page) {
   const policy = {
     enabled: true,
     maxActiveConnectionsPerUser: 3,
@@ -64,7 +64,7 @@ export async function mockAiConnectorApi(page: Page): Promise<void> {
       status: "active",
       scopes: ["portfolio:mcp_read"],
       toolToggles: {},
-      expiresAt: "2026-07-28T00:00:00.000Z",
+      expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(),
       expiryNotifiedAt: null,
       lastUsedAt: "2026-06-28T00:00:00.000Z",
       revokedAt: null,
@@ -83,7 +83,7 @@ export async function mockAiConnectorApi(page: Page): Promise<void> {
       status: "active",
       scopes: ["portfolio:mcp_read"],
       toolToggles: {},
-      expiresAt: "2026-07-28T00:00:00.000Z",
+      expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(),
       expiryNotifiedAt: null,
       lastUsedAt: "2026-06-28T00:00:00.000Z",
       revokedAt: null,
@@ -143,4 +143,5 @@ export async function mockAiConnectorApi(page: Page): Promise<void> {
       body: JSON.stringify(historyConnections[0]),
     });
   });
+  return { activeConnections, historyConnections, policy };
 }

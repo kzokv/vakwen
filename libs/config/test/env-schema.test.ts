@@ -175,3 +175,15 @@ describe("rootLocalSchema", () => {
     }
   });
 });
+
+describe("OAuth authorization freeze", () => {
+  it("unset freeze flag: parse → new authorizations enabled", () => {
+    expect(envSchema.parse({}).MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED).toBe(true);
+  });
+  it.each([false, "false", "0"])("operator disables with %s: parse → disabled", value => {
+    expect(envSchema.parse({ MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED: value }).MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED).toBe(false);
+  });
+  it("invalid operator value: parse → reject configuration", () => {
+    expect(envSchema.safeParse({ MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED: "off" }).success).toBe(false);
+  });
+});

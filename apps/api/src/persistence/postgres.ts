@@ -198,8 +198,8 @@ import type {
   UpdatePostedCashDividendInput,
   HoldingSnapshot,
   AggregatedSnapshotPoint,
-  ActivateAiConnectorConnectionReplacingProviderInput,
-  ActivateAiConnectorConnectionReplacingProviderResult,
+  ActivateAiConnectorOAuthConnectionInput,
+  ActivateAiConnectorOAuthConnectionResult,
   AiConnectorAccessLogRecord,
   AiConnectorCredentialRecord,
   AiConnectorConnectionRecord,
@@ -648,10 +648,12 @@ function mapAiConnectorConnectionRow(row: {
   tool_toggles: Record<string, boolean> | null;
   expires_at: string | null;
   expiry_notified_at: string | null;
+  expiry_processed_at?: string | null;
   last_used_at: string | null;
   hidden_at?: string | null;
   revoked_at: string | null;
   revoked_by_user_id: string | null;
+  replaced_by_connection_id?: string | null;
   revocation_reason: string | null;
   created_at: string;
   updated_at: string;
@@ -667,18 +669,20 @@ function mapAiConnectorConnectionRow(row: {
     authMode: row.auth_mode ?? legacyClient.defaultAuthMode,
     capabilities: [...(row.capabilities ?? defaultClientCapabilities(clientKind))].sort(),
     displayName: row.display_name,
-    status: row.status,
+    status: row.status === "active" && row.expires_at && Date.parse(row.expires_at) <= Date.now() ? "expired" : row.status,
     oauthClientId: row.oauth_client_id,
     oauthSubject: row.oauth_subject,
     scopes: [...(row.scopes ?? [])].sort(),
     toolToggles: { ...(row.tool_toggles ?? {}) },
     expiresAt: row.expires_at,
     expiryNotifiedAt: row.expiry_notified_at,
+    expiryProcessedAt: row.expiry_processed_at ?? null,
     lastUsedAt: row.last_used_at,
     hiddenAt: row.hidden_at ?? null,
     revokedAt: row.revoked_at,
     revokedByUserId: row.revoked_by_user_id,
     revocationReason: row.revocation_reason,
+    replacedByConnectionId: row.replaced_by_connection_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -757,6 +761,8 @@ function mapAiConnectorPolicySettingsRow(row: {
 }
 
 function mapMcpOAuthAuthorizationRequestRow(row: {
+  connection_action?: "create" | "replace" | null;
+  replacement_connection_id?: string | null;
   id: string;
   user_id: string;
   client_id: string;
@@ -773,6 +779,8 @@ function mapMcpOAuthAuthorizationRequestRow(row: {
   created_at: string;
 }): McpOAuthAuthorizationRequestRecord {
   return {
+    connectionAction: row.connection_action ?? null,
+    replacementConnectionId: row.replacement_connection_id ?? null,
     id: row.id,
     userId: row.user_id,
     clientId: row.client_id,
@@ -791,6 +799,9 @@ function mapMcpOAuthAuthorizationRequestRow(row: {
 }
 
 function mapMcpOAuthAuthorizationCodeRow(row: {
+  connection_action?: "create" | "replace" | null;
+  replacement_connection_id?: string | null;
+  authorization_request_id?: string | null;
   id: string;
   code_hash: string;
   connection_id: string;
@@ -806,6 +817,9 @@ function mapMcpOAuthAuthorizationCodeRow(row: {
   created_at: string;
 }): McpOAuthAuthorizationCodeRecord {
   return {
+    authorizationRequestId: row.authorization_request_id ?? null,
+    connectionAction: row.connection_action ?? null,
+    replacementConnectionId: row.replacement_connection_id ?? null,
     id: row.id,
     codeHash: row.code_hash,
     connectionId: row.connection_id,
@@ -3299,6 +3313,38 @@ export class PostgresPersistence implements Persistence {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`ai-connector:${input.userId}`]);
+      await client.query(`UPDATE ai_connector_connections c SET status = 'expired', updated_at = NOW()
+        WHERE c.user_id = $1 AND c.status = 'active' AND ((c.expires_at IS NOT NULL AND c.expires_at <= NOW())
+          OR COALESCE(c.last_used_at, c.created_at) < NOW() - (SELECT inactivity_expiry_days FROM ai_connector_policy_settings WHERE id = TRUE) * INTERVAL '1 day')`, [input.userId]);
+      const previous = await this.getAiConnectorConnectionTx(client, input.id);
+      if (input.status === "active" && previous && ["revoked", "expired"].includes(previous.status)) {
+        throw routeError(409, "mcp_connection_inactive", "An inactive connector cannot be reactivated");
+      }
+      if (previous?.status === "revoked") {
+        // A stale touch/revoke/rename must retain the committed replacement lineage.
+        input = { ...input, status: "revoked", revokedAt: previous.revokedAt, revokedByUserId: previous.revokedByUserId,
+          revocationReason: previous.revocationReason, replacedByConnectionId: previous.replacedByConnectionId };
+      }
+      if (input.status === "active" && previous?.status !== "active") {
+        const capacity = await client.query<{ total: string; bearer: string; max_total: number; max_bearer: number }>(
+          `SELECT COUNT(c.id)::text AS total, COUNT(c.id) FILTER (WHERE c.auth_mode = 'bearer')::text AS bearer,
+            p.max_active_connections_per_user AS max_total, p.bearer_max_active_connectors_per_user AS max_bearer
+           FROM ai_connector_policy_settings p LEFT JOIN ai_connector_connections c ON c.user_id = $1
+             AND c.status = 'active' AND (c.expires_at IS NULL OR c.expires_at > NOW())
+             AND COALESCE(c.last_used_at, c.created_at) >= NOW() - p.inactivity_expiry_days * INTERVAL '1 day'
+           WHERE p.id = TRUE GROUP BY p.max_active_connections_per_user, p.bearer_max_active_connectors_per_user`, [input.userId]);
+        const cap = capacity.rows[0];
+        if (cap && Number(cap.total) >= cap.max_total) throw routeError(409, "mcp_connection_limit_exceeded", "AI connector connection limit exceeded");
+        const identity = getMcpClientByLegacyProvider(input.provider);
+        const inputAuthMode = input.authMode ?? identity.defaultAuthMode;
+        if (inputAuthMode === "bearer") {
+          const duplicate = await client.query("SELECT id FROM ai_connector_connections WHERE user_id = $1 AND status = 'active' AND auth_mode = 'bearer' AND vendor = $2 AND client_kind = $3 LIMIT 1",
+            [input.userId, input.vendor ?? identity.vendor, input.clientKind ?? identity.clientKind]);
+          if (duplicate.rowCount) throw routeError(409, "mcp_bearer_connection_exists", "An active bearer connector already exists for this AI client");
+        }
+        if (cap && inputAuthMode === "bearer" && Number(cap.bearer) >= cap.max_bearer) throw routeError(409, "mcp_bearer_connection_limit_exceeded", "Bearer connector connection limit exceeded");
+      }
       const now = input.updatedAt ?? new Date().toISOString();
       const legacyClient = getMcpClientByLegacyProvider(input.provider);
       const clientKind = input.clientKind ?? legacyClient.clientKind;
@@ -3326,14 +3372,16 @@ export class PostgresPersistence implements Persistence {
            revoked_by_user_id,
            revocation_reason,
            created_at,
-           updated_at
+           updated_at, replaced_by_connection_id, expiry_processed_at
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10, $11,
            $12::timestamptz, $13::timestamptz, $14::timestamptz, $15::timestamptz, $16::timestamptz, $17, $18,
            COALESCE($19::timestamptz, NOW()),
-           $20::timestamptz
+           $20::timestamptz, $21, $22::timestamptz
          )
          ON CONFLICT (id) DO UPDATE SET
+           replaced_by_connection_id = EXCLUDED.replaced_by_connection_id,
+           expiry_processed_at = EXCLUDED.expiry_processed_at,
            user_id = EXCLUDED.user_id,
            provider = EXCLUDED.provider,
            vendor = EXCLUDED.vendor,
@@ -3373,6 +3421,8 @@ export class PostgresPersistence implements Persistence {
           input.revocationReason ?? null,
           input.createdAt ?? null,
           now,
+          input.replacedByConnectionId ?? null,
+          input.expiryProcessedAt ?? null,
         ],
       );
       await client.query(`DELETE FROM ai_connector_connection_scopes WHERE connection_id = $1`, [input.id]);
@@ -3426,8 +3476,10 @@ export class PostgresPersistence implements Persistence {
       hidden_at: string | null;
       revoked_at: string | null;
       revoked_by_user_id: string | null;
+      replaced_by_connection_id?: string | null;
       revocation_reason: string | null;
       expiry_notified_at: string | null;
+      expiry_processed_at?: string | null;
       created_at: string;
       updated_at: string;
     }>(
@@ -3439,7 +3491,12 @@ export class PostgresPersistence implements Persistence {
               c.auth_mode,
               c.capabilities,
               c.display_name,
-              c.status,
+              CASE WHEN c.status = 'active' AND (
+                (c.expires_at IS NOT NULL AND c.expires_at <= NOW()) OR
+                COALESCE(c.last_used_at, c.created_at) < NOW() - (SELECT inactivity_expiry_days FROM ai_connector_policy_settings WHERE id = TRUE) * INTERVAL '1 day'
+              ) THEN 'expired' WHEN c.status = 'pending' AND ((c.expires_at IS NOT NULL AND c.expires_at <= NOW())
+                OR EXISTS (SELECT 1 FROM mcp_oauth_authorization_codes pending_code WHERE pending_code.connection_id = c.id AND pending_code.expires_at <= NOW()))
+              THEN 'expired' ELSE c.status END AS status,
               c.oauth_client_id,
               c.oauth_subject,
               COALESCE(
@@ -3461,11 +3518,13 @@ export class PostgresPersistence implements Persistence {
               ) AS tool_toggles,
               c.expires_at::text AS expires_at,
               c.expiry_notified_at::text AS expiry_notified_at,
+              c.expiry_processed_at::text AS expiry_processed_at,
               c.last_used_at::text AS last_used_at,
               c.hidden_at::text AS hidden_at,
               c.revoked_at::text AS revoked_at,
               c.revoked_by_user_id,
               c.revocation_reason,
+              c.replaced_by_connection_id,
               c.created_at::text AS created_at,
               c.updated_at::text AS updated_at
        FROM ai_connector_connections c
@@ -3771,12 +3830,13 @@ export class PostgresPersistence implements Persistence {
          expires_at,
          approved_at,
          denied_at,
-         created_at
+         created_at, connection_action, replacement_connection_id
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10,
-         $11::timestamptz, $12::timestamptz, $13::timestamptz, COALESCE($14::timestamptz, NOW())
+         $11::timestamptz, $12::timestamptz, $13::timestamptz, COALESCE($14::timestamptz, NOW()), $15, $16
        )
        ON CONFLICT (id) DO UPDATE SET
+         connection_action = EXCLUDED.connection_action, replacement_connection_id = EXCLUDED.replacement_connection_id,
          user_id = EXCLUDED.user_id,
          client_id = EXCLUDED.client_id,
          redirect_uri = EXCLUDED.redirect_uri,
@@ -3789,7 +3849,7 @@ export class PostgresPersistence implements Persistence {
          expires_at = EXCLUDED.expires_at,
          approved_at = EXCLUDED.approved_at,
          denied_at = EXCLUDED.denied_at
-       RETURNING id,
+       RETURNING connection_action, replacement_connection_id, id,
                  user_id,
                  client_id,
                  redirect_uri,
@@ -3818,6 +3878,7 @@ export class PostgresPersistence implements Persistence {
         input.approvedAt ?? null,
         input.deniedAt ?? null,
         input.createdAt ?? null,
+        input.connectionAction ?? null, input.replacementConnectionId ?? null,
       ],
     );
     return mapMcpOAuthAuthorizationRequestRow(result.rows[0]!);
@@ -3825,7 +3886,7 @@ export class PostgresPersistence implements Persistence {
 
   async getMcpOAuthAuthorizationRequest(id: string): Promise<McpOAuthAuthorizationRequestRecord | null> {
     const result = await this.pool.query<Parameters<typeof mapMcpOAuthAuthorizationRequestRow>[0]>(
-      `SELECT id,
+      `SELECT connection_action, replacement_connection_id, id,
               user_id,
               client_id,
               redirect_uri,
@@ -3853,7 +3914,7 @@ export class PostgresPersistence implements Persistence {
     try {
       await client.query("BEGIN");
       const requestResult = await client.query<Parameters<typeof mapMcpOAuthAuthorizationRequestRow>[0]>(
-        `SELECT id,
+        `SELECT connection_action, replacement_connection_id, id,
                 user_id,
                 client_id,
                 redirect_uri,
@@ -3999,6 +4060,11 @@ export class PostgresPersistence implements Persistence {
         ],
       );
 
+      await client.query(`UPDATE mcp_oauth_authorization_requests SET connection_action = $2, replacement_connection_id = $3 WHERE id = $1`,
+        [input.requestId, input.code.connectionAction ?? null, input.code.replacementConnectionId ?? null]);
+      await client.query(`UPDATE mcp_oauth_authorization_codes SET connection_action = $2, replacement_connection_id = $3, authorization_request_id = $4 WHERE id = $1`,
+        [input.code.id, input.code.connectionAction ?? null, input.code.replacementConnectionId ?? null, input.requestId]);
+
       const settledResult = await client.query<Parameters<typeof mapMcpOAuthAuthorizationRequestRow>[0]>(
         `UPDATE mcp_oauth_authorization_requests
          SET approved_at = $3::timestamptz
@@ -4007,7 +4073,7 @@ export class PostgresPersistence implements Persistence {
            AND approved_at IS NULL
            AND denied_at IS NULL
            AND expires_at > NOW()
-         RETURNING id,
+         RETURNING connection_action, replacement_connection_id, id,
                    user_id,
                    client_id,
                    redirect_uri,
@@ -4056,7 +4122,7 @@ export class PostgresPersistence implements Persistence {
          AND approved_at IS NULL
          AND denied_at IS NULL
          AND expires_at > NOW()
-       RETURNING id,
+       RETURNING connection_action, replacement_connection_id, id,
                  user_id,
                  client_id,
                  redirect_uri,
@@ -4092,12 +4158,13 @@ export class PostgresPersistence implements Persistence {
          code_challenge_method,
          expires_at,
          consumed_at,
-         created_at
+         created_at, connection_action, replacement_connection_id, authorization_request_id
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10,
-         $11::timestamptz, $12::timestamptz, COALESCE($13::timestamptz, NOW())
+         $11::timestamptz, $12::timestamptz, COALESCE($13::timestamptz, NOW()), $14, $15, $16
        )
        ON CONFLICT (id) DO UPDATE SET
+         connection_action = EXCLUDED.connection_action, replacement_connection_id = EXCLUDED.replacement_connection_id, authorization_request_id = EXCLUDED.authorization_request_id,
          code_hash = EXCLUDED.code_hash,
          connection_id = EXCLUDED.connection_id,
          user_id = EXCLUDED.user_id,
@@ -4109,7 +4176,7 @@ export class PostgresPersistence implements Persistence {
          code_challenge_method = EXCLUDED.code_challenge_method,
          expires_at = EXCLUDED.expires_at,
          consumed_at = EXCLUDED.consumed_at
-       RETURNING id,
+       RETURNING authorization_request_id, connection_action, replacement_connection_id, id,
                  code_hash,
                  connection_id,
                  user_id,
@@ -4136,6 +4203,8 @@ export class PostgresPersistence implements Persistence {
         input.expiresAt,
         input.consumedAt ?? null,
         input.createdAt ?? null,
+        input.connectionAction ?? null, input.replacementConnectionId ?? null,
+        input.authorizationRequestId ?? null,
       ],
     );
     return mapMcpOAuthAuthorizationCodeRow(result.rows[0]!);
@@ -4148,7 +4217,7 @@ export class PostgresPersistence implements Persistence {
        WHERE code_hash = $1
          AND consumed_at IS NULL
          AND expires_at > NOW()
-       RETURNING id,
+       RETURNING authorization_request_id, connection_action, replacement_connection_id, id,
                  code_hash,
                  connection_id,
                  user_id,
@@ -4166,136 +4235,54 @@ export class PostgresPersistence implements Persistence {
     return result.rows[0] ? mapMcpOAuthAuthorizationCodeRow(result.rows[0]) : null;
   }
 
-  async activateAiConnectorConnectionReplacingProvider(
-    input: ActivateAiConnectorConnectionReplacingProviderInput,
-  ): Promise<ActivateAiConnectorConnectionReplacingProviderResult | null> {
+  async activateAiConnectorOAuthConnection(
+    input: ActivateAiConnectorOAuthConnectionInput,
+  ): Promise<ActivateAiConnectorOAuthConnectionResult | null> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const locked = await client.query<{
-        id: string;
-        status: AiConnectorStatus;
-        provider: AiConnectorProvider;
-        vendor: AiConnectorVendor;
-        client_kind: AiConnectorClientKind;
-        auth_mode: AiConnectorAuthMode;
-        expires_at: string | null;
-      }>(
-        `SELECT id,
-                status,
-                provider,
-                vendor,
-                client_kind,
-                auth_mode,
-                expires_at::text AS expires_at
-         FROM ai_connector_connections
-         WHERE user_id = $1
-           AND status NOT IN ('revoked', 'expired')
-         ORDER BY id
-         FOR UPDATE`,
-        [input.userId],
-      );
-      const legacyClient = getMcpClientByLegacyProvider(input.provider);
-      const targetVendor = input.vendor ?? legacyClient.vendor;
-      const targetClientKind = input.clientKind ?? legacyClient.clientKind;
-      const targetAuthMode = input.authMode ?? legacyClient.defaultAuthMode;
-      const target = locked.rows.find((row) =>
-        row.id === input.connectionId
-        && row.provider === input.provider
-        && row.vendor === targetVendor
-        && row.client_kind === targetClientKind
-        && row.auth_mode === targetAuthMode
-      );
-      if (!target || target.status !== "pending") {
-        await client.query("COMMIT");
-        return null;
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`ai-connector:${input.userId}`]);
+      await client.query(`UPDATE ai_connector_connections c SET status = 'expired', updated_at = NOW()
+        WHERE c.user_id = $1 AND c.status = 'active' AND ((c.expires_at IS NOT NULL AND c.expires_at <= NOW())
+          OR COALESCE(c.last_used_at, c.created_at) < NOW() - (SELECT inactivity_expiry_days FROM ai_connector_policy_settings WHERE id = TRUE) * INTERVAL '1 day')`, [input.userId]);
+      const policyResult = await client.query<{ max_active_connections_per_user: number; inactivity_expiry_days: number }>(
+        "SELECT max_active_connections_per_user, inactivity_expiry_days FROM ai_connector_policy_settings WHERE id = TRUE FOR SHARE");
+      const policy = policyResult.rows[0]!;
+      const locked = await client.query<{ id: string; status: AiConnectorStatus; vendor: AiConnectorVendor; client_kind: AiConnectorClientKind; auth_mode: AiConnectorAuthMode; expires_at: string | null; last_used_at: string | null; created_at: string }>(
+        `SELECT id, status, vendor, client_kind, auth_mode, expires_at::text, last_used_at::text, created_at::text FROM ai_connector_connections WHERE user_id = $1 ORDER BY id FOR UPDATE`, [input.userId]);
+      const active = (row: typeof locked.rows[number]) => row.status === "active" && (!row.expires_at || Date.parse(row.expires_at) > Date.now())
+        && Date.now() - Date.parse(row.last_used_at ?? row.created_at) <= policy.inactivity_expiry_days * 86400000;
+      const current = locked.rows.find(row => row.id === input.connectionId);
+      if (!current || current.status !== "pending" || current.auth_mode !== "oauth" || current.vendor !== input.vendor || current.client_kind !== input.clientKind
+        || (current.expires_at && Date.parse(current.expires_at) <= Date.now())) { await client.query("ROLLBACK"); return null; }
+      if (!input.connectionAction || !input.refreshCredential) throw routeError(400, "mcp_oauth_consent_required", "Restart authorization to choose create or replace");
+      const target = locked.rows.find(row => row.id === input.replacementConnectionId);
+      if (input.connectionAction === "replace" && (!target || !active(target) || target.auth_mode !== "oauth"
+        || target.vendor !== current.vendor || target.client_kind !== current.client_kind || (target.expires_at && Date.parse(target.expires_at) <= Date.now()))) {
+        throw routeError(409, "mcp_oauth_replacement_target_invalid", "Selected connection is no longer eligible; restart authorization");
       }
-
-      const activeOtherIdentityCount = locked.rows.filter((row) =>
-        row.id !== input.connectionId
-        && row.status === "active"
-        && (!row.expires_at || Date.parse(row.expires_at) > Date.now())
-        && !(row.vendor === targetVendor && row.client_kind === targetClientKind && row.auth_mode === targetAuthMode)
-      ).length;
-      if (activeOtherIdentityCount >= input.maxActiveConnectionsPerUser) {
-        await client.query("COMMIT");
-        return null;
-      }
-
+      if (input.connectionAction === "create" && input.replacementConnectionId) throw routeError(400, "mcp_oauth_invalid_transition", "Create cannot select a replacement");
+      const activeCount = locked.rows.filter(active).length;
+      if (activeCount - (target ? 1 : 0) >= policy.max_active_connections_per_user) throw routeError(409, "mcp_connection_limit_exceeded", "Connection limit reached; select a connection to replace");
+      if (input.refreshCredential.connectionId !== current.id) throw routeError(400, "mcp_oauth_invalid_transition", "Credential must belong to new authorization");
+      await this.saveAiConnectorCredential(input.refreshCredential, client);
       const now = new Date().toISOString();
-      const revokedConnectionIds = locked.rows
-        .filter((row) =>
-          row.id !== input.connectionId
-          && row.vendor === targetVendor
-          && row.client_kind === targetClientKind
-          && row.auth_mode === targetAuthMode
-        )
-        .map((row) => row.id);
-
-      if (revokedConnectionIds.length > 0) {
-        await client.query(
-          `UPDATE ai_connector_connections
-           SET status = 'revoked',
-               revoked_at = $2::timestamptz,
-               revoked_by_user_id = $3,
-               revocation_reason = $4,
-               updated_at = $2::timestamptz
-           WHERE id = ANY($1::text[])`,
-          [
-            revokedConnectionIds,
-            now,
-            input.revokedByUserId ?? null,
-            input.revocationReason,
-          ],
-        );
-        await client.query(
-          `UPDATE ai_connector_credentials
-           SET revoked_at = COALESCE(revoked_at, $2::timestamptz)
-           WHERE connection_id = ANY($1::text[])
-             AND revoked_at IS NULL`,
-          [revokedConnectionIds, now],
-        );
+      if (target) {
+        await client.query(`UPDATE ai_connector_connections SET status = 'revoked', revoked_at = $2::timestamptz, revoked_by_user_id = $3,
+          revocation_reason = $4, replaced_by_connection_id = $5, updated_at = $2::timestamptz WHERE id = $1`,
+          [target.id, now, input.userId, input.revocationReason, current.id]);
+        await client.query(`UPDATE ai_connector_credentials SET revoked_at = COALESCE(revoked_at, $2::timestamptz) WHERE connection_id = $1`, [target.id, now]);
       }
-
-      await client.query(
-        `UPDATE ai_connector_connections
-         SET status = 'active',
-             oauth_client_id = $2,
-             oauth_subject = $3,
-             last_used_at = $4::timestamptz,
-             updated_at = $4::timestamptz
-         WHERE id = $1
-           AND user_id = $5
-           AND provider = $6
-           AND vendor = $7
-           AND client_kind = $8
-           AND auth_mode = $9
-           AND status = 'pending'`,
-        [
-          input.connectionId,
-          input.oauthClientId ?? null,
-          input.oauthSubject ?? null,
-          input.lastUsedAt ?? now,
-          input.userId,
-          input.provider,
-          targetVendor,
-          targetClientKind,
-          targetAuthMode,
-        ],
-      );
-      const connection = await this.getAiConnectorConnectionTx(client, input.connectionId);
+      await client.query(`UPDATE ai_connector_connections SET status = 'active', last_used_at = $2::timestamptz, updated_at = $2::timestamptz WHERE id = $1`, [current.id, input.lastUsedAt ?? now]);
+      const connection = await this.getAiConnectorConnectionTx(client, current.id);
       await client.query("COMMIT");
-      return connection ? { connection, revokedConnectionIds } : null;
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => {});
-      throw error;
-    } finally {
-      client.release();
-    }
+      return connection ? { connection, revokedConnectionIds: target ? [target.id] : [] } : null;
+    } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
+    finally { client.release(); }
   }
 
-  async saveAiConnectorCredential(input: SaveAiConnectorCredentialInput): Promise<AiConnectorCredentialRecord> {
-    const result = await this.pool.query<Parameters<typeof mapAiConnectorCredentialRow>[0]>(
+  async saveAiConnectorCredential(input: SaveAiConnectorCredentialInput, executor: Pick<PoolClient, "query"> = this.pool): Promise<AiConnectorCredentialRecord> {
+    const result = await executor.query<Parameters<typeof mapAiConnectorCredentialRow>[0]>(
       `INSERT INTO ai_connector_credentials (
          id,
          connection_id,
@@ -16180,10 +16167,12 @@ export class PostgresPersistence implements Persistence {
       tool_toggles: Record<string, boolean> | null;
       expires_at: string | null;
       expiry_notified_at: string | null;
+      expiry_processed_at?: string | null;
       last_used_at: string | null;
       hidden_at: string | null;
       revoked_at: string | null;
       revoked_by_user_id: string | null;
+      replaced_by_connection_id?: string | null;
       revocation_reason: string | null;
       created_at: string;
       updated_at: string;
@@ -16196,7 +16185,12 @@ export class PostgresPersistence implements Persistence {
               c.auth_mode,
               c.capabilities,
               c.display_name,
-              c.status,
+              CASE WHEN c.status = 'active' AND (
+                (c.expires_at IS NOT NULL AND c.expires_at <= NOW()) OR
+                COALESCE(c.last_used_at, c.created_at) < NOW() - (SELECT inactivity_expiry_days FROM ai_connector_policy_settings WHERE id = TRUE) * INTERVAL '1 day'
+              ) THEN 'expired' WHEN c.status = 'pending' AND ((c.expires_at IS NOT NULL AND c.expires_at <= NOW())
+                OR EXISTS (SELECT 1 FROM mcp_oauth_authorization_codes pending_code WHERE pending_code.connection_id = c.id AND pending_code.expires_at <= NOW()))
+              THEN 'expired' ELSE c.status END AS status,
               c.oauth_client_id,
               c.oauth_subject,
               COALESCE(
@@ -16218,11 +16212,13 @@ export class PostgresPersistence implements Persistence {
               ) AS tool_toggles,
               c.expires_at::text AS expires_at,
               c.expiry_notified_at::text AS expiry_notified_at,
+              c.expiry_processed_at::text AS expiry_processed_at,
               c.last_used_at::text AS last_used_at,
               c.hidden_at::text AS hidden_at,
               c.revoked_at::text AS revoked_at,
               c.revoked_by_user_id,
               c.revocation_reason,
+              c.replaced_by_connection_id,
               c.created_at::text AS created_at,
               c.updated_at::text AS updated_at
        FROM ai_connector_connections c

@@ -570,7 +570,7 @@ describe("mcp routes", () => {
     const toolsByName = new Map(body.result.tools.map((tool) => [tool.name, tool]));
     for (const tool of listMcpToolDefinitions()) {
       const listedTool = toolsByName.get(tool.name);
-      const expectedSecuritySchemes = (tool.alternativeScopes ? [tool.scope, ...tool.alternativeScopes] : [tool.scope])
+      const expectedSecuritySchemes = tool.name === "get_profile" ? [{ type: "oauth2", scopes: [] }] : (tool.alternativeScopes ? [tool.scope, ...tool.alternativeScopes] : [tool.scope])
         .map((scope) => ({ type: "oauth2", scopes: [scope] }));
       expect(listedTool?.securitySchemes).toEqual(expectedSecuritySchemes);
       expect(listedTool?.execution).toBeUndefined();
@@ -2151,6 +2151,15 @@ describe("mcp routes", () => {
     expect(expiredConnection?.expiryNotifiedAt).toBeTruthy();
     const expiredCredential = await app.persistence.getAiConnectorCredentialByHash(hashGeneratedBearerToken(bearerToken));
     expect(expiredCredential?.revokedAt).toBeTruthy();
+    const repeated = await app.inject({
+      method: "POST", url: "/mcp",
+      headers: { authorization: `Bearer ${bearerToken}`, accept: "application/json, text/event-stream" },
+      payload: { jsonrpc: "2.0", id: "expired-again", method: "initialize", params: {
+        protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "Codex CLI", version: "1.0.0" },
+      } },
+    });
+    expect(repeated.statusCode).toBe(401);
+    expect(repeated.body).toContain("mcp_connection_expired");
   });
 
   it("rejects existing bearer fallback tokens after admin disables bearer fallback", async () => {

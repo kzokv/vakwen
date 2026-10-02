@@ -205,7 +205,7 @@ export function toToolTitle(name: string): string {
 export async function buildToolAuthChallengeResult(input: {
   app: FastifyInstance;
   req: FastifyRequest;
-  scope: AiConnectorScope;
+  scope?: AiConnectorScope;
   error: string;
   description: string;
   text: string;
@@ -227,6 +227,7 @@ export async function buildToolAuthChallengeResult(input: {
 }
 
 function getToolSecuritySchemes(toolName: McpToolName): McpOAuthSecurityScheme[] {
+  if (toolName === "get_profile") return [{ type: "oauth2", scopes: [] }];
   const listedTool = listMcpToolDefinitions().find((tool) => tool.name === toolName);
   if (!listedTool) return [];
   return scopesForListedTool(listedTool).map((scope) => ({ type: "oauth2", scopes: [scope] }));

@@ -12,7 +12,7 @@ import {
   denyMcpOAuthConsent,
   fetchMcpOAuthConsent,
 } from "../../features/ai-inbox/service";
-import { chatGptConnectorAuthorizeCopy, getAiConnectorScopeLabel } from "./i18n";
+import { chatGptConnectorAuthorizeCopy, connectionLifecycleCopy, getAiConnectorScopeLabel } from "./i18n";
 
 interface ChatGptConnectorAuthorizeClientProps {
   locale?: LocaleCode | string;
@@ -99,10 +99,15 @@ function redirectToAuthorizeEndpoint(): void {
 export function ChatGptConnectorAuthorizeClient({ locale = "en" }: ChatGptConnectorAuthorizeClientProps) {
   const resolvedLocale = normalizeLocale(locale);
   const copy = chatGptConnectorAuthorizeCopy[resolvedLocale];
+  const lifecycle = connectionLifecycleCopy[resolvedLocale];
+  const [connectionAction, setConnectionAction] = useState<"create" | "replace">("create");
+  const [replacementConnectionId, setReplacementConnectionId] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [consent, setConsent] = useState<McpOAuthConsentRequestDto | null>(null);
   const [selectedScopes, setSelectedScopes] = useState<Set<AiConnectorScope>>(new Set());
   const [lifetimeDays, setLifetimeDays] = useState(30);
   const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState<"approve" | "deny" | null>(null);
 
   const load = useCallback(async () => {
@@ -132,7 +137,26 @@ export function ChatGptConnectorAuthorizeClient({ locale = "en" }: ChatGptConnec
     [consent],
   );
   const allScopesDisabled = consent !== null && enabledScopes.length === 0;
-  const canApprove = consent !== null && selectedScopes.size > 0 && !allScopesDisabled && busy === null;
+  const atCapacity = consent !== null && consent.activeConnectionCount >= consent.maxActiveConnectionsPerUser;
+  const replacementCandidates = consent?.replacementCandidates ?? [];
+  const validAction = connectionAction === "create" ? !atCapacity : replacementCandidates.some((candidate) => candidate.id === replacementConnectionId);
+  const canApprove = consent !== null && selectedScopes.size > 0 && !allScopesDisabled && busy === null && !refreshing && validAction;
+  const dateLabel = (value: string | null) => value ? new Date(value).toLocaleString(resolvedLocale) : lifecycle.never;
+
+  async function refreshConnections() {
+    if (!consent || busy || refreshing) return;
+    setRefreshing(true);
+    try {
+      const next = await fetchMcpOAuthConsent(consent.requestId);
+      setConsent(next);
+      setReplacementConnectionId("");
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : copy.loadError);
+    } finally {
+      setRefreshing(false);
+    }
+  }
   const authorizeParams = currentAuthorizeParams();
   const consentIdentity = getConsentClientMetadata({
     clientKind: consent?.clientKind,
@@ -165,10 +189,15 @@ export function ChatGptConnectorAuthorizeClient({ locale = "en" }: ChatGptConnec
         csrfToken: consent.csrfToken,
         scopes: [...selectedScopes],
         lifetimeDays,
+        connectionAction,
+        ...(connectionAction === "replace" ? { replacementConnectionId } : {}),
+        ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
       });
       window.location.href = result.redirectUrl;
     } catch (err) {
-      setError(err instanceof Error ? err.message : copy.approveError);
+      const message = err instanceof Error ? err.message : copy.approveError;
+      setError(/replacement.*(invalid|eligible|active|stale|revoked)|target/i.test(message) ? lifecycle.targetChanged
+        : /limit|capacity/i.test(message) ? lifecycle.capacityChanged : message);
       setBusy(null);
     }
   }
@@ -348,6 +377,46 @@ export function ChatGptConnectorAuthorizeClient({ locale = "en" }: ChatGptConnec
                   </div>
                 ) : null}
               </div>
+
+              <fieldset className="space-y-3" disabled={busy !== null || refreshing} aria-busy={refreshing}>
+                <legend className="text-base font-semibold">{lifecycle.choice}</legend>
+                <p className="text-sm text-slate-600">{lifecycle.capacity}: {consent.activeConnectionCount} / {consent.maxActiveConnectionsPerUser}</p>
+                <label className="flex min-h-11 items-center gap-3">
+                  <input type="radio" name="connectionAction" value="create" checked={connectionAction === "create"} disabled={atCapacity || busy !== null} onChange={() => { setConnectionAction("create"); setReplacementConnectionId(""); }} />
+                  {lifecycle.create}
+                </label>
+                {atCapacity ? <p className="text-sm text-amber-800" role="status">{lifecycle.cap}</p> : null}
+                <label className="flex min-h-11 items-center gap-3">
+                  <input type="radio" name="connectionAction" value="replace" checked={connectionAction === "replace"} disabled={replacementCandidates.length === 0 || busy !== null} onChange={() => setConnectionAction("replace")} />
+                  {lifecycle.replace}
+                </label>
+                {replacementCandidates.length === 0 ? <p className="text-sm text-slate-600">{lifecycle.noTargets}</p> : null}
+                {connectionAction === "replace" ? (
+                  <fieldset className="space-y-3">
+                    <legend className="text-sm font-medium">{lifecycle.select}</legend>
+                    <p className="text-sm text-amber-800">{lifecycle.impact}</p>
+                    {replacementCandidates.map((candidate) => (
+                      <label key={candidate.id} className="flex items-start gap-3 rounded-lg border border-slate-200 p-3">
+                        <input className="mt-1" type="radio" name="replacementConnectionId" value={candidate.id} checked={replacementConnectionId === candidate.id} onChange={() => setReplacementConnectionId(candidate.id)} />
+                        <span className="min-w-0 space-y-1 text-sm">
+                          <span className="block break-words font-semibold">{candidate.displayName} · {lifecycle.active}</span>
+                          <span className="block break-all font-mono text-xs text-slate-500">{candidate.id}</span>
+                          <span className="block">{lifecycle.created}: {dateLabel(candidate.createdAt)}</span>
+                          <span className="block">{lifecycle.lastUsed}: {dateLabel(candidate.lastUsedAt)}</span>
+                          <span className="block">{lifecycle.expires}: {dateLabel(candidate.expiresAt)}</span>
+                          <span className="block">{lifecycle.permissions}: {candidate.scopes.map((scope) => getAiConnectorScopeLabel(resolvedLocale, scope)).join(", ")}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </fieldset>
+                ) : null}
+                <Button variant="outline" onClick={() => void refreshConnections()}>{lifecycle.refresh}</Button>
+              </fieldset>
+              <label className="block text-sm font-medium text-slate-700">
+                {lifecycle.name}
+                <input type="text" maxLength={120} value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={busy !== null} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2" aria-describedby="connection-name-hint" />
+                <span id="connection-name-hint" className="mt-1 block text-xs font-normal text-slate-600">{lifecycle.nameHint}</span>
+              </label>
 
               <label className="block text-sm font-medium text-slate-700">
                 {copy.connectorLifetime}

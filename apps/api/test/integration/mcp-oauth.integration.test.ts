@@ -9,18 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-vi.mock("@vakwen/config", async (importOriginal) => {
-  const original = await importOriginal<typeof import("@vakwen/config")>();
-  return {
-    ...original,
-    Env: {
-      ...original.Env,
-      AUTH_MODE: "dev_bypass" as const,
-    },
-  };
-});
-
+import { resetMcpRateLimitBucketsForTest } from "../../src/mcp/policy.js";
 import { buildApp } from "../../src/app.js";
 import {
   hashMcpOAuthToken,
@@ -29,7 +18,15 @@ import {
 import { loadMigrationManifest } from "../../src/persistence/migrationManifest.js";
 import { PostgresPersistence } from "../../src/persistence/postgres.js";
 
+const authorizationWrites = vi.hoisted(() => ({ enabled: true }));
+vi.mock("@vakwen/config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@vakwen/config")>();
+  return { ...actual, Env: { ...actual.Env, AUTH_MODE: "dev_bypass" as const, get MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED() { return authorizationWrites.enabled; } } };
+});
+
 let app: Awaited<ReturnType<typeof buildApp>>;
+let requestIpSequence = 0;
+let testIp = "127.0.0.1";
 let resetClientMetadataNetwork: (() => void) | null = null;
 
 const testOAuthConfig = {
@@ -67,7 +64,7 @@ async function resolveOAuthRedirectBridgeWithOrigin(
   const bridge = new URL(redirectUrl);
   expect(bridge.origin + bridge.pathname).toBe(`${expectedOrigin}/oauth/redirect`);
   expect(bridge.searchParams.get("payload")).toBeTruthy();
-  const response = await app.inject({
+  const response = await app.inject({ remoteAddress: testIp,
     method: "GET",
     url: `${bridge.pathname}${bridge.search}`,
     headers: { host },
@@ -140,12 +137,13 @@ async function createAuthorizationRequest(input: {
   verifier: string;
   redirectUri: string;
   scope?: string;
+  clientId?: string;
 }) {
-  const authorize = await app.inject({
+  const authorize = await app.inject({ remoteAddress: testIp,
     method: "GET",
     url: `/oauth/authorize?${new URLSearchParams({
       response_type: "code",
-      client_id: "chatgpt",
+      client_id: input.clientId ?? "chatgpt",
       redirect_uri: input.redirectUri,
       resource: input.resource,
       scope: input.scope ?? "portfolio:mcp_read",
@@ -158,14 +156,413 @@ async function createAuthorizationRequest(input: {
   expect(authorize.statusCode).toBe(302);
   const requestId = new URL(String(authorize.headers.location)).searchParams.get("requestId");
   expect(requestId).toBeTruthy();
-  const consent = await app.inject({ method: "GET", url: `/oauth/consent/${requestId}` });
+  const consent = await app.inject({ remoteAddress: testIp, method: "GET", url: `/oauth/consent/${requestId}` });
   expect(consent.statusCode).toBe(200);
   const consentBody = consent.json<{ csrfToken: string; scopes: string[] }>();
-  return { requestId: String(requestId), csrfToken: consentBody.csrfToken, scopes: consentBody.scopes };
+  return { requestId: String(requestId), csrfToken: consentBody.csrfToken, connectionAction: "create", scopes: consentBody.scopes };
+}
+
+function registerIndependentOAuthRegressions() {
+  describe.each(["chatgpt", "claude"])("independent OAuth regression: %s", (kind) => {
+    const headers = { host: "localhost:4000" };
+    const resource = "http://localhost:4000/mcp";
+    const verifier = "regression-verifier-123456789012345678901234567890123";
+    const clientId = kind === "chatgpt" ? "chatgpt" : "https://claude.ai/oauth/mcp-oauth-client-metadata";
+    const redirectUri = kind === "chatgpt" ? "http://localhost:5555/callback" : "https://claude.ai/api/mcp/auth_callback";
+    beforeEach(async () => {
+      authorizationWrites.enabled = true;
+      resetMcpRateLimitBucketsForTest();
+      if (kind === "claude") {
+        await app.persistence.saveAiConnectorPolicySettings({ oauthRedirectUriAllowlist: [redirectUri] });
+        resetClientMetadataNetwork = setMcpOAuthClientMetadataNetworkForTest({
+          resolveHost: async () => [{ address: "203.0.113.10", family: 4 }],
+          readDocument: async (url) => {
+            const body = JSON.stringify({ client_id: url.toString(), client_name: "Claude.ai", redirect_uris: [redirectUri], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" });
+            return { statusCode: 200, contentLength: Buffer.byteLength(body), body };
+          },
+        });
+      }
+    });
+    async function prepare(replacementConnectionId?: string, options: { clientId?: string; scopes?: string[] } = {}) {
+      const selectedClientId = options.clientId ?? clientId;
+      const scopes = options.scopes ?? ["portfolio:mcp_read"];
+      const request = await createAuthorizationRequest({ headers, resource, verifier, redirectUri, clientId: selectedClientId, scope: scopes.join(" ") });
+      const approve = await app.inject({ remoteAddress: testIp, method: "POST", url: `/oauth/consent/${request.requestId}/approve`, headers,
+        payload: { csrfToken: request.csrfToken, connectionAction: "create", scopes, lifetimeDays: 7,
+          ...(replacementConnectionId ? { connectionAction: "replace", replacementConnectionId } : {}) } });
+      expect(approve.statusCode).toBe(200);
+      const callback = await resolveOAuthRedirectBridge(approve.json().redirectUrl);
+      return () => app.inject({ remoteAddress: testIp, method: "POST", url: "/oauth/token", headers: { ...headers, "content-type": "application/x-www-form-urlencoded" }, payload: form({ grant_type: "authorization_code", code: String(callback.searchParams.get("code")), client_id: selectedClientId, redirect_uri: redirectUri, code_verifier: verifier, resource }) });
+    }
+    async function authorize(replacementConnectionId?: string) { return (await prepare(replacementConnectionId))(); }
+    function connectionId(token: string): string {
+      return JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString()).connectionId;
+    }
+    async function refresh(token: string) {
+      return app.inject({ remoteAddress: testIp, method: "POST", url: "/oauth/token", headers: { ...headers, "content-type": "application/x-www-form-urlencoded" }, payload: form({ grant_type: "refresh_token", refresh_token: token, client_id: clientId, resource }) });
+    }
+    async function read(token: string, existingSession?: string, expectError = false, toolName = "list_portfolio_contexts") {
+      const auth = { ...headers, authorization: `Bearer ${token}`, accept: "application/json, text/event-stream" };
+      let session = existingSession;
+      if (!session) {
+        const init = await app.inject({ remoteAddress: testIp, method: "POST", url: "/mcp", headers: auth, payload: { jsonrpc: "2.0", id: "init", method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: kind, version: "1" } } } });
+        expect(init.statusCode).toBe(200);
+        session = String(init.headers["mcp-session-id"]);
+      }
+      const response = await app.inject({ remoteAddress: testIp, method: "POST", url: "/mcp", headers: { ...auth, "mcp-session-id": session }, payload: { jsonrpc: "2.0", id: "read", method: "tools/call", params: { name: toolName, arguments: {} } } });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body.startsWith("{") ? response.body : response.body.split("\n").find(line => line.startsWith("data: "))!.slice(6));
+      expect(body.result.isError === true, "Independent B must not challenge A").toBe(expectError);
+      return session;
+    }
+    async function profile(token: string): Promise<string> {
+      const session = await read(token);
+      const response = await app.inject({ remoteAddress: testIp, method: "POST", url: "/mcp", headers: { ...headers, authorization: `Bearer ${token}`, accept: "application/json, text/event-stream", "mcp-session-id": session }, payload: { jsonrpc: "2.0", id: "profile", method: "tools/call", params: { name: "get_profile", arguments: {} } } });
+      const body = JSON.parse(response.body.startsWith("{") ? response.body : response.body.split("\n").find(line => line.startsWith("data: "))!.slice(6));
+      expect(body.result.isError).not.toBe(true);
+      return body.result.structuredContent.id;
+    }
+    it.each([1, 2, 3])("create B: preserves A existing session and both refresh independently (run %i)", async () => {
+      const a = (await authorize()).json();
+      const session = await read(a.access_token);
+      const b = (await authorize()).json();
+      await read(a.access_token, session);
+      await read(b.access_token);
+      const identity = await profile(a.access_token);
+      expect(await profile(b.access_token)).toBe(identity);
+      const refreshedA = await refresh(a.refresh_token);
+      const refreshedB = await refresh(b.refresh_token);
+      expect(refreshedA.statusCode).toBe(200);
+      expect(refreshedB.statusCode).toBe(200);
+      expect(await profile(refreshedA.json().access_token)).toBe(identity);
+      expect(await profile(refreshedB.json().access_token)).toBe(identity);
+    });
+    it("selected replacement: C replaces only A and preserves B", async () => {
+      const a = (await authorize()).json();
+      const sessionA = await read(a.access_token);
+      const b = (await authorize()).json();
+      const c = await authorize(connectionId(a.access_token));
+      expect(c.statusCode).toBe(200);
+      await read(c.json().access_token);
+      await read(b.access_token);
+      await read(a.access_token, sessionA, true);
+      const rejected = await refresh(a.refresh_token);
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json().reason).toBe("replaced_by_oauth_authorization");
+      expect(await app.persistence.getAiConnectorConnection(connectionId(a.access_token))).toMatchObject({ replacedByConnectionId: connectionId(c.json().access_token) });
+      expect((await app.persistence.getAiConnectorConnection(connectionId(b.access_token)))?.replacedByConnectionId).toBeFalsy();
+      const history = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      const savedHistory = await app.persistence.saveAiConnectorConnection({ ...history, displayName: "Renamed historical connection" });
+      expect(savedHistory.replacedByConnectionId).toBe(connectionId(c.json().access_token));
+    });
+    it("precommit credential failure: preserves the selected A", async () => {
+      const a = (await authorize()).json();
+      const spy = vi.spyOn(app.persistence, "saveAiConnectorCredential").mockRejectedValueOnce(Object.assign(new Error("injected private SQL failure detail"), { code: "P0001" }));
+      try {
+        const failed = await authorize(connectionId(a.access_token));
+        expect(failed.statusCode).toBe(503);
+        expect(failed.body).not.toContain("private SQL");
+        expect(failed.body).not.toContain("P0001");
+      } finally { spy.mockRestore(); }
+      await read(a.access_token);
+      expect((await refresh(a.refresh_token)).statusCode).toBe(200);
+    });
+    it("expiry processing failure: leaves completion unset and retries terminal effects", async () => {
+      await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });
+      const a = (await authorize()).json();
+      const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      await app.persistence.saveAiConnectorConnection({ ...original, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      const failure = vi.spyOn(app.persistence, "appendAuditLog").mockRejectedValueOnce(new Error("expiry audit unavailable"));
+      try { expect((await refresh(a.refresh_token)).statusCode).toBe(500); } finally { failure.mockRestore(); }
+      expect((await app.persistence.getAiConnectorConnection(original.id))?.expiryProcessedAt).toBeFalsy();
+      expect((await refresh(a.refresh_token)).statusCode).toBe(400);
+      expect((await app.persistence.getAiConnectorConnection(original.id))?.expiryProcessedAt).toBeTruthy();
+    });
+    it("refresh diagnostics: inactivity expiry is distinct from absolute lifetime expiry", async () => {
+      await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1 });
+      const a = (await authorize()).json();
+      const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      await app.persistence.saveAiConnectorConnection({ ...original, createdAt: new Date(Date.now() - 3 * 86400000).toISOString(), lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      const expired = await refresh(a.refresh_token);
+      expect(expired.statusCode).toBe(400);
+      expect(expired.json().reason).toBe("inactivity_expiry");
+      const finalized = (await app.persistence.getAiConnectorConnection(original.id))!;
+      expect(finalized.expiryProcessedAt).toBeTruthy();
+      expect(finalized.expiresAt).toBe(original.expiresAt);
+      expect((await app.persistence.getAiConnectorCredentialByHash(hashMcpOAuthToken(mcpOAuthTokenSecret, a.refresh_token)))?.revokedAt).toBeTruthy();
+      const repeatedAudit = vi.spyOn(app.persistence, "appendAuditLog");
+      try {
+        expect((await refresh(a.refresh_token)).statusCode).toBe(400);
+        expect(repeatedAudit.mock.calls.some(([entry]) => entry.action === "ai_connector_expired")).toBe(false);
+      } finally { repeatedAudit.mockRestore(); }
+    });
+    it("inactivity expiry: stale A frees capacity but a delayed touch cannot revive it", async () => {
+      await app.persistence.saveAiConnectorPolicySettings({ maxActiveConnectionsPerUser: 1, inactivityExpiryDays: 1 });
+      const stale = await app.persistence.saveAiConnectorConnection({ id: "stale-active", userId: "user-1", provider: "chatgpt", displayName: "Old", status: "active", scopes: ["portfolio:mcp_read"],
+        createdAt: new Date(Date.now() - 3 * 86400000).toISOString(), lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString(), expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() });
+      expect((await app.persistence.getAiConnectorConnection(stale.id))?.status).toBe("expired");
+      const b = await authorize();
+      expect(b.statusCode).toBe(200);
+      await expect(app.persistence.saveAiConnectorConnection({ ...stale, status: "active", lastUsedAt: new Date().toISOString() })).rejects.toMatchObject({ code: "mcp_connection_inactive" });
+      const listed = (await app.inject({ remoteAddress: testIp, method: "GET", url: "/ai/connectors/history" })).json();
+      expect(listed.connections).toEqual(expect.arrayContaining([expect.objectContaining({ id: stale.id, status: "expired" })]));
+      expect((await app.persistence.listAiConnectorConnectionsForUser("user-1")).filter(c => c.status === "active")).toHaveLength(1);
+    });
+    it("legacy consent: omitted action is rejected and in-flight code cannot implicitly replace A", async () => {
+      const a = (await authorize()).json();
+      const request = await createAuthorizationRequest({ headers, resource, verifier, redirectUri, clientId });
+      const omitted = await app.inject({ remoteAddress: testIp, method: "POST", url: `/oauth/consent/${request.requestId}/approve`, headers, payload: { csrfToken: request.csrfToken, scopes: ["portfolio:mcp_read"] } });
+      expect(omitted.statusCode).toBe(400);
+      await app.persistence.saveAiConnectorConnection({ id: "legacy-pending", userId: "user-1", provider: "chatgpt", vendor: kind === "chatgpt" ? "openai" : "anthropic", clientKind: kind === "chatgpt" ? "chatgpt_app" : "claude_ai_connector", authMode: "oauth", displayName: "Legacy", status: "pending", scopes: ["portfolio:mcp_read"], expiresAt: new Date(Date.now() + 86400000).toISOString() });
+      await app.persistence.saveMcpOAuthAuthorizationCode({ id: "legacy-code", codeHash: hashMcpOAuthToken(mcpOAuthTokenSecret, "legacy-unbound-code"), connectionId: "legacy-pending", userId: "user-1", clientId, redirectUri, resource, scopes: ["portfolio:mcp_read"], codeChallenge: codeChallenge(verifier), codeChallengeMethod: "S256", expiresAt: new Date(Date.now() + 600000).toISOString() });
+      const exchange = await app.inject({ remoteAddress: testIp, method: "POST", url: "/oauth/token", headers: { ...headers, "content-type": "application/x-www-form-urlencoded" }, payload: form({ grant_type: "authorization_code", code: "legacy-unbound-code", client_id: clientId, redirect_uri: redirectUri, code_verifier: verifier, resource }) });
+      expect(exchange.statusCode).toBe(400);
+      expect(exchange.json().reason).toBe("mcp_oauth_consent_required");
+      await read(a.access_token);
+    });
+    it("consent binding: decision and selected target persist on request and consumed code", async () => {
+      const a = (await authorize()).json();
+      const target = connectionId(a.access_token);
+      const request = await createAuthorizationRequest({ headers, resource, verifier, redirectUri, clientId });
+      const approved = await app.inject({ remoteAddress: testIp, method: "POST", url: `/oauth/consent/${request.requestId}/approve`, headers, payload: { csrfToken: request.csrfToken, scopes: ["portfolio:mcp_read"], connectionAction: "replace", replacementConnectionId: target } });
+      expect(approved.statusCode).toBe(200);
+      expect(await app.persistence.getMcpOAuthAuthorizationRequest(request.requestId)).toMatchObject({ connectionAction: "replace", replacementConnectionId: target });
+      const callback = await resolveOAuthRedirectBridge(approved.json().redirectUrl);
+      const code = await app.persistence.consumeMcpOAuthAuthorizationCode(hashMcpOAuthToken(mcpOAuthTokenSecret, String(callback.searchParams.get("code"))));
+      expect(code).toMatchObject({ authorizationRequestId: request.requestId, connectionAction: "replace", replacementConnectionId: target });
+      expect(await app.persistence.saveMcpOAuthAuthorizationCode({ ...code! })).toMatchObject({ authorizationRequestId: request.requestId, connectionAction: "replace", replacementConnectionId: target });
+      const boundRequest = (await app.persistence.getMcpOAuthAuthorizationRequest(request.requestId))!;
+      expect(await app.persistence.saveMcpOAuthAuthorizationRequest({ ...boundRequest })).toMatchObject({ connectionAction: "replace", replacementConnectionId: target });
+      await read(a.access_token);
+    });
+    it("scope expansion and distinct OAuth client IDs: preserve A credentials and stable profile", async () => {
+      await app.persistence.saveAiConnectorPolicySettings({ groupToggles: { drafts: true } });
+      const a = (await authorize()).json();
+      const otherClientId = kind === "chatgpt" ? "chatgpt-other-entry" : "https://claude.ai/.well-known/mcp-client.json";
+      const b = await (await prepare(undefined, { clientId: otherClientId, scopes: ["portfolio:mcp_read", "transaction_draft:create"] }))();
+      expect(b.statusCode).toBe(200);
+      expect((await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))?.scopes).toEqual(["portfolio:mcp_read"]);
+      expect((await app.persistence.getAiConnectorConnection(connectionId(b.json().access_token)))?.scopes).toContain("transaction_draft:create");
+      expect(await profile(a.access_token)).toBe(await profile(b.json().access_token));
+      expect((await refresh(a.refresh_token)).statusCode).toBe(200);
+    });
+    it("foreign and other-client targets: consent rejects selection without changing either grant", async () => {
+      const foreign = await app.persistence.resolveOrCreateUser("google", "replacement-foreign", { email: "replacement-foreign@example.com", name: "Foreign" });
+      const a = (await authorize()).json();
+      const original = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      for (const target of [
+        { ...original, id: "foreign-target", userId: foreign.userId },
+        { ...original, id: "other-client-target", vendor: kind === "chatgpt" ? "anthropic" as const : "openai" as const, clientKind: kind === "chatgpt" ? "claude_ai_connector" as const : "chatgpt_app" as const },
+        { ...original, id: "pending-target", status: "pending" as const },
+        { ...original, id: "expired-target", expiresAt: new Date(Date.now() - 1000).toISOString() },
+        { ...original, id: "revoked-target", status: "revoked" as const },
+      ]) {
+        await app.persistence.saveAiConnectorConnection(target);
+        const expectedState = (await app.persistence.getAiConnectorConnection(target.id))!.status;
+        const request = await createAuthorizationRequest({ headers, resource, verifier, redirectUri, clientId });
+        const response = await app.inject({ remoteAddress: testIp, method: "POST", url: `/oauth/consent/${request.requestId}/approve`, headers, payload: { csrfToken: request.csrfToken, scopes: ["portfolio:mcp_read"], connectionAction: "replace", replacementConnectionId: target.id } });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().error).toBe("mcp_oauth_replacement_target_invalid");
+        expect((await app.persistence.getAiConnectorConnection(target.id))?.status).toBe(expectedState);
+      }
+      await read(a.access_token);
+    });
+    it("authorization freeze: access and refresh survive while create and pending exchange are paused", async () => {
+      const a = (await authorize()).json();
+      const exchange = await prepare(connectionId(a.access_token));
+      const request = await createAuthorizationRequest({ headers, resource, verifier, redirectUri, clientId });
+      authorizationWrites.enabled = false;
+      try {
+        const started = await app.inject({ remoteAddress: testIp, method: "GET", url: "/oauth/authorize" });
+        expect(started.statusCode).toBe(503);
+        const approved = await app.inject({ remoteAddress: testIp, method: "POST", url: `/oauth/consent/${request.requestId}/approve`, headers, payload: { csrfToken: request.csrfToken, scopes: ["portfolio:mcp_read"], connectionAction: "create" } });
+        expect(approved.statusCode).toBe(503);
+        expect((await exchange()).statusCode).toBe(503);
+        await read(a.access_token);
+        expect((await refresh(a.refresh_token)).statusCode).toBe(200);
+      } finally { authorizationWrites.enabled = true; }
+      expect((await exchange()).statusCode).toBe(200);
+    });
+    it("postcommit response failure: only A is replaced and repeated code preserves B", async () => {
+      const a = (await authorize()).json();
+      const b = (await authorize()).json();
+      const exchange = await prepare(connectionId(a.access_token));
+      const audit = vi.spyOn(app.persistence, "appendAuditLog").mockRejectedValueOnce(new Error("postcommit audit unavailable"));
+      try { expect((await exchange()).statusCode).toBe(500); } finally { audit.mockRestore(); }
+      expect((await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))?.status).toBe("revoked");
+      expect((await exchange()).statusCode).toBe(400);
+      await read(b.access_token);
+      expect((await refresh(b.refresh_token)).statusCode).toBe(200);
+    });
+    it("profile catalog: write-only grants remain available when portfolio-read policy is disabled", async () => {
+      await app.persistence.saveAiConnectorConnection({ id: "write-only-profile", userId: "user-1", provider: "chatgpt", displayName: "Write only", status: "active", scopes: ["transaction:write"] });
+      await app.persistence.saveAiConnectorPolicySettings({ groupToggles: { read: false, write: true } });
+      const summary = await app.inject({ remoteAddress: testIp, method: "GET", url: "/ai/connectors/summary" });
+      const profileTool = summary.json().toolCatalog.find((tool: { name: string }) => tool.name === "get_profile");
+      expect(profileTool).toMatchObject({ enabledByPolicy: true, availability: "available", effectiveAccess: [expect.objectContaining({ connectionId: "write-only-profile", status: "available", blockerCode: null })] });
+      const disabled = await app.inject({ remoteAddress: testIp, method: "PATCH", url: "/ai/connectors/write-only-profile", payload: { toolToggles: { get_profile: false } } });
+      expect(disabled.statusCode).toBe(200);
+      await app.persistence.saveAiConnectorConnection({ id: "disabled-bearer-profile", userId: "user-1", provider: "self_hosted", authMode: "bearer", clientKind: "generic_mcp", vendor: "generic", displayName: "Disabled CLI", status: "active", scopes: ["transaction:write"] });
+      await app.persistence.saveAiConnectorPolicySettings({ bearerFallback: { enabled: false } });
+      const blockedSummary = await app.inject({ remoteAddress: testIp, method: "GET", url: "/ai/connectors/summary" });
+      const blockedProfile = blockedSummary.json().toolCatalog.find((tool: { name: string }) => tool.name === "get_profile");
+      expect(blockedProfile.effectiveAccess).toEqual(expect.arrayContaining([
+        expect.objectContaining({ connectionId: "write-only-profile", blockerCode: "connector_override_disabled" }),
+        expect.objectContaining({ connectionId: "disabled-bearer-profile", blockerCode: "admin_tool_policy_disabled" }),
+      ]));
+    });
+    it("security reset during credential persistence: pending grant is never revived", async () => {
+      if (app.persistence instanceof PostgresPersistence) return;
+      const a = (await authorize()).json();
+      const originalSave = app.persistence.saveAiConnectorCredential.bind(app.persistence);
+      const save = vi.spyOn(app.persistence, "saveAiConnectorCredential").mockImplementationOnce(async (input) => {
+        const credential = await originalSave(input);
+        await app.persistence.revokeAiConnectorConnectionsForProvider("chatgpt", "mcp_oauth_secret_rotated", "user-1");
+        return credential;
+      });
+      try { expect((await authorize(connectionId(a.access_token))).statusCode).toBe(400); }
+      finally { save.mockRestore(); }
+      const connections = await app.persistence.listAiConnectorConnectionsForUser("user-1");
+      expect(connections.every(c => c.status === "revoked" && c.revocationReason === "mcp_oauth_secret_rotated")).toBe(true);
+    });
+    it.each(["absolute", "inactivity"])("expired bearer successor: %s expiry frees the retained unique-index slot", async (expiryKind) => {
+      await app.persistence.saveAiConnectorPolicySettings({ maxActiveConnectionsPerUser: 1, inactivityExpiryDays: 1 });
+      const old = { id: "expired-bearer", userId: "user-1", provider: "self_hosted" as const, vendor: "generic" as const, clientKind: "generic_mcp" as const,
+        authMode: "bearer" as const, displayName: "Old CLI", status: "active" as const, scopes: ["portfolio:mcp_read" as const],
+        expiresAt: new Date(Date.now() + (expiryKind === "absolute" ? -1000 : 86400000)).toISOString(),
+        createdAt: new Date(Date.now() - 3 * 86400000).toISOString(),
+        lastUsedAt: new Date(Date.now() - (expiryKind === "inactivity" ? 2 * 86400000 : 0)).toISOString() };
+      await app.persistence.saveAiConnectorConnection(old);
+      const successor = await app.persistence.saveAiConnectorConnection({ ...old, id: "successor-bearer", expiresAt: new Date(Date.now() + 86400000).toISOString(), createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString() });
+      expect(successor.status).toBe("active");
+      expect((await app.persistence.getAiConnectorConnection(old.id))?.status).toBe("expired");
+    });
+    it("bearer uniqueness: concurrent same-client creates retain the existing single bearer rule", async () => {
+      const input = { userId: "user-1", provider: "self_hosted" as const, vendor: "generic" as const, clientKind: "generic_mcp" as const,
+        authMode: "bearer" as const, displayName: "CLI", status: "active" as const, scopes: ["portfolio:mcp_read" as const] };
+      const results = await Promise.allSettled([
+        app.persistence.saveAiConnectorConnection({ ...input, id: "bearer-race-1" }),
+        app.persistence.saveAiConnectorConnection({ ...input, id: "bearer-race-2" }),
+      ]);
+      expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+      expect((await app.persistence.listAiConnectorConnectionsForUser("user-1")).filter(c => c.status === "active")).toHaveLength(1);
+    });
+    it("database insert failure: transaction leaves A active and no partial refresh credential", async () => {
+      if (!(app.persistence instanceof PostgresPersistence)) return;
+      const a = (await authorize()).json();
+      const exchange = await prepare(connectionId(a.access_token));
+      const faultPool = new Pool({ connectionString: databaseUrl });
+      try {
+        await faultPool.query(`CREATE FUNCTION fail_oauth_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected credential persistence failure'; END $$;
+          CREATE TRIGGER fail_oauth_insert BEFORE INSERT ON ai_connector_credentials FOR EACH ROW EXECUTE FUNCTION fail_oauth_insert()`);
+        expect((await exchange()).statusCode).toBe(503);
+        expect((await faultPool.query("SELECT id FROM ai_connector_credentials")).rowCount).toBe(1);
+      } finally {
+        await faultPool.query("DROP TRIGGER IF EXISTS fail_oauth_insert ON ai_connector_credentials; DROP FUNCTION IF EXISTS fail_oauth_insert()");
+        await faultPool.end();
+      }
+      await read(a.access_token);
+      expect((await refresh(a.refresh_token)).statusCode).toBe(200);
+      expect((await app.persistence.listAiConnectorConnectionsForUser("user-1")).filter(c => c.status === "active")).toHaveLength(1);
+    });
+    it("OAuth/bearer capacity: concurrent grants share one total allowance", async () => {
+      await app.persistence.saveAiConnectorPolicySettings({ maxActiveConnectionsPerUser: 1 });
+      const exchange = await prepare();
+      const results = await Promise.allSettled([exchange(), app.persistence.saveAiConnectorConnection({
+        id: "racing-bearer", userId: "user-1", provider: "self_hosted", vendor: "generic", clientKind: "generic_mcp", authMode: "bearer",
+        displayName: "CLI", status: "active", scopes: ["portfolio:mcp_read"], expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      })]);
+      expect(results).toHaveLength(2);
+      expect((await app.persistence.listAiConnectorConnectionsForUser("user-1")).filter(c => c.status === "active")).toHaveLength(1);
+    });
+    it("create/replace concurrency: unrelated B survives and total capacity holds", async () => {
+      await app.persistence.saveAiConnectorPolicySettings({ maxActiveConnectionsPerUser: 2 });
+      const a = (await authorize()).json();
+      const [create, replace] = await Promise.all([prepare(), prepare(connectionId(a.access_token))]);
+      const [b, c] = await Promise.all([create(), replace()]);
+      expect([b.statusCode, c.statusCode]).toEqual([200, 200]);
+      await read(b.json().access_token);
+      await read(c.json().access_token);
+      expect((await app.persistence.listAiConnectorConnectionsForUser("user-1")).filter(c => c.status === "active")).toHaveLength(2);
+    });
+    it("cancel and expired code: preserve the explicitly selected existing grant", async () => {
+      const a = (await authorize()).json();
+      const request = await createAuthorizationRequest({ headers, resource, verifier, redirectUri, clientId });
+      const denied = await app.inject({ remoteAddress: testIp, method: "POST", url: `/oauth/consent/${request.requestId}/deny`, payload: { csrfToken: request.csrfToken } });
+      expect(denied.statusCode).toBe(200);
+      const exchange = await prepare(connectionId(a.access_token));
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now + 11 * 60 * 1000);
+      if (app.persistence instanceof PostgresPersistence) {
+        const expiryPool = new Pool({ connectionString: databaseUrl });
+        try { await expiryPool.query("UPDATE mcp_oauth_authorization_codes SET expires_at = NOW() - INTERVAL '1 second' WHERE consumed_at IS NULL"); }
+        finally { await expiryPool.end(); }
+      }
+      expect((await exchange()).statusCode).toBe(400);
+      const expiredPending = (await app.persistence.listAiConnectorConnectionsForUser("user-1")).filter(c => c.id !== connectionId(a.access_token));
+      expect(expiredPending).toHaveLength(1);
+      expect(expiredPending[0]?.status).toBe("expired");
+      clock.mockRestore();
+      await read(a.access_token);
+      expect((await refresh(a.refresh_token)).statusCode).toBe(200);
+    });
+    it("capacity: concurrent create/create cannot exceed the total and replacement succeeds at cap", async () => {
+      await app.persistence.saveAiConnectorPolicySettings({ maxActiveConnectionsPerUser: 1 });
+      const [a, b] = await Promise.all([prepare(), prepare()]);
+      const results = await Promise.all([a(), b()]);
+      expect(results.map(r => r.statusCode).sort()).toEqual([200, 400]);
+      const winner = results.find(r => r.statusCode === 200)!.json();
+      const replacement = await authorize(connectionId(winner.access_token));
+      expect(replacement.statusCode).toBe(200);
+      expect((await app.persistence.listAiConnectorConnectionsForUser("user-1")).filter(c => c.status === "active")).toHaveLength(1);
+    });
+    it("competing replacement: only one exchange may replace the selected target", async () => {
+      const a = (await authorize()).json();
+      const [c, d] = await Promise.all([prepare(connectionId(a.access_token)), prepare(connectionId(a.access_token))]);
+      const responses = await Promise.all([c(), d()]);
+      expect(responses.map(r => r.statusCode).sort()).toEqual([200, 400]);
+      expect(responses.find(r => r.statusCode === 400)!.json().reason).toBe("mcp_oauth_replacement_target_invalid");
+      expect((await app.persistence.listAiConnectorConnectionsForUser("user-1")).filter(c => c.status === "active")).toHaveLength(1);
+    });
+    it("stale target: revocation after consent rejects exchange without activating another connection", async () => {
+      const a = (await authorize()).json();
+      const exchange = await prepare(connectionId(a.access_token));
+      await app.inject({ remoteAddress: testIp, method: "DELETE", url: `/ai/connectors/${connectionId(a.access_token)}` });
+      const result = await exchange();
+      expect(result.statusCode).toBe(400);
+      expect(result.json().reason).toBe("mcp_oauth_replacement_target_invalid");
+      expect((await app.persistence.listAiConnectorConnectionsForUser("user-1")).filter(c => c.status === "active")).toHaveLength(0);
+    });
+    it("committed replacement: retrying the consumed code never revokes unrelated B", async () => {
+      const a = (await authorize()).json();
+      const b = (await authorize()).json();
+      const exchange = await prepare(connectionId(a.access_token));
+      expect((await exchange()).statusCode).toBe(200);
+      expect((await exchange()).statusCode).toBe(400);
+      await read(b.access_token);
+      expect((await refresh(b.refresh_token)).statusCode).toBe(200);
+    });
+    it("labels: independent labels differ and rename preserves credentials and expiry", async () => {
+      const a = (await authorize()).json();
+      const b = (await authorize()).json();
+      const old = await app.persistence.getAiConnectorConnection(connectionId(a.access_token));
+      expect(old?.displayName).not.toBe((await app.persistence.getAiConnectorConnection(connectionId(b.access_token)))?.displayName);
+      const identity = await profile(a.access_token);
+      const renamed = await app.inject({ remoteAddress: testIp, method: "PATCH", url: `/ai/connectors/${old!.id}`, payload: { displayName: "Research" } });
+      expect(renamed.statusCode).toBe(200);
+      expect(await profile(a.access_token)).toBe(identity);
+      expect(renamed.json()).toMatchObject({ displayName: "Research", expiresAt: old!.expiresAt, scopes: old!.scopes });
+      await read(a.access_token);
+      expect((await refresh(a.refresh_token)).statusCode).toBe(200);
+    });
+  });
+
 }
 
 describe("MCP OAuth for ChatGPT", () => {
   beforeEach(async () => {
+    resetMcpRateLimitBucketsForTest();
+    testIp = `127.0.0.${++requestIpSequence}`;
     app = await buildApp({
       persistenceBackend: "memory",
       oauthConfig: testOAuthConfig,
@@ -183,6 +580,8 @@ describe("MCP OAuth for ChatGPT", () => {
     await app.close();
   });
 
+  registerIndependentOAuthRegressions();
+
   it("advertises OAuth metadata and completes authorization-code plus refresh rotation", async () => {
     const headers = { host: "localhost:4000" };
     const resource = "http://localhost:4000/mcp";
@@ -198,7 +597,7 @@ describe("MCP OAuth for ChatGPT", () => {
       expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
     });
 
-    const authorizationServer = await app.inject({
+    const authorizationServer = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: "/.well-known/oauth-authorization-server",
       headers,
@@ -215,7 +614,7 @@ describe("MCP OAuth for ChatGPT", () => {
       scopes_supported: advertisedMcpScopes,
     });
     expect(authorizationServer.json()).not.toHaveProperty("authorization_response_iss_parameter_supported");
-    const pathScopedAuthorizationServer = await app.inject({
+    const pathScopedAuthorizationServer = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: "/.well-known/oauth-authorization-server/mcp",
       headers,
@@ -225,7 +624,7 @@ describe("MCP OAuth for ChatGPT", () => {
       issuer: "http://localhost:4000",
       client_id_metadata_document_supported: true,
     });
-    const openIdConfiguration = await app.inject({
+    const openIdConfiguration = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: "/.well-known/openid-configuration",
       headers,
@@ -236,7 +635,7 @@ describe("MCP OAuth for ChatGPT", () => {
       token_endpoint: "http://localhost:4000/oauth/token",
       client_id_metadata_document_supported: true,
     });
-    const pathScopedOpenIdConfiguration = await app.inject({
+    const pathScopedOpenIdConfiguration = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: "/.well-known/openid-configuration/mcp",
       headers,
@@ -247,7 +646,7 @@ describe("MCP OAuth for ChatGPT", () => {
       authorization_endpoint: "http://localhost:4000/oauth/authorize",
     });
 
-    const mcpPreflight = await app.inject({
+    const mcpPreflight = await app.inject({ remoteAddress: testIp,
       method: "OPTIONS",
       url: "/mcp",
       headers: {
@@ -261,7 +660,7 @@ describe("MCP OAuth for ChatGPT", () => {
     expect(mcpPreflight.headers["access-control-allow-credentials"]).toBeUndefined();
     expect(mcpPreflight.headers["access-control-allow-methods"]).toContain("POST");
 
-    const tokenPreflight = await app.inject({
+    const tokenPreflight = await app.inject({ remoteAddress: testIp,
       method: "OPTIONS",
       url: "/oauth/token",
       headers: {
@@ -274,7 +673,7 @@ describe("MCP OAuth for ChatGPT", () => {
     expect(tokenPreflight.headers["access-control-allow-origin"]).toBe("https://chatgpt.com");
     expect(tokenPreflight.headers["access-control-allow-credentials"]).toBeUndefined();
 
-    const protectedResource = await app.inject({
+    const protectedResource = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: "/.well-known/oauth-protected-resource",
       headers,
@@ -285,7 +684,7 @@ describe("MCP OAuth for ChatGPT", () => {
       authorization_servers: ["http://localhost:4000"],
       scopes_supported: advertisedMcpScopes,
     });
-    const pathScopedProtectedResource = await app.inject({
+    const pathScopedProtectedResource = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: "/.well-known/oauth-protected-resource/mcp",
       headers,
@@ -296,7 +695,7 @@ describe("MCP OAuth for ChatGPT", () => {
       authorization_servers: ["http://localhost:4000"],
     });
 
-    const authorize = await app.inject({
+    const authorize = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         response_type: "code",
@@ -318,7 +717,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const requestId = new URL(String(consentLocation)).searchParams.get("requestId");
     expect(requestId).toBeTruthy();
 
-    const consent = await app.inject({
+    const consent = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/consent/${requestId}`,
     });
@@ -333,13 +732,13 @@ describe("MCP OAuth for ChatGPT", () => {
     expect(consentBody.scopes).toEqual(["portfolio:mcp_read", "transaction_draft:create"]);
     expect(consentBody.policy.maxConnectorLifetimeDays).toBe(90);
 
-    const approve = await app.inject({
+    const approve = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: `/oauth/consent/${requestId}/approve`,
       headers,
       payload: {
         csrfToken: consentBody.csrfToken,
-        scopes: ["portfolio:mcp_read"],
+        connectionAction: "create", scopes: ["portfolio:mcp_read"],
         lifetimeDays: 7,
       },
     });
@@ -368,7 +767,7 @@ describe("MCP OAuth for ChatGPT", () => {
       scopes: ["portfolio:mcp_read"],
     });
 
-    const token = await app.inject({
+    const token = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
@@ -395,11 +794,11 @@ describe("MCP OAuth for ChatGPT", () => {
       status: "active",
     });
     expect(connectionsAfterToken.find((connection) => connection.id === "old-chatgpt-connection")).toMatchObject({
-      status: "revoked",
-      revocationReason: "replaced_by_oauth_authorization",
+      status: "active",
+      revocationReason: null,
     });
 
-    const patched = await app.inject({
+    const patched = await app.inject({ remoteAddress: testIp,
       method: "PATCH",
       url: `/ai/connectors/${pendingConnection?.id}`,
       payload: {
@@ -411,7 +810,7 @@ describe("MCP OAuth for ChatGPT", () => {
       error: "mcp_oauth_scope_expansion_requires_reconnect",
     });
 
-    const initialize = await app.inject({
+    const initialize = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/mcp",
       headers: {
@@ -434,7 +833,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const sessionId = initialize.headers["mcp-session-id"];
     expect(typeof sessionId).toBe("string");
 
-    const oldTokenDraftCall = await app.inject({
+    const oldTokenDraftCall = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/mcp",
       headers: {
@@ -469,7 +868,7 @@ describe("MCP OAuth for ChatGPT", () => {
     expect(oldTokenDraftCall.statusCode).toBe(200);
     expect(oldTokenDraftCall.body).toContain("MCP scope transaction_draft:create is not enabled");
 
-    const replay = await app.inject({
+    const replay = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
@@ -485,7 +884,7 @@ describe("MCP OAuth for ChatGPT", () => {
     expect(replay.statusCode).toBe(400);
     expect(replay.json()).toMatchObject({ error: "invalid_grant" });
 
-    const refreshed = await app.inject({
+    const refreshed = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
@@ -500,7 +899,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const refreshedBody = refreshed.json<{ refresh_token: string }>();
     expect(refreshedBody.refresh_token).not.toBe(tokenBody.refresh_token);
 
-    const reuse = await app.inject({
+    const reuse = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
@@ -524,7 +923,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const redirectUri = "https://chatgpt.com/connector/oauth/callback-id";
     await app.persistence.saveAiConnectorPolicySettings({ oauthPublicIssuer: issuer });
 
-    const authorizationServer = await app.inject({
+    const authorizationServer = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: "/.well-known/oauth-authorization-server",
       headers: { host },
@@ -541,11 +940,11 @@ describe("MCP OAuth for ChatGPT", () => {
       verifier,
       redirectUri,
     });
-    const approve = await app.inject({
+    const approve = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: `/oauth/consent/${requestId}/approve`,
       headers: { host },
-      payload: { csrfToken, scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
+      payload: { csrfToken, connectionAction: "create", scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
     });
     expect(approve.statusCode).toBe(200);
     const callback = await resolveOAuthRedirectBridgeWithOrigin(
@@ -564,7 +963,7 @@ describe("MCP OAuth for ChatGPT", () => {
       verifier,
       redirectUri,
     });
-    const deny = await app.inject({
+    const deny = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: `/oauth/consent/${denied.requestId}/deny`,
       headers: { host },
@@ -593,11 +992,11 @@ describe("MCP OAuth for ChatGPT", () => {
       verifier,
       redirectUri,
     });
-    const approve = await app.inject({
+    const approve = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: `/oauth/consent/${requestId}/approve`,
       headers,
-      payload: { csrfToken, scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
+      payload: { csrfToken, connectionAction: "create", scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
     });
     expect(approve.statusCode).toBe(200);
     const approveRedirect = await resolveOAuthRedirectBridge(approve.json<{ redirectUrl: string }>().redirectUrl);
@@ -605,7 +1004,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const code = approveRedirect.searchParams.get("code");
     expect(code).toBeTruthy();
 
-    const token = await app.inject({
+    const token = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
@@ -623,7 +1022,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const [connection] = await app.persistence.listAiConnectorConnectionsForUser("user-1");
     expect(connection).toMatchObject({ status: "active" });
 
-    const refreshed = await app.inject({
+    const refreshed = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
@@ -663,11 +1062,11 @@ describe("MCP OAuth for ChatGPT", () => {
       verifier,
       redirectUri,
     });
-    const approve = await app.inject({
+    const approve = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: `/oauth/consent/${requestId}/approve`,
       headers,
-      payload: { csrfToken, scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
+      payload: { csrfToken, connectionAction: "create", scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
     });
     expect(approve.statusCode).toBe(200);
     const approveRedirect = await resolveOAuthRedirectBridge(approve.json<{ redirectUrl: string }>().redirectUrl);
@@ -675,7 +1074,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const code = approveRedirect.searchParams.get("code");
     expect(code).toBeTruthy();
 
-    const token = await app.inject({
+    const token = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
@@ -703,11 +1102,11 @@ describe("MCP OAuth for ChatGPT", () => {
       verifier,
       redirectUri,
     });
-    const approve = await app.inject({
+    const approve = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: `/oauth/consent/${requestId}/approve`,
       headers,
-      payload: { csrfToken, scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
+      payload: { csrfToken, connectionAction: "create", scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
     });
     expect(approve.statusCode).toBe(200);
     const approveRedirect = await resolveOAuthRedirectBridge(approve.json<{ redirectUrl: string }>().redirectUrl);
@@ -715,7 +1114,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const code = approveRedirect.searchParams.get("code");
     expect(code).toBeTruthy();
 
-    const token = await app.inject({
+    const token = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
@@ -739,7 +1138,7 @@ describe("MCP OAuth for ChatGPT", () => {
       null,
       new Date(Date.parse(String(originalExpiresAt)) + 86_400_000).toISOString(),
     ]) {
-      const patched = await app.inject({
+      const patched = await app.inject({ remoteAddress: testIp,
         method: "PATCH",
         url: `/ai/connectors/${connection.id}`,
         payload: { expiresAt },
@@ -751,7 +1150,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const current = await app.persistence.getAiConnectorConnection(connection.id);
     expect(current?.expiresAt).toBe(originalExpiresAt);
 
-    const refreshed = await app.inject({
+    const refreshed = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
@@ -781,7 +1180,7 @@ describe("MCP OAuth for ChatGPT", () => {
       code_challenge: codeChallenge(verifier),
       code_challenge_method: "S256",
     };
-    const badRedirect = await app.inject({
+    const badRedirect = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams(base).toString()}`,
       headers: { host: "localhost:4000" },
@@ -789,7 +1188,7 @@ describe("MCP OAuth for ChatGPT", () => {
     expect(badRedirect.statusCode).toBe(400);
     expect(badRedirect.json()).toMatchObject({ error: "invalid_request" });
 
-    const badResource = await app.inject({
+    const badResource = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         ...base,
@@ -816,7 +1215,7 @@ describe("MCP OAuth for ChatGPT", () => {
       code_challenge_method: "S256",
     });
 
-    const rejected = await app.inject({
+    const rejected = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${authorizeParams.toString()}`,
       headers: { host: "localhost:4000" },
@@ -848,7 +1247,7 @@ describe("MCP OAuth for ChatGPT", () => {
       },
     });
 
-    const accepted = await app.inject({
+    const accepted = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${authorizeParams.toString()}`,
       headers: { host: "localhost:4000" },
@@ -859,7 +1258,7 @@ describe("MCP OAuth for ChatGPT", () => {
 
   it("accepts OAuth authorization extension parameters from ChatGPT", async () => {
     const verifier = "verifier-1234567890123456789012345678901234567890123";
-    const response = await app.inject({
+    const response = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         response_type: "code",
@@ -903,7 +1302,7 @@ describe("MCP OAuth for ChatGPT", () => {
       },
     });
 
-    const response = await app.inject({
+    const response = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         response_type: "code",
@@ -943,7 +1342,7 @@ describe("MCP OAuth for ChatGPT", () => {
       },
     });
 
-    const response = await app.inject({
+    const response = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         response_type: "code",
@@ -1020,7 +1419,7 @@ describe("MCP OAuth for ChatGPT", () => {
       },
     });
 
-    const authorize = await app.inject({
+    const authorize = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         response_type: "code",
@@ -1036,7 +1435,7 @@ describe("MCP OAuth for ChatGPT", () => {
     expect(authorize.statusCode).toBe(302);
 
     const requestId = new URL(String(authorize.headers.location)).searchParams.get("requestId");
-    const consent = await app.inject({ method: "GET", url: `/oauth/consent/${requestId}` });
+    const consent = await app.inject({ remoteAddress: testIp, method: "GET", url: `/oauth/consent/${requestId}` });
     expect(consent.statusCode).toBe(200);
     expect(consent.json()).toMatchObject({
       clientId,
@@ -1046,13 +1445,13 @@ describe("MCP OAuth for ChatGPT", () => {
     });
     const { csrfToken } = consent.json<{ csrfToken: string }>();
 
-    const approved = await app.inject({
+    const approved = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: `/oauth/consent/${requestId}/approve`,
       headers: { host: "localhost:4000" },
       payload: {
         csrfToken,
-        scopes: ["portfolio:mcp_read"],
+        connectionAction: "create", scopes: ["portfolio:mcp_read"],
       },
     });
     expect(approved.statusCode).toBe(200);
@@ -1060,7 +1459,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const code = redirect.searchParams.get("code");
     expect(code).toBeTruthy();
 
-    const token = await app.inject({
+    const token = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", host: "localhost:4000" },
@@ -1081,7 +1480,7 @@ describe("MCP OAuth for ChatGPT", () => {
       vendor: "anthropic",
       clientKind: "claude_ai_connector",
       authMode: "oauth",
-      displayName: "Claude.ai",
+      displayName: expect.stringMatching(/^Claude\.ai · /),
       oauthClientId: clientId,
       status: "active",
     });
@@ -1094,7 +1493,7 @@ describe("MCP OAuth for ChatGPT", () => {
       oauthRedirectUriAllowlist: [redirectUri],
     });
 
-    const response = await app.inject({
+    const response = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         response_type: "code",
@@ -1139,7 +1538,7 @@ describe("MCP OAuth for ChatGPT", () => {
       },
     });
 
-    const valid = await app.inject({
+    const valid = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         response_type: "code",
@@ -1159,7 +1558,7 @@ describe("MCP OAuth for ChatGPT", () => {
       client_id: clientId,
       redirect_uris: ["http://localhost:5555/other-callback"],
     });
-    const mismatch = await app.inject({
+    const mismatch = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         response_type: "code",
@@ -1217,7 +1616,7 @@ describe("MCP OAuth for ChatGPT", () => {
       },
     });
 
-    const authorize = await app.inject({
+    const authorize = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         response_type: "code",
@@ -1235,7 +1634,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const requestId = new URL(String(authorize.headers.location)).searchParams.get("requestId");
     expect(requestId).toBeTruthy();
 
-    const consent = await app.inject({ method: "GET", url: `/oauth/consent/${requestId}` });
+    const consent = await app.inject({ remoteAddress: testIp, method: "GET", url: `/oauth/consent/${requestId}` });
     expect(consent.statusCode).toBe(200);
     const consentBody = consent.json<{ csrfToken: string; scopes: string[] }>();
     expect(new Set(consentBody.scopes)).toEqual(new Set([
@@ -1248,13 +1647,13 @@ describe("MCP OAuth for ChatGPT", () => {
       "transaction:write",
     ]));
 
-    const approve = await app.inject({
+    const approve = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: `/oauth/consent/${requestId}/approve`,
       headers: { host: "localhost:4000" },
       payload: {
         csrfToken: consentBody.csrfToken,
-        scopes: ["portfolio:mcp_read", "account:manage"],
+        connectionAction: "create", scopes: ["portfolio:mcp_read", "account:manage"],
         lifetimeDays: 7,
       },
     });
@@ -1264,7 +1663,7 @@ describe("MCP OAuth for ChatGPT", () => {
     expect(approveRedirect.origin + approveRedirect.pathname).toBe(redirectUri);
     expect(code).toBeTruthy();
 
-    const missingAssertion = await app.inject({
+    const missingAssertion = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", host: "localhost:4000" },
@@ -1283,7 +1682,7 @@ describe("MCP OAuth for ChatGPT", () => {
       error_description: "Client private_key_jwt assertion is required",
     });
 
-    const token = await app.inject({
+    const token = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", host: "localhost:4000" },
@@ -1357,7 +1756,7 @@ describe("MCP OAuth for ChatGPT", () => {
       resource,
     };
 
-    const missingAssertion = await app.inject({
+    const missingAssertion = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", host: "localhost:4000" },
@@ -1369,7 +1768,7 @@ describe("MCP OAuth for ChatGPT", () => {
       error_description: "Client private_key_jwt assertion is required",
     });
 
-    const mismatchedSubject = await app.inject({
+    const mismatchedSubject = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", host: "localhost:4000" },
@@ -1391,7 +1790,7 @@ describe("MCP OAuth for ChatGPT", () => {
       error_description: "Client assertion issuer or subject is invalid",
     });
 
-    const badAudience = await app.inject({
+    const badAudience = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", host: "localhost:4000" },
@@ -1413,7 +1812,7 @@ describe("MCP OAuth for ChatGPT", () => {
       error_description: "Client assertion audience is invalid",
     });
 
-    const expiredAssertion = await app.inject({
+    const expiredAssertion = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", host: "localhost:4000" },
@@ -1435,7 +1834,7 @@ describe("MCP OAuth for ChatGPT", () => {
       error_description: "Client assertion has expired",
     });
 
-    const badSignature = await app.inject({
+    const badSignature = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: "/oauth/token",
       headers: { "content-type": "application/x-www-form-urlencoded", host: "localhost:4000" },
@@ -1469,7 +1868,7 @@ describe("MCP OAuth for ChatGPT", () => {
       code_challenge_method: "S256",
     };
 
-    const directPrivate = await app.inject({
+    const directPrivate = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         ...queryBase,
@@ -1488,7 +1887,7 @@ describe("MCP OAuth for ChatGPT", () => {
         throw new Error("unsafe host should not be fetched");
       },
     });
-    const resolvedPrivate = await app.inject({
+    const resolvedPrivate = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         ...queryBase,
@@ -1509,7 +1908,7 @@ describe("MCP OAuth for ChatGPT", () => {
         body: "{}",
       }),
     });
-    const oversized = await app.inject({
+    const oversized = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         ...queryBase,
@@ -1542,7 +1941,7 @@ describe("MCP OAuth for ChatGPT", () => {
       "https://chatgpt.com/connector/oauth/qJslh6tN1MVz",
       "https://chat.openai.com/connector/oauth/qJslh6tN1MVz",
     ]) {
-      const response = await app.inject({
+      const response = await app.inject({ remoteAddress: testIp,
         method: "GET",
         url: `/oauth/authorize?${new URLSearchParams({
           ...queryBase,
@@ -1560,7 +1959,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const resource = "http://localhost:4000/mcp";
     const verifier = "verifier-1234567890123456789012345678901234567890123";
     const redirectUri = "http://localhost:5555/callback";
-    const authorize = await app.inject({
+    const authorize = await app.inject({ remoteAddress: testIp,
       method: "GET",
       url: `/oauth/authorize?${new URLSearchParams({
         response_type: "code",
@@ -1574,16 +1973,16 @@ describe("MCP OAuth for ChatGPT", () => {
       headers,
     });
     const requestId = new URL(String(authorize.headers.location)).searchParams.get("requestId");
-    const consent = await app.inject({ method: "GET", url: `/oauth/consent/${requestId}` });
+    const consent = await app.inject({ remoteAddress: testIp, method: "GET", url: `/oauth/consent/${requestId}` });
     const { csrfToken } = consent.json<{ csrfToken: string }>();
-    const approve = await app.inject({
+    const approve = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: `/oauth/consent/${requestId}/approve`,
-      payload: { csrfToken, scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
+      payload: { csrfToken, connectionAction: "create", scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
     });
     expect(approve.statusCode).toBe(200);
 
-    const deny = await app.inject({
+    const deny = await app.inject({ remoteAddress: testIp,
       method: "POST",
       url: `/oauth/consent/${requestId}/deny`,
       payload: { csrfToken },
@@ -1605,15 +2004,15 @@ describe("MCP OAuth for ChatGPT", () => {
     });
 
     const approvals = await Promise.all([
-      app.inject({
+      app.inject({ remoteAddress: testIp,
         method: "POST",
         url: `/oauth/consent/${requestId}/approve`,
-        payload: { csrfToken, scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
+        payload: { csrfToken, connectionAction: "create", scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
       }),
-      app.inject({
+      app.inject({ remoteAddress: testIp,
         method: "POST",
         url: `/oauth/consent/${requestId}/approve`,
-        payload: { csrfToken, scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
+        payload: { csrfToken, connectionAction: "create", scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
       }),
     ]);
     expect(approvals.map((response) => response.statusCode).sort()).toEqual([200, 410]);
@@ -1634,12 +2033,12 @@ describe("MCP OAuth for ChatGPT", () => {
     });
 
     const [approve, deny] = await Promise.all([
-      app.inject({
+      app.inject({ remoteAddress: testIp,
         method: "POST",
         url: `/oauth/consent/${requestId}/approve`,
-        payload: { csrfToken, scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
+        payload: { csrfToken, connectionAction: "create", scopes: ["portfolio:mcp_read"], lifetimeDays: 7 },
       }),
-      app.inject({
+      app.inject({ remoteAddress: testIp,
         method: "POST",
         url: `/oauth/consent/${requestId}/deny`,
         payload: { csrfToken },
@@ -1649,7 +2048,7 @@ describe("MCP OAuth for ChatGPT", () => {
     const connections = await app.persistence.listAiConnectorConnectionsForUser("user-1");
     const pendingConnections = connections.filter((connection) => connection.provider === "chatgpt" && connection.status === "pending");
     expect(pendingConnections).toHaveLength(approve.statusCode === 200 ? 1 : 0);
-    const staleConsent = await app.inject({ method: "GET", url: `/oauth/consent/${requestId}` });
+    const staleConsent = await app.inject({ remoteAddress: testIp, method: "GET", url: `/oauth/consent/${requestId}` });
     expect(staleConsent.statusCode).toBe(410);
   });
 });
@@ -1684,21 +2083,30 @@ describePostgres("MCP OAuth Postgres replacement semantics", () => {
   }
 
   beforeEach(async () => {
+    testIp = `127.0.0.${++requestIpSequence}`;
     pool = new Pool({ connectionString: databaseUrl });
     await resetDatabase();
     await applyNumberedMigrations();
     persistence = new PostgresPersistence({ databaseUrl: databaseUrl!, redisUrl: redisUrl! });
     await persistence.init();
     await persistence.ensureDevBypassUser();
+    app = await buildApp({ persistenceBackend: "memory", oauthConfig: testOAuthConfig, appBaseUrl: "http://localhost:3000" });
+    await app.persistence.close();
+    app.persistence = persistence;
+    await persistence.setAppConfigEncryptedSecret("mcpOauthTokenSecret", mcpOAuthTokenSecret);
   });
 
   afterEach(async () => {
+    resetClientMetadataNetwork?.();
+    resetClientMetadataNetwork = null;
+    await app.close();
     if (persistence) {
-      await persistence.close();
       persistence = null;
     }
     await pool.end();
   });
+
+  registerIndependentOAuthRegressions();
 
   it("revokes an existing active ChatGPT connector before activating the pending replacement", async () => {
     await persistence!.saveAiConnectorConnection({
@@ -1722,8 +2130,12 @@ describePostgres("MCP OAuth Postgres replacement semantics", () => {
       expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
     });
 
-    const result = await persistence!.activateAiConnectorConnectionReplacingProvider({
+    const result = await persistence!.activateAiConnectorOAuthConnection({
       connectionId: "new-chatgpt-connection",
+      connectionAction: "replace",
+      replacementConnectionId: "old-chatgpt-connection",
+      vendor: "openai", clientKind: "chatgpt_app", authMode: "oauth",
+      refreshCredential: { id: "new-refresh", connectionId: "new-chatgpt-connection", credentialType: "oauth_refresh_token", tokenHash: "new-refresh-hash" },
       userId: "user-1",
       provider: "chatgpt",
       maxActiveConnectionsPerUser: 3,

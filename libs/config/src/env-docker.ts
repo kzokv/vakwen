@@ -38,6 +38,7 @@ export const dockerCloudSchema = envSchema.extend({
 // Uses a standalone z.object() instead of extending envSchema because the local
 // compose target passes ports as strings and only needs a narrow set of vars.
 export const dockerLocalSchema = z.object({
+  MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED: envSchema.shape.MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED,
   // Database
   POSTGRES_USER: z.string().default("vakwen"),
   POSTGRES_PASSWORD: z.string().min(1),

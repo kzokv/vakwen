@@ -4183,6 +4183,34 @@ describePostgres("postgres migrations", () => {
     ).resolves.not.toThrow();
   });
 
+  it("migration 123: preserves existing grants and credentials, permits OAuth multiplicity and retains bearer uniqueness", async () => {
+    await applyMigrationFiles(await getNumberedMigrationsBefore("123_independent_oauth_connections.sql"));
+    await pool.query(`INSERT INTO users (id, email) VALUES ('independent-user', 'independent@example.com')`);
+    await pool.query(`INSERT INTO ai_connector_connections (id,user_id,provider,vendor,client_kind,auth_mode,display_name,status,expires_at)
+      VALUES ('oauth-old','independent-user','chatgpt','openai','chatgpt_app','oauth','Custom original label','active',NOW() + INTERVAL '7 days'),
+        ('oauth-revoked','independent-user','chatgpt','anthropic','claude_ai_connector','oauth','Old Claude','revoked',NOW() + INTERVAL '3 days'),
+        ('bearer-old','independent-user','self_hosted','generic','generic_mcp','bearer','Original CLI','active',NOW() + INTERVAL '7 days')`);
+    await pool.query(`INSERT INTO ai_connector_connection_scopes (connection_id,scope) VALUES ('oauth-old','portfolio:mcp_read')`);
+    await pool.query(`INSERT INTO ai_connector_credentials (id,connection_id,credential_type,token_hash,expires_at,revoked_at)
+      VALUES ('refresh-old','oauth-old','oauth_refresh_token','preserved-hash',NOW() + INTERVAL '7 days',NULL),
+        ('refresh-revoked','oauth-revoked','oauth_refresh_token','revoked-hash',NOW() + INTERVAL '3 days',NOW())`);
+    const beforeConnections = await pool.query(`SELECT id, display_name, status, expires_at, created_at FROM ai_connector_connections ORDER BY id`);
+    const beforeCredentials = await pool.query(`SELECT * FROM ai_connector_credentials ORDER BY id`);
+    const beforeScopes = await pool.query(`SELECT * FROM ai_connector_connection_scopes ORDER BY connection_id,scope`);
+    await applyMigrationFiles(["123_independent_oauth_connections.sql", "123_independent_oauth_connections.sql"]);
+    expect((await pool.query(`SELECT id, display_name, status, expires_at, created_at FROM ai_connector_connections ORDER BY id`)).rows).toEqual(beforeConnections.rows);
+    expect((await pool.query(`SELECT * FROM ai_connector_credentials ORDER BY id`)).rows).toEqual(beforeCredentials.rows);
+    expect((await pool.query(`SELECT * FROM ai_connector_connection_scopes ORDER BY connection_id,scope`)).rows).toEqual(beforeScopes.rows);
+    await pool.query(`INSERT INTO ai_connector_connections (id,user_id,provider,vendor,client_kind,auth_mode,display_name,status)
+      VALUES ('oauth-new','independent-user','chatgpt','openai','chatgpt_app','oauth','Independent ChatGPT','active'),
+        ('claude-a','independent-user','chatgpt','anthropic','claude_ai_connector','oauth','Claude A','active'),
+        ('claude-b','independent-user','chatgpt','anthropic','claude_ai_connector','oauth','Claude B','active')`);
+    await expect(pool.query(`INSERT INTO ai_connector_connections (id,user_id,provider,vendor,client_kind,auth_mode,display_name,status)
+      VALUES ('bearer-duplicate','independent-user','self_hosted','generic','generic_mcp','bearer','Duplicate','active')`)).rejects.toMatchObject({ code: "23505" });
+    // A compatible rollback keeps the narrowed index; restoring old uniqueness is unsafe.
+    await expect(pool.query(`CREATE UNIQUE INDEX forbidden_legacy_rollback ON ai_connector_connections(user_id,vendor,client_kind,auth_mode) WHERE status='active'`)).rejects.toMatchObject({ code: "23505" });
+  });
+
   it("migrations 095-098: backfill legacy AI connector identity without requiring reconnect", async () => {
     await applyMigrationFiles(await getNumberedMigrationsBefore("095_ai_connector_identity_and_bearer_policy.sql"));
 

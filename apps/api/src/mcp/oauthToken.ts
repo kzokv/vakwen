@@ -2,9 +2,11 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
+import { Env } from "@vakwen/config";
 import type { AiConnectorScope } from "@vakwen/shared-types";
+import type { SaveAiConnectorCredentialInput } from "../persistence/types.js";
 import { routeError } from "../lib/routeError.js";
-import { revokeAiConnectorConnection } from "../services/mcpConnectorLifecycle.js";
+import { expireAiConnectorConnection, revokeAiConnectorConnection } from "../services/mcpConnectorLifecycle.js";
 import {
   CLIENT_ASSERTION_MAX_CHARS,
   CLIENT_ASSERTION_TYPE_JWT_BEARER,
@@ -70,6 +72,7 @@ function signAccessToken(secret: string, payload: McpOAuthAccessTokenPayload): s
 export function verifyMcpOAuthAccessToken(
   secret: string,
   token: string,
+  options?: { allowExpired?: boolean },
 ): McpOAuthAccessTokenPayload {
   const parts = token.split(".");
   if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
@@ -92,7 +95,7 @@ export function verifyMcpOAuthAccessToken(
     throw routeError(401, "mcp_auth_invalid", "Invalid MCP bearer token");
   }
   const payload = accessTokenPayloadSchema.parse(decodedPayload);
-  if (payload.exp <= Math.floor(Date.now() / 1000)) {
+  if (!options?.allowExpired && payload.exp <= Math.floor(Date.now() / 1000)) {
     throw routeError(401, "mcp_auth_expired", "MCP bearer token has expired");
   }
   return payload;
@@ -110,6 +113,7 @@ async function issueTokens(input: {
   refreshCredentialId?: string;
   predecessorCredentialId?: string | null;
   tokenFamilyId?: string | null;
+  persistCredential?: (credential: SaveAiConnectorCredentialInput) => Promise<void>;
 }) {
   const secret = await getMcpOAuthTokenSecret(input.app);
   const authUser = await input.app.persistence.getAuthUserById(input.userId);
@@ -133,7 +137,8 @@ async function issueTokens(input: {
   const refreshToken = randomToken(48);
   const refreshCredentialId = input.refreshCredentialId ?? randomUUID();
   const familyId = input.tokenFamilyId ?? randomUUID();
-  await input.app.persistence.saveAiConnectorCredential({
+  const persistCredential = input.persistCredential ?? ((credential: SaveAiConnectorCredentialInput) => input.app.persistence.saveAiConnectorCredential(credential));
+  await persistCredential({
     id: refreshCredentialId,
     connectionId: input.connectionId,
     credentialType: "oauth_refresh_token",
@@ -190,6 +195,7 @@ export async function handleMcpOAuthToken(
   }
 
   if (body.grant_type === "authorization_code") {
+    if (!Env.MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED) return sendOAuthError(reply, 503, "temporarily_unavailable", "New authorizations are temporarily paused; retry later");
     const code = await app.persistence.consumeMcpOAuthAuthorizationCode(hashMcpOAuthToken(secret, body.code));
     if (!code) return sendOAuthError(reply, 400, "invalid_grant", "Authorization code is invalid or expired");
     const redirectUri = body.redirect_uri ?? code.redirectUri;
@@ -207,31 +213,48 @@ export async function handleMcpOAuthToken(
       return sendOAuthError(reply, 400, "invalid_grant", "Connector authorization is no longer pending");
     }
     const settings = await app.persistence.getAiConnectorPolicySettings();
-    const activatedResult = await app.persistence.activateAiConnectorConnectionReplacingProvider({
-      connectionId: connection.id,
-      userId: code.userId,
-      provider: connection.provider,
-      vendor: connection.vendor,
-      clientKind: connection.clientKind,
-      authMode: connection.authMode,
-      maxActiveConnectionsPerUser: settings.maxActiveConnectionsPerUser,
-      oauthClientId: code.clientId,
-      oauthSubject: code.userId,
-      lastUsedAt: new Date().toISOString(),
-      revokedByUserId: code.userId,
-      revocationReason: "replaced_by_oauth_authorization",
-    });
-    if (!activatedResult) {
-      return sendOAuthError(reply, 400, "invalid_grant", "Connector authorization is no longer pending");
+    let activatedResult: Awaited<ReturnType<typeof app.persistence.activateAiConnectorOAuthConnection>> = null;
+    let tokens: Awaited<ReturnType<typeof issueTokens>>;
+    try {
+      tokens = await issueTokens({ app, req, connectionId: connection.id, userId: code.userId,
+        clientId: code.clientId, resource, scopes: connection.scopes, refreshExpiresAt: connection.expiresAt,
+        persistCredential: async (refreshCredential) => {
+          activatedResult = await app.persistence.activateAiConnectorOAuthConnection({
+            connectionId: connection.id, userId: code.userId, provider: connection.provider,
+            vendor: connection.vendor, clientKind: connection.clientKind, authMode: connection.authMode,
+            maxActiveConnectionsPerUser: settings.maxActiveConnectionsPerUser,
+            oauthClientId: code.clientId, oauthSubject: code.userId, lastUsedAt: new Date().toISOString(),
+            revokedByUserId: code.userId, revocationReason: "replaced_by_oauth_authorization",
+            connectionAction: code.connectionAction ?? undefined,
+            replacementConnectionId: code.replacementConnectionId, refreshCredential,
+          });
+          if (!activatedResult) throw routeError(400, "invalid_grant", "Connector authorization is no longer pending");
+        },
+      });
+    } catch (error) {
+      const expectedFailure = error instanceof Error && "statusCode" in error && typeof error.statusCode === "number"
+        && error.statusCode >= 400 && error.statusCode < 500 && "code" in error && typeof error.code === "string";
+      const reason = expectedFailure ? error.code as string : "server_error";
+      req.log.warn({ connectionId: connection.id, requestId: req.id, reason, connectionAction: code.connectionAction }, "mcp_oauth_activation_failed");
+      return sendOAuthError(reply, reason === "server_error" ? 503 : 400,
+        reason === "server_error" ? "server_error" : "invalid_grant",
+        reason === "server_error" ? "Authorization could not be saved; restart authorization" : (error instanceof Error ? error.message : "Authorization failed"), { reason });
     }
-    const activated = activatedResult.connection;
-    for (const revokedConnectionId of activatedResult.revokedConnectionIds) {
+    // Successful return from the persistence operation is the commit boundary.
+    const committed = activatedResult as Awaited<ReturnType<typeof app.persistence.activateAiConnectorOAuthConnection>>;
+    if (!committed) return sendOAuthError(reply, 400, "invalid_grant", "Connector authorization is no longer pending");
+    const activated = committed.connection;
+    for (const revokedConnectionId of committed.revokedConnectionIds) {
       await app.persistence.appendAuditLog({
         actorUserId: code.userId,
         action: "ai_connector_revoked",
         targetUserId: code.userId,
         ipAddress: req.ip,
         metadata: {
+          requestId: req.id,
+          authorizationRequestId: code.authorizationRequestId ?? null,
+          connectionAction: code.connectionAction,
+          replacedByConnectionId: activated.id,
           connectionId: revokedConnectionId,
           provider: connection.provider,
           vendor: connection.vendor,
@@ -247,31 +270,28 @@ export async function handleMcpOAuthToken(
       targetUserId: code.userId,
       ipAddress: req.ip,
       metadata: {
+        requestId: req.id,
+        authorizationRequestId: code.authorizationRequestId ?? null,
+        connectionAction: code.connectionAction,
+        replacementConnectionId: code.replacementConnectionId ?? null,
         connectionId: activated.id,
         provider: activated.provider,
         scopes: activated.scopes,
         expiresAt: activated.expiresAt,
-        oauthClientId: code.clientId,
+        clientKind: activated.clientKind,
       },
     });
     req.log.info({
       mcpOAuth: {
+        requestId: req.id,
+        authorizationRequestId: code.authorizationRequestId ?? null,
+        connectionAction: code.connectionAction,
+        replacementConnectionId: code.replacementConnectionId ?? null,
         connectionId: activated.id,
-        clientId: code.clientId,
-        resource,
+        clientKind: activated.clientKind,
         scopes: activated.scopes,
       },
     }, "mcp_oauth_token_issued");
-    const tokens = await issueTokens({
-      app,
-      req,
-      connectionId: activated.id,
-      userId: code.userId,
-      clientId: code.clientId,
-      resource,
-      scopes: activated.scopes,
-      refreshExpiresAt: activated.expiresAt,
-    });
     return tokens;
   }
 
@@ -283,6 +303,20 @@ export async function handleMcpOAuthToken(
   if (!connection) return sendOAuthError(reply, 400, "invalid_grant", "Connector connection is invalid");
   const resource = body.resource ?? credential.resource;
   if (!resource) return sendOAuthError(reply, 400, "invalid_grant", "Refresh token binding is invalid");
+  if (credential.credentialType !== "oauth_refresh_token" || credential.oauthClientId !== body.client_id || credential.resource !== resource) {
+    return sendOAuthError(reply, 400, "invalid_grant", "Refresh token binding is invalid");
+  }
+  if (connection.status !== "active") {
+    const reason = connection.revocationReason ?? (connection.status === "expired" ? (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now() ? "absolute_expiry" : "inactivity_expiry") : "connection_inactive");
+    if (connection.status === "expired") {
+      await expireAiConnectorConnection(app, connection, reason === "inactivity_expiry" ? "inactivity_expiry" : "absolute_expiry");
+    }
+    req.log.info({ connectionId: connection.id, requestId: req.id, reason }, "mcp_oauth_refresh_rejected");
+    return sendOAuthError(reply, 400, "invalid_grant", "Connector authorization is revoked or expired; reconnect", { reason });
+  }
+  if (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now()) {
+    return sendOAuthError(reply, 400, "invalid_grant", "Connector authorization has expired", { reason: "absolute_expiry" });
+  }
   if (credential.revokedAt || credential.replacedByCredentialId) {
     if (connection.status === "active") {
       await revokeAiConnectorConnection(app, connection.id, {

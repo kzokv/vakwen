@@ -20,6 +20,8 @@ const envBool = z
 export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   AUTH_MODE: z.enum(["oauth", "dev_bypass"]).default("dev_bypass"),
+  // Freeze new consent/code exchanges during cutover; existing access and refresh remain available.
+  MCP_OAUTH_NEW_AUTHORIZATIONS_ENABLED: envBool.default(true),
   PERSISTENCE_BACKEND: z.enum(["postgres", "memory"]).default("postgres"),
   API_PORT: z.coerce.number().int().positive().default(4000),
   WEB_PORT: z.coerce.number().int().positive().default(3000),

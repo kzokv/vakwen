@@ -1417,6 +1417,7 @@ function toAiConnectorConnectionDto(record: AiConnectorConnectionRecord) {
     lastUsedAt: record.lastUsedAt,
     revokedAt: record.revokedAt,
     revocationReason: record.revocationReason,
+    replacedByConnectionId: record.replacedByConnectionId ?? null,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -1440,6 +1441,7 @@ function toAiConnectorAccessLogDto(record: AiConnectorAccessLogRecord, connectio
   return {
     id: record.id,
     connectionId: record.connectionId,
+    requestId: record.requestId,
     connectionDisplayName: connection?.displayName ?? null,
     clientKind: connection?.clientKind ?? null,
     portfolioContextUserId: record.portfolioContextUserId,
@@ -1457,12 +1459,13 @@ function buildAiConnectorToolCatalog(
   connections: AiConnectorConnectionRecord[] = [],
 ) {
   return listMcpToolDefinitions({ legacyReadGroupEnabled: policy.groupToggles.read }).map((tool) => {
+    const profile = tool.name === "get_profile";
     const primaryGroup = connectorGroupForScope(tool.scope);
     const groups = groupsForListedTool(tool);
-    const enabledByPolicy = policy.enabled && groups.some((group) => policy.groupToggles[group]);
+    const enabledByPolicy = policy.enabled && (profile || groups.some((group) => policy.groupToggles[group]));
     const unavailableReason = !policy.enabled
       ? "AI connector deployment is disabled by admin policy."
-      : !groups.some((group) => policy.groupToggles[group])
+      : !profile && !groups.some((group) => policy.groupToggles[group])
         ? `${primaryGroup === "read" ? "Read" : primaryGroup === "research" ? "Research" : primaryGroup === "drafts" ? "Draft" : "Write"} MCP tools are disabled by admin policy.`
         : null;
     return {
@@ -1574,6 +1577,12 @@ function getToolEffectiveAccessBlocker(
   if (!policy.allowedClientKinds[connection.clientKind]) return "client_kind_disabled";
   if (connection.status !== "active") return "connector_inactive";
   if (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now()) return "connector_inactive";
+  if (connection.toolToggles[tool.name] === false) return "connector_override_disabled";
+  if (tool.name === "get_profile") {
+    if (connection.authMode === "bearer" && !policy.bearerFallback.enabled) return "admin_tool_policy_disabled";
+    if (connection.authMode === "bearer" && !policy.bearerFallback.allowedClientKinds.includes(connection.clientKind)) return "client_kind_disabled";
+    return null;
+  }
   const hasEnabledScopedAccess = scopeGroupPairs.some(({ scope, group }) => (
     connection.scopes.includes(scope) && policy.groupToggles[group]
   ));
@@ -1590,7 +1599,6 @@ function getToolEffectiveAccessBlocker(
     ));
     if (!hasBearerScopedAccess) return "admin_tool_policy_disabled";
   }
-  if (connection.toolToggles[tool.name] === false) return "connector_override_disabled";
   return null;
 }
 
@@ -9172,6 +9180,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const userId = requireSessionUserId(req);
     const params = z.object({ id: userScopedIdSchema }).parse(req.params);
     const body = z.object({
+      displayName: z.string().trim().min(1).max(120).optional(),
       scopes: aiConnectorScopesSchema.optional(),
       toolToggles: z.record(z.string().min(1).max(120), z.boolean()).optional(),
       expiresAt: z.union([isoDateTimeSchema, z.null()]).optional(),
@@ -9212,7 +9221,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         "Bearer connector lifetime is fixed at token creation; create a new bearer connector to choose a different lifetime",
       );
     }
-    const allowedScopes = requestedScopes.filter((scope) => (
+    const allowedScopes = body.scopes === undefined ? connection.scopes : requestedScopes.filter((scope) => (
       scope === "research:read" && connection.scopes.includes(scope)
         ? true
         : settings.groupToggles[connectorGroupForScope(scope)]
@@ -9227,6 +9236,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
     const updated = await app.persistence.saveAiConnectorConnection({
       ...connection,
+      displayName: body.displayName ?? connection.displayName,
       scopes: allowedScopes,
       toolToggles: body.toolToggles ?? connection.toolToggles,
       expiresAt: nextExpiresAt,
