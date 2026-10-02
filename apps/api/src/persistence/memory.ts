@@ -1951,6 +1951,9 @@ export class MemoryPersistence implements Persistence {
       const expiries = await this.prepareDueAiConnectorExpiries(input.userId);
       const due = (id: string) => expiries.some(expiry => expiry.current.id === id && expiry.canCommit());
       const previous = this.aiConnectorConnections.get(input.id);
+      // Metadata saves must not persist the expired projection of an abandoned OAuth consent.
+      const preservePending = previous?.status === "pending" && input.status === "expired";
+      if (preservePending) input = { ...input, status: "pending" };
       if (input.status === "active" && previous && (["revoked", "expired"].includes(previous.status) || (previous.status === "active" && (!this.activeConnector(previous) || due(previous.id))))) {
         throw routeError(409, "mcp_connection_inactive", "An inactive connector cannot be reactivated");
       }
@@ -1987,7 +1990,7 @@ export class MemoryPersistence implements Persistence {
         if (saved.status !== "revoked") saved.status = finalizedPrevious.status;
       }
       this.aiConnectorConnections.set(saved.id, saved);
-      return { ...saved, capabilities: [...saved.capabilities], scopes: [...saved.scopes], toolToggles: { ...saved.toolToggles } };
+      return { ...saved, status: preservePending ? this.connectorStatus(saved) : saved.status, capabilities: [...saved.capabilities], scopes: [...saved.scopes], toolToggles: { ...saved.toolToggles } };
     });
   }
 

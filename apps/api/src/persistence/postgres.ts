@@ -3318,7 +3318,9 @@ export class PostgresPersistence implements Persistence {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`ai-connector:${input.userId}`]);
       await this.finalizeDueAiConnectorExpiriesTx(client, input.userId);
       // Provider-wide resets bypass the user advisory lock; lock the row before reading its terminal state.
-      await client.query("SELECT id FROM ai_connector_connections WHERE id = $1 FOR UPDATE", [input.id]);
+      const stored = await client.query<{ status: AiConnectorStatus }>("SELECT status FROM ai_connector_connections WHERE id = $1 FOR UPDATE", [input.id]);
+      // Keep never-activated consent rows pending in storage; reads still project expired codes.
+      if (stored.rows[0]?.status === "pending" && input.status === "expired") input = { ...input, status: "pending" };
       const previous = await this.getAiConnectorConnectionTx(client, input.id);
       if (input.status === "active" && previous && ["revoked", "expired"].includes(previous.status)) {
         throw routeError(409, "mcp_connection_inactive", "An inactive connector cannot be reactivated");

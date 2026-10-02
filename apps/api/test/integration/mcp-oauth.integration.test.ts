@@ -268,6 +268,32 @@ function registerIndependentOAuthRegressions() {
       await read(a.access_token);
       expect((await refresh(a.refresh_token)).statusCode).toBe(200);
     });
+    it("abandoned pending grant: hide preserves expired history without active-expiry effects", async () => {
+      const a = (await authorize()).json();
+      const request = await createAuthorizationRequest({ headers, resource, verifier, redirectUri, clientId });
+      const approved = await app.inject({ remoteAddress: testIp, method: "POST", url: `/oauth/consent/${request.requestId}/approve`, headers,
+        payload: { csrfToken: request.csrfToken, connectionAction: "create", scopes: ["portfolio:mcp_read"], lifetimeDays: 7 } });
+      expect(approved.statusCode).toBe(200);
+      const callback = await resolveOAuthRedirectBridge(approved.json().redirectUrl);
+      const code = (await app.persistence.consumeMcpOAuthAuthorizationCode(hashMcpOAuthToken(mcpOAuthTokenSecret, callback.searchParams.get("code")!)))!;
+      await app.persistence.saveMcpOAuthAuthorizationCode({ ...code, consumedAt: null, expiresAt: new Date(Date.now() - 60_000).toISOString() });
+      expect((await app.persistence.getAiConnectorConnection(code.connectionId))?.status).toBe("expired");
+      const hidden = await app.inject({ remoteAddress: testIp, method: "POST", url: `/ai/connectors/${code.connectionId}/hide` });
+      expect(hidden.statusCode).toBe(200);
+      expect(hidden.json().status).toBe("expired");
+      const active = (await app.persistence.getAiConnectorConnection(connectionId(a.access_token)))!;
+      await app.persistence.saveAiConnectorConnection({ ...active, displayName: "Still active" });
+      expect((await authorize()).statusCode).toBe(200);
+      const abandoned = (await app.persistence.getAiConnectorConnection(code.connectionId))!;
+      expect(abandoned.status).toBe("expired");
+      expect(abandoned.hiddenAt).toBeTruthy();
+      expect(abandoned.expiryProcessedAt).toBeNull();
+      const audits = await app.persistence.listAuditLog({ page: 1, limit: 100 });
+      expect(audits.items.filter(item => item.action === "ai_connector_expired" && item.metadata?.connectionId === code.connectionId)).toHaveLength(0);
+      const notifications = await app.persistence.getNotificationsForUser("user-1", { page: 1, limit: 100 });
+      expect(notifications.notifications.filter(item => item.sourceRef === code.connectionId && item.title === "AI connector expired")).toHaveLength(0);
+      await read(a.access_token);
+    });
     it.each(["save", "activation"] as const)("implicit %s expiry: completes terminal effects without presenting the old credential", async (phase) => {
       await app.persistence.saveAiConnectorPolicySettings({ inactivityExpiryDays: 1, maxActiveConnectionsPerUser: 1 });
       const a = (await authorize()).json();
