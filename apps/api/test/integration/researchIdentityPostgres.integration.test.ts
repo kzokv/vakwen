@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { PostgresPersistence } from "../../src/persistence/postgres.js";
 import {
@@ -9,6 +9,7 @@ import {
 } from "../../src/services/research/identity.js";
 import { canonicalizeOfficialMonthlyRevenueRow } from "../../src/services/research/monthlyRevenue.js";
 import { getMonthlyRevenue, getResearchIdentity } from "../../src/services/research/service.js";
+import { confirmAdminMarketCalendarImport, previewAdminMarketCalendarImport } from "../../src/services/market-data/marketCalendarService.js";
 
 const databaseUrl = process.env.POSTGRES_TEST_DB_URL ?? process.env.DB_URL;
 const redisUrl = process.env.POSTGRES_TEST_REDIS_URL ?? process.env.REDIS_URL;
@@ -299,6 +300,30 @@ describePostgres("research identity memory/Postgres parity", () => {
 
   it("monthly revenue parity: append authoritative months and query the store only → match memory and Postgres latest views", async () => {
     const memory = new MemoryPersistence();
+    // Freshness uses the calendar known at the query's historical cutoff.
+    // Seed the same prerequisite in both stores before those August cutoffs.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    try {
+      for (const persistence of [memory, postgres]) {
+        const preview = await previewAdminMarketCalendarImport(persistence, "TW", {
+          calendarYear: 2026,
+          sourceType: "official_source",
+          sourceUrl: "https://example.test/tw-calendar-2026",
+          retrievedAt: "2025-12-01T00:00:00.000Z",
+          coverage: { scope: "full_year", evidence: "Deterministic monthly-revenue parity fixture." },
+          exceptions: [],
+        });
+        await confirmAdminMarketCalendarImport(persistence, "TW", preview.previewToken);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+    // Postgres confirmation uses its database clock rather than the mocked JS clock.
+    await pool.query(
+      "UPDATE market_data.market_calendar_versions SET confirmed_at = $1 WHERE market_code = $2 AND calendar_year = $3",
+      ["2026-01-01T00:00:00.000Z", "TW", 2026],
+    );
     const identity = canonicalizeOfficialIdentityRow({
       venue: "TWSE",
       snapshotDate: "2026-07-01",
