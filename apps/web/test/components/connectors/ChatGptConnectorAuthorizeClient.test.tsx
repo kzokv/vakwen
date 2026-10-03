@@ -21,6 +21,9 @@ beforeAll(() => {
 
 function buildConsent(overrides: Partial<McpOAuthConsentRequestDto> = {}): McpOAuthConsentRequestDto {
   return {
+    activeConnectionCount: 0,
+    maxActiveConnectionsPerUser: 3,
+    replacementCandidates: [],
     requestId: "req-1",
     clientId: "chatgpt",
     redirectUri: "http://localhost:5555/callback",
@@ -67,6 +70,71 @@ describe("ChatGptConnectorAuthorizeClient", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+  });
+
+  it("independent consent: approve → sends explicit create action", async () => {
+    mockFetchMcpOAuthConsent.mockResolvedValue(buildConsent());
+    mockApproveMcpOAuthConsent.mockRejectedValue(new Error("test stops redirect"));
+    await act(async () => root.render(<ChatGptConnectorAuthorizeClient />));
+    await flushEffects();
+    await act(async () => buttonByText("Approve").click());
+    expect(mockApproveMcpOAuthConsent).toHaveBeenCalledWith("req-1", expect.objectContaining({ connectionAction: "create" }));
+  });
+
+  it("capacity: total limit reached → creation and approval disabled", async () => {
+    mockFetchMcpOAuthConsent.mockResolvedValue(buildConsent({ activeConnectionCount: 3 }));
+    await act(async () => root.render(<ChatGptConnectorAuthorizeClient />));
+    await flushEffects();
+    expect((document.querySelector("input[value='create']") as HTMLInputElement | null)?.disabled).toBe(true);
+    expect(buttonByText("Approve").disabled).toBe(true);
+    expect(document.body.textContent).toContain("connection limit");
+  });
+
+  it("replacement: choosing replace → requires explicit target → sends only selected target", async () => {
+    mockFetchMcpOAuthConsent.mockResolvedValue(buildConsent({ replacementCandidates: [{
+      provider: "chatgpt", vendor: "openai", clientKind: "chatgpt_app", authMode: "oauth", capabilities: ["oauth"], toolToggles: {}, expiryNotifiedAt: null, revokedAt: null, revocationReason: null, updatedAt: "2026-10-01T12:00:00Z",
+      id: "connection-a", displayName: "ChatGPT personal", status: "active", scopes: ["portfolio:mcp_read"],
+      createdAt: "2026-10-01T12:00:00Z", lastUsedAt: null, expiresAt: "2026-12-01T12:00:00Z",
+    }] }));
+    mockApproveMcpOAuthConsent.mockRejectedValue(new Error("test stops redirect"));
+    await act(async () => root.render(<ChatGptConnectorAuthorizeClient />));
+    await flushEffects();
+    const replace = document.querySelector("input[value='replace']") as HTMLInputElement | null;
+    expect(replace).not.toBeNull();
+    await act(async () => replace?.click());
+    expect(buttonByText("Approve").disabled).toBe(true);
+    const target = document.querySelector("input[value='connection-a']") as HTMLInputElement | null;
+    expect(target?.checked).toBe(false);
+    await act(async () => target?.click());
+    await act(async () => buttonByText("Approve").click());
+    expect(mockApproveMcpOAuthConsent).toHaveBeenCalledWith("req-1", expect.objectContaining({ connectionAction: "replace", replacementConnectionId: "connection-a" }));
+  });
+
+  it("consent refresh: capacity changed → preserves permission choices and optional name", async () => {
+    mockFetchMcpOAuthConsent.mockResolvedValueOnce(buildConsent()).mockResolvedValueOnce(buildConsent({ activeConnectionCount: 3 }));
+    await act(async () => root.render(<ChatGptConnectorAuthorizeClient />));
+    await flushEffects();
+    const name = document.querySelector("input[type='text']") as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(name, "Personal");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const checkbox = document.querySelector("input[type='checkbox']") as HTMLInputElement;
+    await act(async () => checkbox.click());
+    await act(async () => buttonByText("Refresh available connections").click());
+    expect(document.querySelector("input[type='text']")).toBe(name);
+    expect(name.value).toBe("Personal");
+    expect(checkbox.checked).toBe(false);
+    expect(buttonByText("Approve").disabled).toBe(true);
+  });
+
+  it("approval: stale target rejected → actionable error remains visible", async () => {
+    mockFetchMcpOAuthConsent.mockResolvedValue(buildConsent());
+    mockApproveMcpOAuthConsent.mockRejectedValue(new Error("Replacement target is no longer active"));
+    await act(async () => root.render(<ChatGptConnectorAuthorizeClient />));
+    await flushEffects();
+    await act(async () => buttonByText("Approve").click());
+    expect(document.querySelector("[role='alert']")?.textContent).toContain("Refresh available connections and choose a target again");
   });
 
   it("renders resource and redirect URI as fully inspectable values", async () => {

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { recordMcpAuthenticationFailure } from "./authDiagnostics.js";
+import { getConnectedProfile } from "./profile.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -159,8 +161,8 @@ interface PendingToolRequestContext {
 }
 
 function getRequestId(req: FastifyRequest): string {
-  const header = req.headers["x-request-id"];
-  if (typeof header === "string" && header.length > 0) return header;
+  // Use server-generated correlation; caller headers can contain credentials or
+  // unbounded text and must not be copied into user-visible activity.
   return req.id;
 }
 
@@ -347,11 +349,16 @@ export async function registerMcpRoutes(
       return buildToolAuthChallengeResult({
         app,
         req: pending.req,
-        scope: tool.scope,
+        scope: toolName === "get_profile" ? undefined : tool.scope,
         error: challengeErrorFor(pending.authError),
         description,
         text: `Authentication required for ${toToolTitle(toolName)}.`,
       });
+    }
+    // The SDK receives raw shapes for legacy tools; retain strict empty-input
+    // validation for identity so no caller-supplied selector can affect it.
+    if (toolName === "get_profile" && !tool.inputSchema.safeParse(args).success) {
+      return { isError: true, content: [{ type: "text" as const, text: "get_profile accepts an empty argument object." }] };
     }
     const auth = pending.auth;
     let requestedContextUserId = extractRequestedContextUserId(args);
@@ -672,6 +679,9 @@ export async function registerMcpRoutes(
             args as { accountIds?: string[]; accountNames?: string[]; locale?: string },
           );
           break;
+        case "get_profile":
+          result = await getConnectedProfile(app, auth);
+          break;
         case "list_portfolio_contexts":
           result = await listPortfolioContexts({ app, requestContext, tradingCalendar: app.tradingCalendarCache });
           break;
@@ -983,7 +993,7 @@ export async function registerMcpRoutes(
         return buildToolAuthChallengeResult({
           app,
           req: pending.req,
-          scope: tool.scope,
+          scope: toolName === "get_profile" ? undefined : tool.scope,
           error: challengeErrorFor(error),
           description,
           text: `Authorization required for ${toToolTitle(toolName)}.`,
@@ -1016,7 +1026,7 @@ export async function registerMcpRoutes(
         tool.name,
         {
           description: tool.description,
-          inputSchema: tool.inputSchema.shape,
+          inputSchema: tool.name === "get_profile" ? tool.inputSchema : tool.inputSchema.shape,
           outputSchema: tool.outputSchema,
           annotations: tool.annotations,
           _meta: tool._meta
@@ -1046,6 +1056,7 @@ export async function registerMcpRoutes(
       try {
         tokenContext = await authService.authenticateRequest(app, req);
       } catch (error) {
+        await recordMcpAuthenticationFailure(app, req, error, getRequestId(req));
         if (isToolCall) {
           tokenAuthError = error;
         } else {

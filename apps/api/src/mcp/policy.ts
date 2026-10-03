@@ -189,6 +189,11 @@ export class DefaultMcpPolicyService implements McpPolicyService {
         throw routeError(403, "mcp_client_kind_disabled", `AI connector client kind ${clientKind} is disabled`);
       }
     }
+    if (toolName === "get_profile") {
+      const context = await resolveSharedContext(app, auth.sessionUserId, undefined);
+      enforceRateLimit(auth, accessKind, context, req.ip);
+      return context;
+    }
     const group = connectorGroupForScope(toolScope);
     if (auth.authMode === "bearer" && !settings.bearerFallback.allowedToolGroups.includes(group)) {
       throw routeError(403, "mcp_bearer_tool_group_disabled", `MCP bearer fallback is disabled for ${group} tools`);

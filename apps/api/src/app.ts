@@ -1,3 +1,4 @@
+import { redactRequestUrl } from "./lib/redactRequestUrl.js";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import { ZodError } from "zod";
@@ -5,6 +6,7 @@ import { Env, type GoogleOAuthEnvConfig } from "@vakwen/config";
 import { createPersistence } from "./persistence/index.js";
 import type { Persistence } from "./persistence/types.js";
 import { createEventBus, type BufferedEventBus } from "./events/index.js";
+import { registerImplicitAiConnectorExpiryPublisher } from "./services/mcpConnectorLifecycle.js";
 import {
   CONTEXT_FALLBACK_HEADER,
   contextClearCookieString,
@@ -147,13 +149,6 @@ async function bootstrapAdminAccess(app: AppInstance): Promise<void> {
   await app.persistence.promoteUserToAdminByEmail(Env.INITIAL_ADMIN_EMAIL, "admin_promote_startup");
 }
 
-// KZO-147: redact the 22-char base62 token in GET /share/:token URLs so the
-// plaintext token does not leak into request logs.
-const ANON_SHARE_TOKEN_URL_REGEX = /\/share\/[A-Za-z0-9]{22}(?=[/?#]|$)/g;
-function redactAnonymousShareTokenUrl(url: string): string {
-  return url.replace(ANON_SHARE_TOKEN_URL_REGEX, "/share/[REDACTED]");
-}
-
 export async function buildApp(options: BuildAppOptions = {}): Promise<AppInstance> {
   const app = Fastify({
     logger: {
@@ -161,7 +156,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<AppInstan
         req(request: { method?: string; url?: string; hostname?: string; remoteAddress?: string; remotePort?: number }) {
           return {
             method: request.method,
-            url: typeof request.url === "string" ? redactAnonymousShareTokenUrl(request.url) : request.url,
+            url: typeof request.url === "string" ? redactRequestUrl(request.url) : request.url,
             hostname: request.hostname,
             remoteAddress: request.remoteAddress,
             remotePort: request.remotePort,
@@ -233,6 +228,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<AppInstan
   if ("init" in app.eventBus && typeof (app.eventBus as { init?: () => Promise<void> }).init === "function") {
     await (app.eventBus as { init: () => Promise<void> }).init();
   }
+  registerImplicitAiConnectorExpiryPublisher(app);
   app.oauthConfig = options.oauthConfig !== undefined ? options.oauthConfig : Env.getGoogleOAuthEnvConfig();
   app.appBaseUrl = options.appBaseUrl ?? Env.APP_BASE_URL ?? "http://localhost:3000";
   // KZO-198: a defensive `onReady` re-warm guards the ready-chain transition.

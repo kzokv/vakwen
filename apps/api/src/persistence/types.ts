@@ -521,6 +521,8 @@ export interface SetPendingShareInviteCapabilitiesInput {
 }
 
 export interface AiConnectorConnectionRecord extends AiConnectorConnectionDto {
+  /** Internal marker for terminal expiry audit/notification processing. */
+  expiryProcessedAt?: string | null;
   userId: string;
   oauthClientId: string | null;
   oauthSubject: string | null;
@@ -528,6 +530,8 @@ export interface AiConnectorConnectionRecord extends AiConnectorConnectionDto {
 }
 
 export interface McpOAuthAuthorizationRequestRecord {
+  connectionAction?: "create" | "replace" | null;
+  replacementConnectionId?: string | null;
   id: string;
   userId: string;
   clientId: string;
@@ -545,6 +549,8 @@ export interface McpOAuthAuthorizationRequestRecord {
 }
 
 export interface SaveMcpOAuthAuthorizationRequestInput {
+  connectionAction?: "create" | "replace" | null;
+  replacementConnectionId?: string | null;
   id: string;
   userId: string;
   clientId: string;
@@ -562,6 +568,9 @@ export interface SaveMcpOAuthAuthorizationRequestInput {
 }
 
 export interface McpOAuthAuthorizationCodeRecord {
+  authorizationRequestId?: string | null;
+  connectionAction?: "create" | "replace" | null;
+  replacementConnectionId?: string | null;
   id: string;
   codeHash: string;
   connectionId: string;
@@ -578,6 +587,9 @@ export interface McpOAuthAuthorizationCodeRecord {
 }
 
 export interface SaveMcpOAuthAuthorizationCodeInput {
+  authorizationRequestId?: string | null;
+  connectionAction?: "create" | "replace" | null;
+  replacementConnectionId?: string | null;
   id: string;
   codeHash: string;
   connectionId: string;
@@ -631,7 +643,21 @@ export interface SaveAiConnectorCredentialInput {
   lastUsedAt?: string | null;
 }
 
+export interface FinalizeAiConnectorExpiryInput {
+  connectionId: string;
+  userId: string;
+  reason: "absolute_expiry" | "inactivity_expiry";
+}
+
+export interface FinalizeAiConnectorExpiryResult {
+  connection: AiConnectorConnectionRecord;
+  /** Only the caller that committed expiry receives the durable notification ID. */
+  notificationId: string | null;
+}
+
 export interface SaveAiConnectorConnectionInput {
+  expiryProcessedAt?: string | null;
+  replacedByConnectionId?: string | null;
   id: string;
   userId: string;
   provider: AiConnectorProvider;
@@ -656,7 +682,10 @@ export interface SaveAiConnectorConnectionInput {
   updatedAt?: string;
 }
 
-export interface ActivateAiConnectorConnectionReplacingProviderInput {
+export interface ActivateAiConnectorOAuthConnectionInput {
+  connectionAction?: "create" | "replace";
+  replacementConnectionId?: string | null;
+  refreshCredential?: SaveAiConnectorCredentialInput;
   connectionId: string;
   userId: string;
   provider: AiConnectorProvider;
@@ -671,7 +700,7 @@ export interface ActivateAiConnectorConnectionReplacingProviderInput {
   revocationReason: string;
 }
 
-export interface ActivateAiConnectorConnectionReplacingProviderResult {
+export interface ActivateAiConnectorOAuthConnectionResult {
   connection: AiConnectorConnectionRecord;
   revokedConnectionIds: string[];
 }
@@ -2915,6 +2944,9 @@ export interface Persistence {
   getPendingShareInviteCapabilities(inviteCode: string): Promise<ShareCapability[]>;
   setPendingShareInviteCapabilities(input: SetPendingShareInviteCapabilitiesInput): Promise<ShareCapability[]>;
   saveAiConnectorConnection(input: SaveAiConnectorConnectionInput): Promise<AiConnectorConnectionRecord>;
+  /** Optional delivery callback, invoked only for committed implicit expiry after storage locks are released. */
+  setImplicitAiConnectorExpiryPublisher(publisher: (expiry: FinalizeAiConnectorExpiryResult) => Promise<void>): void;
+  finalizeAiConnectorExpiry(input: FinalizeAiConnectorExpiryInput): Promise<FinalizeAiConnectorExpiryResult>;
   getAiConnectorConnection(id: string): Promise<AiConnectorConnectionRecord | null>;
   listAiConnectorConnectionsForUser(userId: string): Promise<AiConnectorConnectionRecord[]>;
   getAiConnectorPolicySettings(): Promise<AiConnectorPolicySettingsRecord>;
@@ -2932,9 +2964,9 @@ export interface Persistence {
   ): Promise<McpOAuthAuthorizationRequestRecord | null>;
   saveMcpOAuthAuthorizationCode(input: SaveMcpOAuthAuthorizationCodeInput): Promise<McpOAuthAuthorizationCodeRecord>;
   consumeMcpOAuthAuthorizationCode(codeHash: string): Promise<McpOAuthAuthorizationCodeRecord | null>;
-  activateAiConnectorConnectionReplacingProvider(
-    input: ActivateAiConnectorConnectionReplacingProviderInput,
-  ): Promise<ActivateAiConnectorConnectionReplacingProviderResult | null>;
+  activateAiConnectorOAuthConnection(
+    input: ActivateAiConnectorOAuthConnectionInput,
+  ): Promise<ActivateAiConnectorOAuthConnectionResult | null>;
   saveAiConnectorCredential(input: SaveAiConnectorCredentialInput): Promise<AiConnectorCredentialRecord>;
   getAiConnectorCredentialByHash(tokenHash: string): Promise<AiConnectorCredentialRecord | null>;
   consumeAiConnectorCredential(id: string): Promise<AiConnectorCredentialRecord | null>;
