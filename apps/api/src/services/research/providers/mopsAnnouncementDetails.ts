@@ -68,7 +68,7 @@ function relationFromPublisherText(record: ResearchAnnouncementRecord, previousR
   if (!kind) return { relations: record.relations, unresolved: false };
   const text = compactTitle(record.explanation);
   const matches = previousRecords.filter((prior) => {
-    if (prior.id === record.id || prior.issuerId !== record.issuerId || prior.publishedAt >= record.publishedAt) return false;
+    if (prior.id === record.id || prior.issuerId !== record.issuerId || prior.listingId !== record.listingId || prior.venue !== record.venue || prior.publishedAt >= record.publishedAt) return false;
     const title = compactTitle(prior.subject);
     if (!title || !(text.includes(`「${title}」`) || text.includes(`"${title}"`))) return false;
     const date = localStamp(prior).day;

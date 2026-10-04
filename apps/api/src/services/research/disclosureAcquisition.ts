@@ -54,20 +54,24 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
     let publicationStart = at;
     const artifactAttempts: NonNullable<ResearchDisclosureScan["artifactAttempts"]> = [];
     const artifactOwners = new Map<string, string>();
-    const detailAttemptsByIssuer = new Map<string, NonNullable<ResearchDisclosureScan["detailAttempts"]>>();
+    const detailAttemptsByListing = new Map<string, NonNullable<ResearchDisclosureScan["detailAttempts"]>>();
     try {
       const response = await officialResponse(fetchImpl, sourceUrl); contentHash = disclosureHash(response.body);
       const observedAt = options.retrievedAt ?? new Date().toISOString();
       const records = parseOfficialAnnouncementSnapshot(JSON.parse(response.body), { retrievedAt: observedAt, contentHash, sourceUrl, acquisitionRunId }, venue, identities);
-      const existingByIssuer = new Map<string, Awaited<ReturnType<Persistence["listResearchAnnouncements"]>>>();
+      const existingByListing = new Map<string, Awaited<ReturnType<Persistence["listResearchAnnouncements"]>>>();
       for (const sourceRecord of records) {
         let record = sourceRecord;
-        if (!existingByIssuer.has(record.issuerId)) existingByIssuer.set(record.issuerId, await persistence.listResearchAnnouncements({ issuerId: record.issuerId, effectiveAt: at, knowledgeAt: at }));
-        const existing = existingByIssuer.get(record.issuerId)!;
+        const listingKey = JSON.stringify([record.issuerId, record.listingId, record.venue]);
+        if (!existingByListing.has(listingKey)) {
+          const issuerRecords = await persistence.listResearchAnnouncements({ issuerId: record.issuerId, effectiveAt: at, knowledgeAt: at });
+          existingByListing.set(listingKey, issuerRecords.filter((prior) => prior.listingId === record.listingId && prior.venue === record.venue));
+        }
+        const existing = existingByListing.get(listingKey)!;
         const enriched = await enrichOfficialAnnouncement(record, { fetchImpl, previousRecords: existing, retrievedAt: options.retrievedAt ?? new Date().toISOString() });
-        const detailAttempts = detailAttemptsByIssuer.get(sourceRecord.issuerId) ?? [];
+        const detailAttempts = detailAttemptsByListing.get(listingKey) ?? [];
         detailAttempts.push({ announcementId: sourceRecord.id, attemptedAt: options.retrievedAt ?? new Date().toISOString(), status: enriched.detailStatus, reasonCodes: enriched.reasonCodes });
-        detailAttemptsByIssuer.set(sourceRecord.issuerId, detailAttempts);
+        detailAttemptsByListing.set(listingKey, detailAttempts);
         const priorSuccessfulDetail = enriched.detailStatus !== "available" ? existing.filter((prior) => prior.collectionRecordId === sourceRecord.id && prior.detailQuality?.status === "available")
           .sort((a, b) => Date.parse(b.provenance.processedAt) - Date.parse(a.provenance.processedAt))[0] : undefined;
         record = priorSuccessfulDetail ? structuredClone(priorSuccessfulDetail) : enriched.record;
@@ -91,7 +95,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         const retainedArtifacts = await persistence.listResearchDisclosureArtifacts({ issuerId: record.issuerId, effectiveAt: at, knowledgeAt: at });
         if (!retainedArtifacts.some((artifact) => artifact.id === explanation.id)) await persistence.appendResearchDisclosureArtifacts([explanation]);
         for (const attachment of record.attachments.filter((item) => item.artifactId !== explanation.id && item.artifactId !== null)) {
-          artifactOwners.set(attachment.artifactId!, record.issuerId);
+          artifactOwners.set(attachment.artifactId!, listingKey);
           if (retainedArtifacts.some((artifact) => artifact.id === attachment.artifactId && artifact.state === "available")) continue;
           let attemptStatus: NonNullable<ResearchDisclosureScan["artifactAttempts"]>[number]["status"] = "unavailable";
           let fetched = false;
@@ -124,7 +128,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
       id: disclosureId("scan", acquisitionRunId, checkedAt, venue, identity.listing.id), listingId: identity.listing.id, issuerId: identity.issuer.id, venue, checkedAt, publicationStart, publicationEnd: checkedAt, knowledgeAt: checkedAt, status,
       // Daily snapshots are not historical collection coverage or a guarantee
       // that attachment discovery is exhaustive.
-      exhaustive: false, detailAttempts: detailAttemptsByIssuer.get(identity.issuer.id) ?? [], artifactAttempts: artifactAttempts.filter((attempt) => artifactOwners.get(attempt.artifactId) === identity.issuer.id), provenance: { id: disclosureId("pr", acquisitionRunId, checkedAt, venue, contentHash ?? "no_retained_response"), publisher: "MOPS", accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI", authorityRole: "authoritative", sourceUrl, contentHash, retrievedAt: checkedAt, processedAt: checkedAt, acquisitionRunId, parserVersion: DISCLOSURE_PARSER_VERSION, usagePolicyVersion: "taiwan-open-data/1.0.0" },
+      exhaustive: false, detailAttempts: detailAttemptsByListing.get(JSON.stringify([identity.issuer.id, identity.listing.id, venue])) ?? [], artifactAttempts: artifactAttempts.filter((attempt) => artifactOwners.get(attempt.artifactId) === JSON.stringify([identity.issuer.id, identity.listing.id, venue])), provenance: { id: disclosureId("pr", acquisitionRunId, checkedAt, venue, contentHash ?? "no_retained_response"), publisher: "MOPS", accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI", authorityRole: "authoritative", sourceUrl, contentHash, retrievedAt: checkedAt, processedAt: checkedAt, acquisitionRunId, parserVersion: DISCLOSURE_PARSER_VERSION, usagePolicyVersion: "taiwan-open-data/1.0.0" },
     }));
     await persistence.appendResearchDisclosureScans(scans);
     outcomes.push({ venue, status, announcementCount: count });

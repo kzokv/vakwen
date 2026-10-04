@@ -113,7 +113,6 @@ export function composeFocusedDisclosureResearchReport(input: {
   candidates?: z.input<typeof disclosureCandidateSchema>[];
   mode?: "standard" | "focused";
   extension?: FocusedDisclosureResearchReport["window"]["extension"];
-  budgetExhausted?: boolean;
 }): FocusedDisclosureResearchReport {
   const identity = researchIdentityOutputSchema.parse(input.identity);
   const pages = input.announcementPages.map((page) => materialAnnouncementsOutputSchema.parse(page));
@@ -193,6 +192,12 @@ export function composeFocusedDisclosureResearchReport(input: {
   }
   const candidates = (input.candidates ?? []).map((candidate) => disclosureCandidateSchema.parse(candidate));
   if (new Set(candidates.map((candidate) => candidate.id)).size !== candidates.length) throw new Error("Duplicate disclosure judgment ID");
+  const requiredArtifactIds = new Set(candidates.flatMap((candidate) => [
+    ...candidate.triggeringEvidence, ...candidate.confirmingEvidence, ...candidate.disconfirmingEvidence, candidate.statusEvidence.reference,
+  ]).flatMap((reference) => reference.kind === "artifact_claim" ? [reference.artifactId] : []));
+  const lastArtifactPages = new Map(artifacts.flatMap((page) => page.artifact ? [[page.artifact.id, page] as const] : []));
+  const artifactIncomplete = [...requiredArtifactIds].some((id) => !lastArtifactPages.has(id))
+    || [...lastArtifactPages.values()].some((page) => page.page.nextCursor !== null);
   const assessments = candidates.map((candidate) => {
     const refs = [...candidate.triggeringEvidence, ...candidate.confirmingEvidence, ...candidate.disconfirmingEvidence, candidate.statusEvidence.reference];
     const anchor = candidate.statusEvidence;
@@ -240,15 +245,15 @@ export function composeFocusedDisclosureResearchReport(input: {
         : "The latest acquisition attempt did not succeed. No successful official scan is available at this cutoff.",
     ] : []),
     ...(!exhaustive ? ["Coverage is non-exhaustive; this report cannot establish the absence of other material disclosures."] : []),
-    ...(collectionIncomplete ? ["The collection read budget was exhausted before all announcement pages were retrieved."] : []),
-    ...(input.budgetExhausted && !collectionIncomplete ? ["The artifact read budget was exhausted; missing dependencies remain withheld."] : []),
+    ...(collectionIncomplete ? ["Announcement reads are incomplete; not all collection pages were retrieved."] : []),
+    ...(artifactIncomplete ? ["Artifact reads are incomplete; missing dependencies remain withheld."] : []),
     ...(artifacts.some((page) => page.page.totalTruncated) ? ["Retained artifact coverage is bounded; only returned verified claims can support judgments."] : []),
   ];
   return focusedDisclosureReportSchema.parse({
     contractVersion: "research-report/4.0.0", profile: "focused_disclosures",
     selector: identity.selector, context: identity.context, generatedAt: identity.context.knowledgeAt, identity: identity.identity,
     window: { mode, publishedFrom: first.window.publishedFrom, publishedTo: first.window.publishedTo, exhaustive, ...(input.extension ? { extension: input.extension } : {}) },
-    reportStatus: collectionIncomplete || input.budgetExhausted ? "partial" : "complete",
+    reportStatus: collectionIncomplete || artifactIncomplete ? "partial" : "complete",
     officialScanGate: {
       purpose: "final_recommendation", status: !applicable ? "not_applicable" : current ? "passed" : "withheld",
       reasonCodes: !applicable ? ["disclosures_not_applicable"] : current ? [] : [scanFailure],
@@ -323,9 +328,8 @@ export async function buildFocusedDisclosureResearchReport(
     ...candidate.triggeringEvidence, ...candidate.confirmingEvidence, ...candidate.disconfirmingEvidence,
     candidate.statusEvidence.reference,
   ]).flatMap((reference) => reference.kind === "artifact_claim" ? [reference.artifactId] : []))];
-  let artifactIncomplete = false;
   for (const artifactId of artifactIds) {
-    if (remaining === 0) { artifactIncomplete = true; break; }
+    if (remaining === 0) break;
     let artifactCursor: string | null = null;
     do {
       let page: DisclosureArtifactOutput;
@@ -345,10 +349,9 @@ export async function buildFocusedDisclosureResearchReport(
       artifactCursor = page.page.nextCursor;
       remaining -= 1;
     } while (artifactCursor && remaining > 0);
-    if (artifactCursor) artifactIncomplete = true;
   }
   return composeFocusedDisclosureResearchReport({ identity, announcementPages, artifactPages, candidates, mode,
-    budgetExhausted: nextCursor !== null || artifactIncomplete, extension: options.extension });
+    extension: options.extension });
 }
 
 function markdown(value: string): string {
@@ -377,8 +380,8 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     "A current official announcement scan is required before current catalyst/risk assessment or final recommendation.": "提出當前催化因素／風險評估或最終建議前，必須完成符合時效要求的官方公告掃描。",
     "This focused report does not evaluate the other mandatory recommendation gates and issues no final recommendation.": "本專題報告未評估其他必要條件，因此不提出最終建議。",
     "Coverage is non-exhaustive; this report cannot establish the absence of other material disclosures.": "涵蓋範圍並不完整；本報告無法證明不存在其他重大訊息。",
-    "The collection read budget was exhausted before all announcement pages were retrieved.": "公告讀取額度已用盡，尚未取得全部頁面。",
-    "The artifact read budget was exhausted; missing dependencies remain withheld.": "文件讀取額度已用盡；依賴缺漏證據的判斷仍暫不提出。",
+    "Announcement reads are incomplete; not all collection pages were retrieved.": "公告讀取尚未完成，尚未取得全部頁面。",
+    "Artifact reads are incomplete; missing dependencies remain withheld.": "文件讀取尚未完成；依賴缺漏證據的判斷仍暫不提出。",
     "Retained artifact coverage is bounded; only returned verified claims can support judgments.": "留存文件讀取範圍有限；僅能使用已回傳並經驗證的陳述支持判斷。",
     "Await a successful current official announcement collection check.": "等待成功且符合時效要求的官方公告掃描。",
     "Obtain the exact failed evidence dependencies before reevaluating withheld judgments.": "補齊缺漏的必要證據後，再重新評估暫不提出的判斷。",
@@ -392,12 +395,17 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
       identity: report.identity, history: { items: [], nextCursor: null } },
     announcementPages: report.announcementPages, artifactPages: report.artifactPages,
     candidates: report.assessments.map((assessment) => assessment.candidate), mode: report.window.mode,
-    budgetExhausted: report.reportStatus === "partial", extension: report.window.extension,
+    extension: report.window.extension,
   });
   if (JSON.stringify(verified.assessments) !== JSON.stringify(report.assessments)
     || JSON.stringify(verified.officialScanGate) !== JSON.stringify(report.officialScanGate)
     || JSON.stringify(verified.finalRecommendation) !== JSON.stringify(report.finalRecommendation)
-    || JSON.stringify(verified.window) !== JSON.stringify(report.window)) {
+    || JSON.stringify(verified.window) !== JSON.stringify(report.window)
+    || JSON.stringify(verified.limitations) !== JSON.stringify(report.limitations)
+    || JSON.stringify(verified.recoveryRequirements) !== JSON.stringify(report.recoveryRequirements)
+    || JSON.stringify(verified.evidence) !== JSON.stringify(report.evidence)
+    || verified.generatedAt !== report.generatedAt
+    || verified.reportStatus !== report.reportStatus) {
     throw new Error("Disclosure report claims or readiness do not match retained evidence");
   }
   return [

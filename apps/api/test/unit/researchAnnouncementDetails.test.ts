@@ -59,6 +59,20 @@ describe("official MOPS detail enrichment", () => {
     expect(result.record.relations).toEqual([{ kind, targetAnnouncementId: "prior_1" }]);
     expect(result.reasonCodes).toEqual([]);
   });
+  it.each(["corrects", "retracts"] as const)("cross-listing %s: matching issuer/title/date → no foreign lineage", (kind) => {
+    const { record, detail } = fixture("TWSE");
+    const prior = { ...record, id: "foreign_prior", listingId: "another_listing", venue: "TPEX" as const, publishedAt: "2026-10-02T01:00:00.000Z", subject: "公司資本支出公告" };
+    const subject = `${kind === "corrects" ? "更正" : "撤回"}本公司公告`;
+    detail.result.data[0][6] = subject;
+    detail.result.data[0][9] = "原115/10/02公告「公司資本支出公告」更正或撤回。";
+    const unresolved = parseOfficialAnnouncementDetail(detail, { ...record, subject }, metadata, [prior]);
+    expect(unresolved.record.relations).toEqual([]);
+    expect(unresolved.reasonCodes).toContain("unresolved_correction_reference");
+    const local = { ...prior, id: "local_prior", listingId: record.listingId, venue: record.venue };
+    const resolved = parseOfficialAnnouncementDetail(detail, { ...record, subject }, metadata, [prior, local]);
+    expect(resolved.record.relations).toEqual([{ kind, targetAnnouncementId: local.id }]);
+    expect(resolved.reasonCodes).toEqual([]);
+  });
   it("ambiguous correction: no exact cited previous observation → preserve explicit unresolved reference", () => {
     const { record, detail } = fixture("TWSE");
     detail.result.data[0][6] = "更正本公司公告";

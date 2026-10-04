@@ -58,6 +58,9 @@ it("minute publication: colon clock → preserved minute precision", () => {
 it("attachment retry: official detail reference with restricted first fetch → later immutable retained content", async () => {
   setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
   const persistence = new MemoryPersistence(); const {rows, identity} = fixture("TWSE"); await persistence.appendResearchIdentityRecords([identity]);
+  const siblingIdentity = canonicalizeOfficialIdentityRow({ venue: "TWSE", snapshotDate: "2026-10-03", retrievedAt: "2026-10-03T00:00:00.000Z", artifact: { sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES.TWSE, contentHash: "sibling-identity" }, row: { kind: "company", ticker: "9998", legalName: "公司", displayName: "公司", unifiedBusinessNumber: "11111111", industryCode: "24", listedAt: "2001-01-01" } });
+  expect(siblingIdentity.issuer.id).toBe(identity.issuer.id);
+  await persistence.appendResearchIdentityRecords([siblingIdentity]);
   const history = JSON.parse(readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8"));
   const detail = JSON.parse(readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8"));
   // Mutation follows the official renderer's {url,fileName} attachment cell.
@@ -75,7 +78,7 @@ it("attachment retry: official detail reference with restricted first fetch → 
   await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "job1" });
   const query = { issuerId: identity.issuer.id, effectiveAt: "2026-10-04T06:00:00.000Z", knowledgeAt: "2026-10-04T06:00:00.000Z" };
   const records = await persistence.listResearchAnnouncements(query); expect(records).toHaveLength(1); expect(records[0]?.detailQuality?.status).toBe("available");
-  expect((await persistence.listResearchDisclosureScans(query))[0]?.artifactAttempts?.[0]?.status).toBe("restricted");
+  expect((await persistence.listResearchDisclosureScans(query)).find((scan) => scan.listingId === identity.listing.id)?.artifactAttempts?.[0]?.status).toBe("restricted");
   expect(await persistence.listResearchDisclosureArtifacts(query)).toHaveLength(1);
   restricted = false;
   await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: "2026-10-04T05:15:00.000Z", acquisitionRunId: "job1" });
@@ -85,14 +88,18 @@ it("attachment retry: official detail reference with restricted first fetch → 
   expect(attachment.blocks[0]?.text).toBe("retained evidence");
   expect(attachment.provenance.contentHash).toBe(attachment.contentHash); expect(attachment.provenance.sourceUrl).toBe(attachment.sourceUrl);
   expect(attachment.parentProvenance?.accessProvider).toBe("MOPS_API");
-  const scans = await persistence.listResearchDisclosureScans(query);
+  const allScans = await persistence.listResearchDisclosureScans(query);
+  const siblingScans = allScans.filter((scan) => scan.listingId === siblingIdentity.listing.id);
+  expect(siblingScans).toHaveLength(2);
+  expect(siblingScans.every((scan) => scan.detailAttempts?.length === 0 && scan.artifactAttempts?.length === 0)).toBe(true);
+  const scans = allScans.filter((scan) => scan.listingId === identity.listing.id);
   expect(scans).toHaveLength(2); expect(new Set(scans.map((scan) => scan.provenance.id)).size).toBe(2);
   detailRestricted = true;
   await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: "2026-10-04T05:30:00.000Z", acquisitionRunId: "job1" });
   const afterFailure = await persistence.listResearchAnnouncements(query);
   expect(afterFailure).toEqual(records);
   expect(await persistence.listResearchDisclosureArtifacts(query)).toEqual(artifacts);
-  const finalScans = await persistence.listResearchDisclosureScans(query);
+  const finalScans = (await persistence.listResearchDisclosureScans(query)).filter((scan) => scan.listingId === identity.listing.id);
   expect(finalScans).toHaveLength(3); expect(new Set(finalScans.map((scan) => scan.provenance.id)).size).toBe(3);
   expect(finalScans.at(-1)?.detailAttempts?.[0]).toMatchObject({ status: "restricted", reasonCodes: ["detail_access_restricted"] });
 });
@@ -138,4 +145,21 @@ it("identity resolution: unknown or overlapping eligible listings → source rej
   const metadata = { retrievedAt: at, contentHash: "c".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES.TWSE, acquisitionRunId: "ambiguous" };
   expect(() => parseOfficialAnnouncementSnapshot(rows, metadata, "TWSE", [])).toThrow("announcement_identity_unresolved");
   expect(() => parseOfficialAnnouncementSnapshot(rows, metadata, "TWSE", [identity, { ...identity, listing: { ...identity.listing, id: "overlapping_listing" } }])).toThrow("announcement_identity_unresolved");
+});
+
+it.each(["TWSE", "TPEX"] as const)("%s issuer-wide history: identical title/time on another listing → supersession stays listing-bound", async (venue) => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+  const persistence = new MemoryPersistence(); const { identity, rows } = fixture(venue);
+  await persistence.appendResearchIdentityRecords([identity]);
+  const source = parseOfficialAnnouncementSnapshot(rows, { retrievedAt: at, contentHash: "d".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "prior" }, venue, [identity])[0]!;
+  const foreign = { ...source, id: "foreign_observation", listingId: "another_listing", venue: venue === "TWSE" ? "TPEX" as const : "TWSE" as const };
+  const local = { ...source, id: "local_observation" };
+  await persistence.appendResearchAnnouncements([foreign, local]);
+  const fetchImpl = vi.fn(async () => new Response(JSON.stringify(rows), { headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+  const result = await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "lineage" });
+  expect(result.outcomes).toEqual([{ venue, status: "success", announcementCount: 1 }]);
+  const retained = await persistence.listResearchAnnouncements({ issuerId: identity.issuer.id, effectiveAt: at, knowledgeAt: at });
+  const acquired = retained.find((record) => record.id !== foreign.id && record.id !== local.id)!;
+  expect(acquired.relations).toEqual([{ kind: "supersedes", targetAnnouncementId: local.id }]);
+  expect(retained.find((record) => record.id === foreign.id)).toEqual(foreign);
 });

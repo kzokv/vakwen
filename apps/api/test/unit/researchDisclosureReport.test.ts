@@ -206,6 +206,52 @@ describe("focused disclosure report", () => {
     report.assessments[0]!.support = "provisional";
     expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).toThrow(/do not match retained evidence/);
   });
+  it.each(["limitations", "recoveryRequirements", "provenance", "generatedAt", "status"] as const)("rendered %s tampering: alter derived metadata → reject in both locales", async (field) => {
+    const f = await seeded();
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [artifactCandidate], readBudget: 1 });
+    expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).not.toThrow();
+    if (field === "limitations") report.limitations = [];
+    if (field === "recoveryRequirements") report.recoveryRequirements = [];
+    if (field === "provenance") report.evidence.provenanceIds.push("invented_provenance");
+    if (field === "generatedAt") report.generatedAt = "2026-10-04T05:00:00.000Z";
+    if (field === "status") report.reportStatus = "complete";
+    for (const locale of ["en", "zh-TW"] as const) {
+      expect(() => renderFocusedDisclosureResearchReportMarkdown(report, locale)).toThrow(/do not match retained evidence/);
+    }
+  });
+  it("completed report status: relabel complete read as partial → reject circular status input", async () => {
+    const f = await seeded();
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { readBudget: 10 });
+    report.reportStatus = "partial";
+    expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).toThrow(/do not match retained evidence/);
+  });
+  it("announcement pagination: unread continuation → partial report without invented budget cause", async () => {
+    const f = await seeded();
+    const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+    const page = await listMaterialAnnouncements(f.persistence, f.query);
+    page.page.nextCursor = "retained_continuation";
+    const report = composeFocusedDisclosureResearchReport({ identity, announcementPages: [page] });
+    expect(report.reportStatus).toBe("partial");
+    expect(renderFocusedDisclosureResearchReportMarkdown(report)).toContain("Announcement reads are incomplete");
+    expect(renderFocusedDisclosureResearchReportMarkdown(report, "zh-TW")).toContain("公告讀取尚未完成");
+    expect(report.limitations.join(" ")).not.toContain("budget");
+    report.reportStatus = "complete";
+    expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).toThrow(/do not match retained evidence/);
+  });
+  it("artifact pagination: unread continuation → independently derive partial report", async () => {
+    const f = await seeded();
+    const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+    const page = await listMaterialAnnouncements(f.persistence, f.query);
+    const artifact = await getDisclosureArtifact(f.persistence, { ...f.query, artifactId: "artifact_1" });
+    artifact.page.nextCursor = "retained_continuation";
+    const report = composeFocusedDisclosureResearchReport({ identity, announcementPages: [page], artifactPages: [artifact], candidates: [artifactCandidate] });
+    expect(report.reportStatus).toBe("partial");
+    expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).not.toThrow();
+    const complete = composeFocusedDisclosureResearchReport({ identity, announcementPages: [page],
+      artifactPages: [artifact, { ...artifact, page: { ...artifact.page, nextCursor: null } }], candidates: [artifactCandidate] });
+    expect(complete.reportStatus).toBe("complete");
+    expect(() => renderFocusedDisclosureResearchReportMarkdown(complete)).not.toThrow();
+  });
   it("missing retained artifact: unavailable dependency → only dependent claim withheld", async () => {
     const f = await fixture();
     await f.persistence.appendResearchAnnouncements([f.announcement]);
@@ -213,6 +259,11 @@ describe("focused disclosure report", () => {
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [candidate, artifactCandidate], readBudget: 10 });
     expect(report.assessments.map((item) => item.support)).toEqual(["provisional", "withheld"]);
     expect(report.officialScanGate.status).toBe("passed");
+    expect(report.reportStatus).toBe("partial");
+    expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).not.toThrow();
+    const zh = renderFocusedDisclosureResearchReportMarkdown(report, "zh-TW");
+    expect(zh).toContain("文件讀取尚未完成");
+    expect(zh).not.toContain("額度已用盡");
   });
 
   it("invented prose: unrelated valid evidence ID → withheld without promoting caller sentiment", async () => {
