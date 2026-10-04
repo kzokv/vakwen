@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { isCredentialFreeDisclosureUrl } from "../disclosureSourceUrl.js";
 import type { ResearchIdentityRecord } from "../identity.js";
 import { researchAnnouncementRecordSchema, type ResearchAnnouncementRecord, type ResearchDisclosureArtifact } from "../disclosureContracts.js";
 import { parseTaiwanOfficialDate } from "./twseIdentity.js";
@@ -12,7 +13,7 @@ export const DISCLOSURE_PARSER_VERSION = "mops-announcements/1.0.0";
 export function disclosureId(prefix: string, ...parts: string[]) { return `${prefix}_${createHash("sha256").update(parts.join("\u001f")).digest("hex").slice(0, 32)}`; }
 export function disclosureHash(value: string) { return createHash("sha256").update(value).digest("hex"); }
 export function safeDisclosureUrl(value: string): boolean {
-  try { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password && !/[?&](?:token|key|secret|signature|auth)=/i.test(url.search)
+  try { const url = new URL(value); return isCredentialFreeDisclosureUrl(value)
     && ["mops.twse.com.tw", "mopsov.twse.com.tw", "mopsws.twse.com.tw", "openapi.twse.com.tw", "www.twse.com.tw", "www.tpex.org.tw"].includes(url.hostname); } catch { return false; }
 }
 const rowSchema = z.object({ 公司代號: z.string(), 發言日期: z.string(), 發言時間: z.string(), 主旨: z.string(), 符合條款: z.string(), 事實發生日: z.string(), 說明: z.string() }).passthrough();

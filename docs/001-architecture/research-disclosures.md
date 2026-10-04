@@ -8,10 +8,12 @@ Both tools require explicit `research:read` consent and the enabled research too
 
 | Tool | Initial request | Bounds and result |
 |---|---|---|
-| `list_material_announcements` | One Listing selector; optional fixed context, publication range, narrower event-date range, evidence view, purposes, order and limit | Default 90-day publication window; maximum two calendar years. Default 25 and maximum 100 complete announcement records. Descending publication order by default, with stable ID tie-breaking. |
-| `get_disclosure_artifact` | Repeated Listing selector and opaque retained artifact ID; optional context, evidence view, purposes, order and limit | Default three and maximum ten pages; at most 50,000 exposed Unicode characters. Retained blocks and separately verified claims, with page/total coverage and truncation. |
+| `list_material_announcements` | One Listing selector and required fixed `context`; optional publication range, narrower event-date range, evidence view, purposes, order and limit | Default 90-day publication window; maximum two calendar years. Default 25 and maximum 100 complete announcement records. Descending publication order by default, with stable ID tie-breaking. |
+| `get_disclosure_artifact` | Listing selector, required fixed `context` and opaque retained artifact ID; optional evidence view, purposes, order and limit | Default three and maximum ten pages; at most 50,000 exposed Unicode characters. Retained blocks and separately verified claims, with page/total coverage and truncation. |
 
 The Listing selector is `listing_id` or `ticker_venue` with a lossless ticker and explicit `TWSE` or `TPEX` venue. Disclosures belong to the resolved Issuer. The selector is not permission to follow a venue transfer or attach evidence to another issuer.
+
+Initial requests must include `context.knowledgeAt`. Omitted `effectiveAt` defaults to `knowledgeAt`, and omitted `assessmentMode` defaults to `effective`; `re_evaluate` requires `policySetVersion`. The service returns the normalized fixed context. Continuations use only the repeated subject and cursor.
 
 Publication bounds determine when an announcement became knowable. Event dates may narrow that range but do not replace it. The service preserves publication precision, original publication fields, title, rule clause, event date, issuer explanation, attachment references, and correction/retraction relations.
 

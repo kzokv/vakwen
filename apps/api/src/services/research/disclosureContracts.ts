@@ -1,10 +1,8 @@
 import { z } from "zod";
+import { isCredentialFreeDisclosureUrl } from "./disclosureSourceUrl.js";
 
 const id = z.string().min(1).max(120).regex(/^[\w-]+$/);
-const safeUrl = z.string().url().refine((value) => {
-  const url = new URL(value);
-  return url.protocol === "https:" && !url.username && !url.password && !/[?&](?:token|key|secret|signature|auth)=/i.test(url.search);
-}, "Disclosure source links must be HTTPS and contain no credentials");
+const safeUrl = z.string().url().refine(isCredentialFreeDisclosureUrl, "Disclosure source links must be HTTPS and contain no credentials");
 const time = z.string().datetime({ offset: true });
 export const disclosureProvenanceSchema = z.object({
   id, publisher: z.literal("MOPS"), accessProvider: z.enum(["TWSE_OPENAPI", "TPEX_OPENAPI", "MOPS_API"]),

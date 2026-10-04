@@ -14,7 +14,7 @@ const context = { knowledgeAt: "2026-10-04T12:00:00.000Z" };
 const names = ["list_material_announcements", "get_disclosure_artifact"] as const;
 
 interface RpcResponse {
-  result?: { isError?: boolean; content?: Array<{ text: string }>; structuredContent?: { result: { code?: string } }; tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> };
+  result?: { isError?: boolean; content?: Array<{ text: string }>; structuredContent?: { result: { code?: string; statusCode?: number; metadata?: { retryable?: boolean } } }; tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> };
   error?: { message: string };
 }
 
@@ -82,15 +82,30 @@ describe("disclosure MCP registration", () => {
 
   it("disclosure input: supply arbitrary URL or mutate continuation → reject without store reads", async () => {
     const headers = await session();
-    const reads = vi.spyOn(app.persistence, "listResearchIdentityRecords");
+    const reads = [
+      vi.spyOn(app.persistence, "listResearchIdentityRecords"),
+      vi.spyOn(app.persistence, "listResearchIdentityLatestRevisions"),
+      vi.spyOn(app.persistence, "listResearchAnnouncements"),
+      vi.spyOn(app.persistence, "listResearchDisclosureScans"),
+      vi.spyOn(app.persistence, "listResearchDisclosureArtifacts"),
+      vi.spyOn(app.persistence, "listResearchDisclosureMaterialReferences"),
+    ];
     for (const name of names) {
       const initial = { subject, context, ...(name === "get_disclosure_artifact" ? { artifactId: "artifact_1" } : {}) };
       const response = await call(headers, name, { ...initial, url: "https://untrusted.example/secret" });
       expect(response.error || response.result?.isError).toBeTruthy();
-      const changed = await call(headers, name, { ...initial, cursor: "cursor", limit: 1 });
-      expect(changed.error || changed.result?.isError).toBeTruthy();
+      for (const invalid of [{ subject, cursor: "cursor", limit: 1 }, { subject }, { ...initial, cursor: "cursor", limit: 1 }]) {
+        const rejected = await call(headers, name, invalid);
+        expect(rejected.error).toBeUndefined();
+        expect(rejected.result?.isError).toBe(true);
+        expect(rejected.result?.structuredContent?.result).toMatchObject({
+          code: "mcp_tool_validation_error", statusCode: 422,
+        });
+        expect(rejected.result?.structuredContent?.result.metadata?.retryable).not.toBe(true);
+        expect(JSON.stringify(rejected)).not.toContain("evaluation_failed");
+      }
     }
-    expect(reads).not.toHaveBeenCalled();
+    for (const read of reads) expect(read).not.toHaveBeenCalled();
   });
 
   it("disclosure authorization: portfolio-only grant → deny both tools", async () => {
