@@ -18,6 +18,8 @@ const candidate = {
   condition: "Commissioning completes",
 } satisfies z.input<typeof disclosureCandidateSchema>;
 
+const analyticalFields = ["materialMechanism", "affectedMetricOrAssumption", "horizon", "condition", "confirmationCondition", "disconfirmationCondition"] as const;
+
 describe("disclosure specialist candidate contract", () => {
   it("causal candidate: required mechanism and evidence → accepted structured judgment", () => {
     expect(disclosureCandidateSchema.parse(candidate).status).toBe("conditional");
@@ -31,6 +33,19 @@ describe("disclosure specialist candidate contract", () => {
     expect(disclosureCandidateSchema.safeParse({ ...candidate, materialMechanism: "The issuer may sell inventory or hold shipments while capacity is commissioned." }).success).toBe(true);
     expect(disclosureCandidateSchema.safeParse({ ...candidate, materialMechanism: "Investors should buy the stock." }).success).toBe(false);
     expect(disclosureCandidateSchema.safeParse({ ...candidate, materialMechanism: "Bullish investor sentiment." }).success).toBe(false);
+  });
+  it.each(analyticalFields)("analytical %s: action or sentiment in either language → reject the specific field", (field) => {
+    for (const text of ["Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲"]) {
+      const result = disclosureCandidateSchema.safeParse({ ...candidate, [field]: text });
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.issues.some((issue) => issue.path[0] === field)).toBe(true);
+    }
+  });
+  it("candidate identifier: prose or Markdown instruction → reject identifier misuse", () => {
+    for (const id of ["Investors should buy the stock", "建議買進", "[advice](https://example.com)"]) {
+      expect(disclosureCandidateSchema.safeParse({ ...candidate, id }).success).toBe(false);
+    }
+    expect(disclosureCandidateSchema.safeParse({ ...candidate, id: "capacity_phase-2" }).success).toBe(true);
   });
   it("conditional judgment: missing condition → rejected", () => {
     expect(disclosureCandidateSchema.safeParse({ ...candidate, condition: undefined }).success).toBe(false);
@@ -139,6 +154,20 @@ describe("focused disclosure report", () => {
     expect(markdown).toContain("conditional / provisional");
     expect(markdown).toContain("speculative / provisional");
     expect(markdown).not.toMatch(/bullish|bearish|buy|sell/i);
+  });
+  it.each(analyticalFields)("analytical %s: business sale/holding conditions in either language → preserve permitted report prose", async (field) => {
+    const f = await seeded();
+    for (const text of ["The issuer may sell inventory or hold shipments until commissioning completes.", "公司出售庫存或暫停出貨，待產能驗收完成後確認營收。"]) {
+      const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, [field]: text }], readBudget: 10 });
+      expect(report.assessments[0]!.sourceSupport).toBe("supported");
+      for (const locale of ["en", "zh-TW"] as const) {
+        expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, locale))).toContain(text);
+      }
+      report.assessments[0]!.candidate[field] = "Investors should buy the stock.";
+      for (const locale of ["en", "zh-TW"] as const) {
+        expect(() => renderFocusedDisclosureResearchReportMarkdown(report, locale)).toThrow();
+      }
+    }
   });
   it("standard window: twelve-month complete scan → exhaustive evidence window without final recommendation", async () => {
     const f = await seeded();
@@ -417,7 +446,7 @@ describe("focused disclosure report", () => {
     await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, extractionVersion: injection,
       blocks: f.artifact.blocks.map((block) => ({ ...block, table: injection, period: injection, unit: injection })),
       verifiedClaims: f.artifact.verifiedClaims.map((claim) => ({ ...claim, text: injection, table: injection, period: injection, unit: injection })) }]);
-    const maliciousCandidate = { ...candidate, id: injection, statement: injection,
+    const maliciousCandidate = { ...candidate, id: "literal_metadata", statement: injection,
       statusEvidence: { ...candidate.statusEvidence, excerpt: injection }, materialMechanism: injection,
       affectedMetricOrAssumption: injection, horizon: injection, condition: injection,
       confirmationCondition: injection, disconfirmationCondition: injection };

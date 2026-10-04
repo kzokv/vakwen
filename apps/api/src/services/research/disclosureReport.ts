@@ -14,7 +14,7 @@ const evidenceReferenceSchema = z.discriminatedUnion("kind", [
 
 /** Analytical judgments belong to this report seam, never the canonical dataset tool. */
 export const disclosureCandidateSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).max(120).regex(/^[A-Za-z0-9_-]+$/),
   kind: z.enum(["catalyst", "risk"]),
   status: z.enum(["observed", "scheduled", "conditional", "speculative"]),
   statement: z.string().trim().min(1),
@@ -41,8 +41,13 @@ export const disclosureCandidateSchema = z.object({
   if (candidate.statement !== candidate.statusEvidence.excerpt) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["statement"], message: "The factual statement must equal its publisher excerpt; interpretation belongs in analytical judgment fields" });
   }
-  if (/(?:bullish|bearish|(?:investor|market|trading)\s+sentiment|guarantee[sd]?\s+(?:profits?|returns?|price)|(?:recommend|should|must)\s+(?:buy|sell|hold)\s+(?:the\s+)?(?:stock|shares|security)|看漲|看跌|保證獲利|建議(?:買進|賣出|持有))/i.test([candidate.materialMechanism, candidate.affectedMetricOrAssumption, candidate.horizon, candidate.condition ?? ""].join(" "))) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["materialMechanism"], message: "Unsupported sentiment and action wording are excluded from the disclosure specialist" });
+  // Validate every rendered analyst-prose field independently; exact publisher
+  // statement/excerpt text remains source evidence rather than analyst advice.
+  const analyticalFields = ["materialMechanism", "affectedMetricOrAssumption", "horizon", "condition", "confirmationCondition", "disconfirmationCondition"] as const;
+  for (const field of analyticalFields) {
+    if (/(?:bullish|bearish|(?:investor|market|trading)\s+sentiment|guarantee[sd]?\s+(?:profits?|returns?|price)|(?:recommend|should|must)\s+(?:buy|sell|hold)\s+(?:the\s+)?(?:stock|shares|security)|看漲|看跌|保證獲利|建議(?:買進|賣出|持有))/i.test(candidate[field] ?? "")) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: "Unsupported sentiment and action wording are excluded from the disclosure specialist" });
+    }
   }
   if (candidate.status === "conditional" && !candidate.condition) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["condition"], message: "Conditional judgments require an explicit unmet condition" });
