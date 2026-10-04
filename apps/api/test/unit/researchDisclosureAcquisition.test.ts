@@ -1,3 +1,4 @@
+import { twoPagePdf } from "../fixtures/research/disclosurePdf.js";
 import { getResearchManifest } from "../../src/services/research/service.js";
 import { listMaterialAnnouncements } from "../../src/services/research/disclosures.js";
 import { researchQuerySchema } from "../../src/services/research/contracts.js";
@@ -194,4 +195,45 @@ it("detail retry: accepted whitespace-normalized title → same collection super
   const retryAt = "2026-10-04T05:20:00.000Z";
   await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: retryAt, acquisitionRunId: "detail_retry_3" });
   expect(await persistence.listResearchAnnouncements({ issuerId: identity.issuer.id, knowledgeAt: retryAt, effectiveAt: retryAt })).toEqual(records);
+});
+
+it.each([
+  ["text/html", "<html><head><title>FOR SECURITY REASONS, THIS PAGE CAN NOT BE ACCESSED.</title></head><body>Please try again.</body></html>", "restricted"],
+  ["text/html", "<html><head><title>Security policy update</title></head><body>因安全性考量，公司將更新存取權限。</body></html>", "retained"],
+  ["text/html", "<html><body>FOR SECURITY REASONS, THIS PAGE CAN NOT BE ACCESSED.</body></html>", "restricted"],
+  ["text/html", "<html><body>因為安全性考量，您所執行的頁面無法呈現。</body></html>", "restricted"],
+  ["application/pdf", "<html><body>安全性考量，無法存取本網頁。</body></html>", "restricted"],
+  ["application/pdf", Buffer.from(twoPagePdf()), "retained"],
+  ["text/html", "<html><body>因安全性考量，公司將更新存取權限。</body></html>", "retained"],
+  ["text/plain", "For security reasons, this page can not be accessed.", "restricted"],
+  ["text/html", "<html><body><h1>重大訊息</h1><p>董事會決議通過。</p></body></html>", "retained"],
+] as const)("HTTP200 attachment case %# (%s): content classification", async (mediaType, body, expected) => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  const persistence = new MemoryPersistence(); const { rows, identity } = fixture("TWSE");
+  await persistence.appendResearchIdentityRecords([identity]);
+  const history = JSON.parse(readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8"));
+  const detail = JSON.parse(readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8"));
+  detail.result.titles.push({ main: "附件", sub: [] });
+  detail.result.data[0].push({ url: "https://mops.twse.com.tw/attachment.pdf", fileName: "attachment.pdf" });
+  let recovered = false;
+  const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+    const source = String(url);
+    if (source.endsWith("attachment.pdf")) return new Response(recovered ? "<html><body>Recovered issuer evidence</body></html>" : body, { headers: { "content-type": recovered ? "text/html" : mediaType } });
+    return new Response(JSON.stringify(source.endsWith("t05st01_detail") ? detail : source.endsWith("t05st01") ? history : rows));
+  }) as unknown as typeof fetch;
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "body_classification" });
+  const query = { issuerId: identity.issuer.id, knowledgeAt: at, effectiveAt: at };
+  const scans = await persistence.listResearchDisclosureScans(query);
+  expect(scans[0]?.artifactAttempts?.[0]?.status).toBe(expected);
+  const artifacts = await persistence.listResearchDisclosureArtifacts(query);
+  expect(artifacts).toHaveLength(expected === "retained" ? 2 : 1);
+  if (expected === "restricted") {
+    expect(artifacts.every((artifact) => !artifact.blocks.some((block) => /SECURITY REASONS|安全性考量/.test(block.text)))).toBe(true);
+    recovered = true;
+    const later = "2026-10-04T05:15:00.000Z";
+    await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: later, acquisitionRunId: "body_recovery" });
+    const afterRetry = await persistence.listResearchDisclosureArtifacts({ ...query, knowledgeAt: later, effectiveAt: later });
+    expect(afterRetry).toHaveLength(2);
+    expect(afterRetry.find((artifact) => artifact.sourceUrl.endsWith("attachment.pdf"))?.blocks[0]?.text).toBe("Recovered issuer evidence");
+  }
 });

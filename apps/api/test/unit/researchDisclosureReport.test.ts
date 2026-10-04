@@ -433,6 +433,69 @@ describe("focused disclosure report", () => {
     expect(literalMarkdownText(rendered)).toContain(injection.replace(/[\r\n\u2028\u2029]/g, " "));
     expect(JSON.stringify(report)).toBe(before);
   });
+  it.each(["announcement_attachment", "investor_material"] as const)("%s publication: old artifact → withhold until declared extension encompasses publication", async (kind) => {
+    const f = await fixture();
+    const publishedAt = "2025-01-04T04:00:00.000Z";
+    await f.persistence.appendResearchAnnouncements([f.announcement]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, publishedAt, reference: { kind, id: kind === "announcement_attachment" ? f.announcement.id : "material_1" } }]);
+    if (kind === "investor_material") await f.persistence.appendResearchDisclosureMaterialReferences([{ id: "material_1",
+      issuerId: f.record.issuer.id, listingId: f.record.listing.id, venue: f.record.listing.venue,
+      publishedAt, artifactIds: [f.artifact.id], provenance: f.artifact.provenance }]);
+    for (const mode of ["focused", "standard"] as const) {
+      const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode, candidates: [candidate, artifactCandidate], readBudget: 10 });
+      expect(report.assessments[0]!.sourceSupport).toBe("supported");
+      expect(report.assessments[1]!.reasonCodes).toContain("artifact_outside_report_window");
+      expect(report.assessments[1]!.sourceSupport).toBe("withheld");
+      expect(renderFocusedDisclosureResearchReportMarkdown(report)).toContain("Evidence excluded from report conclusions");
+      expect(renderFocusedDisclosureResearchReportMarkdown(report, "zh-TW")).toContain("此證據不納入報告結論");
+    }
+    const extension = { months: 24, reason: "litigation" as const, thesisItem: "Unresolved litigation" };
+    const extended = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "standard", extension, candidates: [artifactCandidate], readBudget: 10 });
+    expect(extended.assessments[0]!.sourceSupport).toBe("supported");
+    const insufficient = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "standard", extension: { ...extension, months: 13 }, candidates: [artifactCandidate], readBudget: 10 });
+    expect(insufficient.assessments[0]!.reasonCodes).toContain("artifact_outside_report_window");
+  });
+  it.each(["start", "end", "before", "after"] as const)("artifact %s boundary: direct composition → inclusive fixed report interval", async (boundary) => {
+    const f = await seeded();
+    const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+    const page = await listMaterialAnnouncements(f.persistence, f.query);
+    const artifact = await getDisclosureArtifact(f.persistence, { ...f.query, artifactId: f.artifact.id });
+    const lower = Date.parse(page.window.publishedFrom);
+    const upper = Date.parse(page.window.publishedTo);
+    artifact.artifact!.publishedAt = new Date(boundary === "start" ? lower : boundary === "end" ? upper : boundary === "before" ? lower - 1 : upper + 1).toISOString();
+    const report = composeFocusedDisclosureResearchReport({ identity, announcementPages: [page], artifactPages: [artifact], candidates: [artifactCandidate] });
+    expect(report.assessments[0]!.sourceSupport).toBe(boundary === "start" || boundary === "end" ? "supported" : "withheld");
+    if (boundary === "before" || boundary === "after") expect(report.assessments[0]!.reasonCodes).toContain("artifact_outside_report_window");
+  });
+  it.each([null, undefined, "unknown"])("artifact unknown publication %s: invalid source metadata → reject composition", async (publishedAt) => {
+    const f = await seeded();
+    const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+    const page = await listMaterialAnnouncements(f.persistence, f.query);
+    const artifact = await getDisclosureArtifact(f.persistence, { ...f.query, artifactId: f.artifact.id });
+    const invalid = { ...artifact, artifact: { ...artifact.artifact!, publishedAt } };
+    expect(() => composeFocusedDisclosureResearchReport({ identity, announcementPages: [page], artifactPages: [invalid as typeof artifact], candidates: [artifactCandidate] })).toThrow();
+  });
+  it("attachment excluded parent: current artifact publication → no bypass of selected announcement window", async () => {
+    const f = await fixture();
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, publishedAt: "2025-01-04T04:00:00.000Z" }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    await f.persistence.appendResearchDisclosureArtifacts([f.artifact]);
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [artifactCandidate], readBudget: 10 });
+    expect(report.assessments[0]!.reasonCodes).toContain("artifact_parent_not_returned");
+  });
+  it.each(["restricted", "unresolved", "truncated"] as const)("attachment parent %s: verified retained claim → honor parent eligibility without requiring full inline text", async (state) => {
+    const f = await fixture();
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement,
+      ...(state === "restricted" ? { quality: "restricted" as const } : {}),
+      ...(state === "unresolved" ? { detailQuality: { status: "available" as const, reasonCodes: ["unresolved_correction_reference"] } } : {}),
+      ...(state === "truncated" ? { explanation: "Long source text ".repeat(2000) } : {}) }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    await f.persistence.appendResearchDisclosureArtifacts([f.artifact]);
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [artifactCandidate], readBudget: 10 });
+    expect(report.assessments[0]!.sourceSupport).toBe(state === "truncated" ? "supported" : "withheld");
+    if (state !== "truncated") expect(report.assessments[0]!.reasonCodes).toContain(state === "restricted" ? "artifact_parent_restricted" : "artifact_parent_unresolved_correction_reference");
+  });
   it("long-lived thesis: declared extension → bounded two-year scan", async () => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "standard", extension: { months: 24, reason: "litigation", thesisItem: "Unresolved litigation" }, readBudget: 10 });

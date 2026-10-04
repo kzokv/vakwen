@@ -1,3 +1,4 @@
+import { isMopsAccessDenial } from "./providers/mopsAccessDenial.js";
 import { enrichOfficialAnnouncement } from "./providers/mopsAnnouncementDetails.js";
 import { extractDisclosureContent } from "./providers/disclosureExtraction.js";
 import { createHash } from "node:crypto";
@@ -13,7 +14,7 @@ interface AcquisitionOptions { fetchImpl?: typeof fetch; retrievedAt?: string; a
 async function officialResponse(fetchImpl: typeof fetch, url: string) {
   if (!safeDisclosureUrl(url)) throw new Error("disclosure_source_url_rejected");
   const response = await fetchImpl(url, { headers: { accept: "application/json,text/plain,text/html,application/pdf" }, redirect: "error", signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? "disclosure_access_restricted" : "disclosure_source_unavailable");
+  if (!response.ok) throw new Error(response.status === 401 || response.status === 403 || response.status === 429 ? "disclosure_access_restricted" : "disclosure_source_unavailable");
   const length = Number(response.headers.get("content-length") ?? 0);
   if (length > 8 * 1024 * 1024) throw new Error("disclosure_source_too_large");
   const reader = response.body?.getReader();
@@ -34,6 +35,7 @@ async function officialResponse(fetchImpl: typeof fetch, url: string) {
   for (const chunk of chunks) { bytes.set(chunk, position); position += chunk.byteLength; }
   const body = new TextDecoder().decode(bytes);
   if (bytes.byteLength > 8 * 1024 * 1024) throw new Error("disclosure_source_too_large");
+  if (isMopsAccessDenial(body)) throw new Error("disclosure_access_restricted");
   return { body, bytes, mediaType: response.headers.get("content-type") ?? "application/octet-stream" };
 }
 export async function runOfficialDisclosureAcquisition(persistence: Persistence, options: AcquisitionOptions = {}) {

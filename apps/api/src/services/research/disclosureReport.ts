@@ -136,6 +136,21 @@ function hasUncertainStatusAssertion(excerpt: string): boolean {
   return /(?:未|無法|並無|尚無|無(?:完成|發生|決議|通過|批准)|沒有|否認|並非|並不|不是|不曾|不會|不再|不予|不排除|不(?:完成|發生|決議|通過|批准|預計|預定|訂於)|取消|撤回|撤銷|否決|暫緩|中止|終止|尚待|如果|假如|假設|倘若|若|可能|如獲)|\b(?:not|never|no|cannot|can't|isn't|wasn't|weren't|hasn't|haven't|hadn't|won't|wouldn't|didn't|doesn't|don't|denied|cancelled|canceled|rescinded|withdrawn|unapproved|uncompleted|incomplete|unscheduled|unplanned|if|unless|pending|will|shall|should|would|could|might|may)\b|\b(?:failed\s+to|subject\s+to)\b/i.test(excerpt.replaceAll("’", "'"));
 }
 
+function artifactReportScopeFailure(artifact: NonNullable<DisclosureArtifactOutput["artifact"]>, pages: MaterialAnnouncementsOutput[]): string | null {
+  const window = pages[0]!.window;
+  const publishedAt = Date.parse(artifact.publishedAt);
+  if (!Number.isFinite(publishedAt) || publishedAt < Date.parse(window.publishedFrom) || publishedAt > Date.parse(window.publishedTo)) {
+    return "artifact_outside_report_window";
+  }
+  if (artifact.reference.kind === "announcement_attachment") {
+    const parent = pages.flatMap((page) => page.items).find((item) => item.id === artifact.reference.id);
+    if (!parent) return "artifact_parent_not_returned";
+    if (parent.detailQuality?.reasonCodes.includes("unresolved_correction_reference")) return "artifact_parent_unresolved_correction_reference";
+    if (parent.quality !== "available") return `artifact_parent_${parent.quality}`;
+  }
+  return null;
+}
+
 /** Validate a specialist fragment against retained evidence without making new publisher assertions. */
 export function composeFocusedDisclosureResearchReport(input: {
   identity: z.infer<typeof researchIdentityOutputSchema>;
@@ -234,6 +249,8 @@ export function composeFocusedDisclosureResearchReport(input: {
     if (retained.state !== "available") return `artifact_${retained.state}`;
     if (retained.reference.kind === "announcement_attachment" && invalidated.has(retained.reference.id)) return "artifact_parent_corrected_or_retracted";
     if (retained.reference.kind === "announcement_attachment" && conflicted.has(retained.reference.id)) return "artifact_parent_conflict_unresolved";
+    const scopeFailure = artifactReportScopeFailure(retained, pages);
+    if (scopeFailure) return scopeFailure;
     const claimResult = artifactResults.find((page) => page.artifact?.verifiedClaims.some((claim) => claim.id === reference.claimId));
     const claim = claimResult?.artifact?.verifiedClaims.find((entry) => entry.id === reference.claimId);
     if (!claim || !claimResult) return "verified_artifact_claim_unavailable";
@@ -430,6 +447,7 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
   const translations: Record<string, string> = {
     "Taiwan Disclosure Research": "台灣重大訊息研究", "Listing ID": "上市櫃識別碼", "Knowledge at": "資訊截止時間", "Effective at": "評估基準時間",
     "Publication window": "公告發布期間", "Official scan prerequisite": "官方公告掃描必要條件", "Official disclosures": "官方重大訊息",
+    "Evidence excluded from report conclusions": "此證據不納入報告結論",
     "Retained artifact evidence": "留存文件證據", "Catalysts and risks": "催化因素與風險", "Limitations and recovery": "限制與補足條件", "Provenance": "來源沿革",
     "passed": "通過", "withheld": "暫不提出", "not_applicable": "不適用", "available": "可用", "restricted": "存取受限", "processing_failed": "處理失敗", "unavailable": "不可用", "indeterminate": "無法判定",
     "observed": "已觀察", "scheduled": "已排程", "conditional": "有條件", "speculative": "推測", "provisional": "暫定", "supported": "有證據支持", "catalyst": "催化因素", "risk": "風險",
@@ -498,6 +516,7 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     ])),
     "", `## ${t("Retained artifact evidence")}`, "",
     ...report.artifactPages.flatMap((page) => page.artifact ? [
+      ...(artifactReportScopeFailure(page.artifact, report.announcementPages) ? [`- ${t("Evidence excluded from report conclusions")}: ${markdown(artifactReportScopeFailure(page.artifact, report.announcementPages)!)}`] : []),
       `- ${markdown(page.artifact.id)}: ${t(page.artifact.state)}; ${t("hash")} ${markdown(page.artifact.contentHash)}; ${t("extraction")} ${markdown(page.artifact.extractionVersion)}; ${t("source")} ${markdown(page.artifact.sourceUrl)}`,
       ...page.artifact.verifiedClaims.map((claim) => `  ${markdown(claim.text)} [${markdown(claim.id)}; ${t("page")} ${claim.page}; ${t("table")} ${markdown(claim.table ?? t("not applicable"))}; ${t("subject")} ${markdown(claim.subject)}; ${t("period")} ${markdown(claim.period ?? t("unknown"))}; ${t("unit")} ${markdown(claim.unit ?? t("unknown"))}; ${markdown(page.artifact!.provenance.id)}]`),
     ] : []),

@@ -1,3 +1,4 @@
+import { isMopsAccessDenial } from "./mopsAccessDenial.js";
 import { z } from "zod";
 import type { ResearchAnnouncementRecord } from "../disclosureContracts.js";
 import { researchAnnouncementRecordSchema } from "../disclosureContracts.js";
@@ -158,7 +159,7 @@ async function readOfficialJson(fetchImpl: typeof fetch, url: string, body: obje
     }
   } finally { reader.releaseLock(); }
   const text = Buffer.concat(chunks).toString("utf8");
-  if (/FOR SECURITY REASONS|THIS PAGE CAN NOT BE ACCESSED|安全性考量/.test(text)) throw new DetailAcquisitionError("restricted", "detail_access_restricted");
+  if (isMopsAccessDenial(text)) throw new DetailAcquisitionError("restricted", "detail_access_restricted");
   try { return { payload: JSON.parse(text) as unknown, hash: disclosureHash(text) }; }
   catch { throw new DetailAcquisitionError("processing_failed", "detail_response_invalid"); }
 }
