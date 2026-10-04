@@ -763,3 +763,12 @@ export async function buildRevenueFocusedResearchReport(
     },
   });
 }
+
+export {
+  buildFocusedDisclosureResearchReport,
+  composeFocusedDisclosureResearchReport,
+  renderFocusedDisclosureResearchReportMarkdown,
+  focusedDisclosureReportSchema,
+  disclosureCandidateSchema,
+} from "./disclosureReport.js";
+export type { FocusedDisclosureResearchReport, DisclosureCandidate } from "./disclosureReport.js";

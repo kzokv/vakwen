@@ -256,6 +256,9 @@ export const researchManifestOutputSchema = z.object({
     status: z.enum(["available", "unavailable"]),
     reasonCode: z.string().min(1).max(120).optional(),
     capabilities: z.object({
+      purposeIds: z.array(z.enum(["factual_use", "current_assessment", "exhaustive_conclusion"])).optional(),
+      purposeRegistryVersion: z.literal("disclosure-purposes/1.0.0").optional(),
+      evidenceViews: z.array(z.enum(["selected_with_conflicts", "all_observations"])).optional(),
       scopeKinds: z.array(z.enum(["latest", "latest_sessions", "date_range"])).min(1).optional(),
       basis: z.array(z.enum(["raw", "corporate_action_adjusted"])).min(1).optional(),
       metrics: z.array(researchMetricSchema.shape.id).min(1).optional(),
@@ -444,10 +447,10 @@ export const researchPriceSeriesOutputSchema = z.object({
 
 const researchToolErrorOutputShape = {
   code: z.string().regex(
-    /^(?:research_subject_not_found|research_subject_ambiguous|research_cursor_invalid|research_assessment_mode_unsupported|research_dataset_unavailable|research_calendar_unavailable|research_record_too_large|research_window_invalid|research_provenance_conflict|mcp_[a-z0-9_]+)$/,
+    /^(?:research_subject_not_found|research_subject_ambiguous|research_cursor_invalid|research_assessment_mode_unsupported|research_dataset_unavailable|research_calendar_unavailable|research_record_too_large|research_window_invalid|research_provenance_conflict|research_range_invalid|research_artifact_not_referenced|research_store_unavailable|evaluation_failed|record_too_large|mcp_[a-z0-9_]+)$/,
   ),
   message: z.string().min(1),
-  statusCode: z.number().int().min(400).max(499),
+  statusCode: z.number().int().min(400).max(599),
   metadata: z.record(z.string(), z.unknown()).optional(),
 } as const;
 
@@ -1191,3 +1194,79 @@ export type ResearchIdentityOnlyReport = z.infer<typeof researchIdentityOnlyRepo
 export type ResearchFocusedMarketReport = z.infer<typeof researchFocusedMarketReportSchema>;
 export type ResearchMonthlyRevenueQuery = z.infer<typeof researchMonthlyRevenueQuerySchema>;
 export type ResearchRevenueFocusedReport = z.infer<typeof researchRevenueFocusedReportSchema>;
+
+// Disclosure collection and retained artifact reads deliberately have no acquisition inputs.
+export const disclosurePurposeSchema = z.enum(["factual_use", "current_assessment", "exhaustive_conclusion"]);
+const disclosureEvidenceSelectionInput = {
+  evidenceView: z.enum(["selected_with_conflicts", "all_observations"]).default("selected_with_conflicts"),
+  purposes: z.array(disclosurePurposeSchema).max(20).refine((values) => new Set(values).size === values.length, "Purpose IDs must be unique").default(["factual_use", "current_assessment", "exhaustive_conclusion"]),
+};
+export const researchAnnouncementsInitialQuerySchema = researchQuerySchema.extend({
+  ...disclosureEvidenceSelectionInput,
+  range: z.object({ publishedFrom: z.string().datetime({ offset: true }), publishedTo: z.string().datetime({ offset: true }), eventFrom: isoDateSchema.optional(), eventTo: isoDateSchema.optional() }).strict().optional(),
+  order: z.enum(["asc", "desc"]).default("desc"),
+  limit: z.number().int().min(1).max(100).default(25),
+}).strict();
+const disclosureContinuationSchema = z.object({ subject: researchSubjectSelectorSchema, cursor: z.string().min(1).max(12000) }).strict();
+export const researchAnnouncementsQuerySchema = z.union([researchAnnouncementsInitialQuerySchema, disclosureContinuationSchema]);
+export const researchDisclosureArtifactInitialQuerySchema = researchQuerySchema.extend({
+  ...disclosureEvidenceSelectionInput,
+  artifactId: canonicalIdSchema,
+  order: z.enum(["asc", "desc"]).default("asc"),
+  limit: z.number().int().min(1).max(10).default(3),
+}).strict();
+export const researchDisclosureArtifactQuerySchema = z.union([researchDisclosureArtifactInitialQuerySchema, disclosureContinuationSchema]);
+export type ResearchAnnouncementsQueryInput = z.input<typeof researchAnnouncementsQuerySchema>;
+export type ResearchDisclosureArtifactQueryInput = z.input<typeof researchDisclosureArtifactQuerySchema>;
+export * from "./disclosureContracts.js";
+
+import { researchAnnouncementRecordSchema, researchDisclosureArtifactSchema, researchDisclosureScanSchema, disclosureProvenanceSchema, disclosureBlockSchema, disclosureClaimSchema } from "./disclosureContracts.js";
+const disclosureIdentitySummarySchema = z.object({ issuer: issuerSchema, security: securitySchema, listing: listingSchema, eligibility: eligibilitySchema }).strict();
+const disclosureQualitySchema = z.object({
+  freshness: z.enum(["current", "indeterminate", "stale", "not_applicable"]),
+  completeness: z.enum(["complete", "partial", "indeterminate", "not_applicable"]),
+  confidence: z.enum(["verified", "supported", "provisional", "indeterminate"]),
+  readiness: z.object({ factualUse: z.enum(["ready", "degraded", "blocked", "indeterminate", "not_applicable"]), currentAssessment: z.enum(["ready", "degraded", "blocked", "indeterminate", "not_applicable"]), exhaustiveConclusion: z.enum(["ready", "degraded", "blocked", "indeterminate", "not_applicable"]) }).strict(),
+  versions: z.object({ contract: z.literal("disclosures/1.0.0"), freshnessPolicy: z.literal("official-scan/1.0.0"), exposurePolicy: z.literal("retained-disclosures/1.0.0") }).strict(),
+  status: z.enum(["available", "not_acquired", "not_applicable", "restricted", "processing_failed", "indeterminate"]),
+  reasonCodes: z.array(z.string()), recovery: z.array(z.string()),
+}).strict();
+const disclosureSelectionOutputSchema = z.object({
+  evidenceView: z.enum(["selected_with_conflicts", "all_observations"]), purposes: z.array(disclosurePurposeSchema).max(20),
+  policyVersion: z.literal("disclosure-selection/1.0.0"), purposeRegistryVersion: z.literal("disclosure-purposes/1.0.0"),
+  selectedObservationIds: z.array(canonicalIdSchema), conflictObservationIds: z.array(canonicalIdSchema), excludedObservationCount: z.number().int().nonnegative(), reasonCodes: z.array(z.string()),
+  readinessByPurpose: z.array(z.object({ purposeId: disclosurePurposeSchema, status: z.enum(["ready", "degraded", "blocked", "indeterminate", "not_applicable"]), reasonCodes: z.array(z.string()) }).strict()),
+}).strict();
+export const materialAnnouncementsOutputSchema = z.object({
+  contractVersion: z.literal("material-announcements/1.0.0"), selector: immutableListingSelectorSchema, context: fixedResearchContextSchema,
+  identity: disclosureIdentitySummarySchema,
+  window: z.object({ publishedFrom: z.string().datetime({ offset: true }), publishedTo: z.string().datetime({ offset: true }), eventFrom: isoDateSchema.optional(), eventTo: isoDateSchema.optional(), exhaustive: z.boolean() }).strict(),
+  quality: disclosureQualitySchema, selection: disclosureSelectionOutputSchema,
+  scan: z.object({ status: z.enum(["current", "indeterminate", "stale", "not_acquired", "failed", "restricted", "processing_failed", "not_applicable"]), checkedAt: z.string().datetime({ offset: true }).nullable(), record: researchDisclosureScanSchema.nullable(), latestAttempt: researchDisclosureScanSchema.nullable(), eventFactFreshness: z.literal("not_applicable") }).strict(),
+  items: z.array(researchAnnouncementRecordSchema.omit({ explanation: true }).extend({
+    explanation: z.object({ text: z.string(), originalCharacters: z.number().int().nonnegative(), retainedCharacters: z.number().int().nonnegative(), truncated: z.boolean(), contentHash: z.string(), sourceUrl: z.string().url(), location: z.literal("issuer_explanation") }).strict(),
+  }).strict()),
+  relationIndex: z.array(z.object({ announcementId: canonicalIdSchema, kind: z.enum(["corrects", "retracts", "supersedes"]), targetAnnouncementId: canonicalIdSchema }).strict()),
+  page: z.object({ nextCursor: z.string().nullable(), order: z.enum(["asc", "desc"]), limit: z.number().int(), truncatedBy: z.enum(["page_limit", "response_budget"]).nullable() }).strict(),
+  provenance: z.array(disclosureProvenanceSchema),
+}).strict();
+const disclosureQualifierStateSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("present"), value: z.string() }).strict(),
+  z.object({ state: z.literal("missing"), reason: z.literal("unknown") }).strict(),
+  z.object({ state: z.literal("not_applicable") }).strict(),
+]);
+const disclosureLocationQualifiersSchema = z.object({ period: disclosureQualifierStateSchema, unit: disclosureQualifierStateSchema }).strict();
+const retainedArtifactOutputSchema = researchDisclosureArtifactSchema.omit({ retainedBytesBase64: true }).extend({
+  blocks: z.array(disclosureBlockSchema.extend({ qualifiers: disclosureLocationQualifiersSchema }).strict()),
+  verifiedClaims: z.array(disclosureClaimSchema.extend({ qualifiers: disclosureLocationQualifiersSchema }).strict()),
+}).strict();
+export const disclosureArtifactOutputSchema = z.object({
+  contractVersion: z.literal("disclosure-artifact/1.0.0"), selector: immutableListingSelectorSchema, context: fixedResearchContextSchema,
+  identity: disclosureIdentitySummarySchema, quality: disclosureQualitySchema, selection: disclosureSelectionOutputSchema,
+  artifact: retainedArtifactOutputSchema.nullable(),
+  page: z.object({ nextCursor: z.string().nullable(), returnedPages: z.array(z.number().int()), totalPages: z.number().int().nonnegative(), retainedCharacters: z.number().int().nonnegative(), originalCharacters: z.number().int().nonnegative(), pageTruncated: z.boolean(), totalTruncated: z.boolean() }).strict(),
+}).strict();
+export const researchAnnouncementsToolOutputSchema = z.object({ result: z.union([materialAnnouncementsOutputSchema, researchToolErrorOutputSchema]) }).strict();
+export const researchDisclosureArtifactToolOutputSchema = z.object({ result: z.union([disclosureArtifactOutputSchema, researchToolErrorOutputSchema]) }).strict();
+export type MaterialAnnouncementsOutput = z.infer<typeof materialAnnouncementsOutputSchema>;
+export type DisclosureArtifactOutput = z.infer<typeof disclosureArtifactOutputSchema>;

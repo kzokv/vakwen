@@ -2,6 +2,8 @@ import { Env } from "@vakwen/config";
 
 interface ResearchRolloutOverride {
   acquisitionEnabled?: boolean;
+  announcementsTwseEnabled?: boolean;
+  announcementsTpexEnabled?: boolean;
   mcpExposureEnabled?: boolean;
   skillExposureEnabled?: boolean;
 }
@@ -28,4 +30,11 @@ export function researchSkillExposureEnabled(): boolean {
 
 export function researchScopeAcquisitionAllowed(): boolean {
   return researchAcquisitionEnabled() && researchMcpExposureEnabled();
+}
+
+export function researchDisclosureAcquisitionEnabled(venue: "TWSE" | "TPEX"): boolean {
+  const enabled = venue === "TWSE"
+    ? researchRolloutOverrideForTest?.announcementsTwseEnabled ?? Env.MCP_RESEARCH_ANNOUNCEMENTS_TWSE_ENABLED ?? false
+    : researchRolloutOverrideForTest?.announcementsTpexEnabled ?? Env.MCP_RESEARCH_ANNOUNCEMENTS_TPEX_ENABLED ?? false;
+  return researchAcquisitionEnabled() && enabled;
 }

@@ -1,0 +1,184 @@
+import { z } from "zod";
+import type { ResearchAnnouncementRecord } from "../disclosureContracts.js";
+import { researchAnnouncementRecordSchema } from "../disclosureContracts.js";
+import { disclosureHash, disclosureId, safeDisclosureUrl } from "./mopsAnnouncements.js";
+import { parseTaiwanOfficialDate } from "./twseIdentity.js";
+
+/** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
+export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
+export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.0";
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const parametersSchema = z.object({
+  marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
+  serialNumber: z.string().regex(/^\d+$/), enterDate: z.string().regex(/^\d{7}$/),
+}).strict();
+const historySchema = z.object({ code: z.literal(200), result: z.object({
+  marketName: z.string(), companyId: z.string(), data: z.array(z.tuple([
+    z.string(), z.string(), z.string(), z.string(), z.string(),
+    z.object({ apiName: z.literal("t05st01_detail"), parameters: parametersSchema }),
+  ])),
+}) });
+const detailSchema = z.object({ code: z.literal(200), result: z.object({
+  marketName: z.string(), companyId: z.string(),
+  titles: z.array(z.object({ main: z.string() })), data: z.array(z.array(z.unknown())).length(1),
+}) });
+export type OfficialAnnouncementDetailParameters = z.infer<typeof parametersSchema>;
+export type AnnouncementDetailStatus = "available" | "restricted" | "processing_failed" | "unavailable";
+export interface AnnouncementEnrichmentResult {
+  record: ResearchAnnouncementRecord;
+  detailStatus: AnnouncementDetailStatus;
+  reasonCodes: string[];
+}
+export interface AnnouncementEnrichmentOptions {
+  fetchImpl?: typeof fetch;
+  previousRecords?: readonly ResearchAnnouncementRecord[];
+  retrievedAt?: string;
+}
+function compactTitle(value: string): string { return value.replace(/\s+/g, "").trim(); }
+function localStamp(record: ResearchAnnouncementRecord) {
+  const taiwan = new Date(Date.parse(record.publishedAt) + 8 * 3_600_000).toISOString();
+  return { day: taiwan.slice(0, 10), clock: taiwan.slice(11, 19) };
+}
+function dateMatches(raw: string, isoDate: string): boolean { return parseTaiwanOfficialDate(raw.replaceAll("/", "")) === isoDate; }
+function expectedMarket(record: ResearchAnnouncementRecord) { return record.venue === "TWSE" ? "sii" : "otc"; }
+function assertMarket(marketName: string, record: ResearchAnnouncementRecord) {
+  if (marketName !== (record.venue === "TWSE" ? "上市公司" : "上櫃公司")) throw new Error("detail_market_mismatch");
+}
+
+export function selectOfficialAnnouncementDetailParameters(payload: unknown, record: ResearchAnnouncementRecord): OfficialAnnouncementDetailParameters {
+  const response = historySchema.parse(payload);
+  const stamp = localStamp(record);
+  assertMarket(response.result.marketName, record);
+  if (response.result.companyId !== record.ticker) throw new Error("detail_subject_mismatch");
+  const matches = response.result.data.filter((row) => row[0] === record.ticker
+    && dateMatches(row[2], stamp.day) && row[3] === stamp.clock && compactTitle(row[4]) === compactTitle(record.subject));
+  if (matches.length !== 1) throw new Error("detail_reference_unresolved");
+  const parameters = matches[0]![5].parameters;
+  if (parameters.companyId !== record.ticker || parameters.marketKind !== expectedMarket(record)
+    || !dateMatches(parameters.enterDate, stamp.day)) throw new Error("detail_reference_mismatch");
+  return parameters;
+}
+
+function relationFromPublisherText(record: ResearchAnnouncementRecord, previousRecords: readonly ResearchAnnouncementRecord[]) {
+  // Require an explicit correction/retraction notice plus both a complete cited title
+  // and its publication date. Shared keywords or coincident event dates never link facts.
+  const kind = /^(?:公告)?(?:撤回|撤銷)/.test(record.subject.trim()) ? "retracts" as const
+    : /^(?:公告)?更正/.test(record.subject.trim()) ? "corrects" as const : null;
+  if (!kind) return { relations: record.relations, unresolved: false };
+  const text = compactTitle(record.explanation);
+  const matches = previousRecords.filter((prior) => {
+    if (prior.id === record.id || prior.issuerId !== record.issuerId || prior.publishedAt >= record.publishedAt) return false;
+    const title = compactTitle(prior.subject);
+    if (!title || !(text.includes(`「${title}」`) || text.includes(`"${title}"`))) return false;
+    const date = localStamp(prior).day;
+    const year = Number(date.slice(0, 4)) - 1911;
+    const month = Number(date.slice(5, 7));
+    const day = Number(date.slice(8, 10));
+    return [date, `${year}/${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`, `${year}/${month}/${day}`, `${year}年${month}月${day}日`].some((value) => text.includes(value));
+  });
+  if (matches.length !== 1) return { relations: record.relations, unresolved: true };
+  const relation = { kind, targetAnnouncementId: matches[0]!.id };
+  return { relations: [...record.relations.filter((old) => old.kind !== kind || old.targetAnnouncementId !== relation.targetAnnouncementId), relation], unresolved: false };
+}
+
+export function parseOfficialAnnouncementDetail(
+  payload: unknown,
+  record: ResearchAnnouncementRecord,
+  metadata: { contentHash: string; retrievedAt: string },
+  previousRecords: readonly ResearchAnnouncementRecord[] = [],
+): AnnouncementEnrichmentResult {
+  const response = detailSchema.parse(payload);
+  assertMarket(response.result.marketName, record);
+  if (response.result.companyId !== record.ticker) throw new Error("detail_subject_mismatch");
+  const row = response.result.data[0]!;
+  if (row.length !== response.result.titles.length) throw new Error("detail_columns_mismatch");
+  const values = new Map(response.result.titles.map((title, index) => [title.main.trim(), row[index]]));
+  function field(name: string) {
+    const value = values.get(name);
+    if (typeof value !== "string") throw new Error("detail_required_field_missing");
+    return value.trim();
+  }
+  const stamp = localStamp(record);
+  if (!dateMatches(field("發言日期"), stamp.day) || field("發言時間") !== stamp.clock
+    || compactTitle(field("主旨")) !== compactTitle(record.subject)) throw new Error("detail_observation_mismatch");
+  const attachments = [...record.attachments];
+  for (const [index, value] of row.entries()) {
+    // MOPS's own detail renderer uses {url,fileName} cells for downloadable files.
+    if (typeof value !== "object" || value === null || !("url" in value) || !("fileName" in value)) continue;
+    const cell = value as { url: unknown; fileName: unknown };
+    if (typeof cell.url !== "string" || typeof cell.fileName !== "string") throw new Error("detail_attachment_invalid");
+    const url = new URL(cell.url, MOPS_ANNOUNCEMENT_DETAIL_URL).toString();
+    if (!safeDisclosureUrl(url)) throw new Error("detail_attachment_source_not_permitted");
+    if (attachments.some((attachment) => attachment.sourceUrl === url)) continue;
+    attachments.push({ id: disclosureId("att", record.id, String(index), url), artifactId: disclosureId("art", record.id, url),
+      title: cell.fileName, sourceUrl: url, mediaType: /\.pdf(?:$|[?#])/i.test(url) ? "application/pdf" : "application/octet-stream" });
+  }
+  const enriched = { ...record, subject: field("主旨"), ruleClause: field("符合條款"), eventDate: parseTaiwanOfficialDate(field("事實發生日").replaceAll("/", "")) ?? null,
+    explanation: field("說明"), attachments };
+  const relation = relationFromPublisherText(enriched, previousRecords);
+  const reasons = relation.unresolved ? ["unresolved_correction_reference"] : [];
+  const output = researchAnnouncementRecordSchema.parse({ ...enriched, relations: relation.relations,
+    collectionProvenance: record.collectionProvenance ?? record.provenance,
+    detailQuality: { status: "available", reasonCodes: reasons },
+    provenance: { ...record.provenance, id: disclosureId("pr", record.id, metadata.contentHash, MOPS_DETAIL_PARSER_VERSION),
+      accessProvider: "MOPS_API", sourceUrl: MOPS_ANNOUNCEMENT_DETAIL_URL, contentHash: metadata.contentHash,
+      retrievedAt: metadata.retrievedAt, processedAt: metadata.retrievedAt, parserVersion: MOPS_DETAIL_PARSER_VERSION },
+  });
+  return { record: output, detailStatus: "available", reasonCodes: reasons };
+}
+
+class DetailAcquisitionError extends Error {
+  constructor(readonly status: AnnouncementDetailStatus, readonly safeCode: string) { super(safeCode); }
+}
+async function readOfficialJson(fetchImpl: typeof fetch, url: string, body: object): Promise<{ payload: unknown; hash: string }> {
+  let response: Response;
+  try {
+    response = await fetchImpl(url, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", Origin: "https://mops.twse.com.tw" },
+      body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(20_000) });
+  } catch { throw new DetailAcquisitionError("unavailable", "detail_source_unavailable"); }
+  if (response.status === 401 || response.status === 403 || response.status === 429) throw new DetailAcquisitionError("restricted", "detail_access_restricted");
+  if (!response.ok) throw new DetailAcquisitionError("unavailable", "detail_source_unavailable");
+  const declared = Number(response.headers.get("content-length"));
+  if (declared > MAX_RESPONSE_BYTES) throw new DetailAcquisitionError("processing_failed", "detail_response_too_large");
+  const reader = response.body?.getReader();
+  if (!reader) throw new DetailAcquisitionError("processing_failed", "detail_response_invalid");
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new DetailAcquisitionError("processing_failed", "detail_response_too_large");
+      }
+      chunks.push(chunk.value);
+    }
+  } finally { reader.releaseLock(); }
+  const text = Buffer.concat(chunks).toString("utf8");
+  if (/FOR SECURITY REASONS|THIS PAGE CAN NOT BE ACCESSED|安全性考量/.test(text)) throw new DetailAcquisitionError("restricted", "detail_access_restricted");
+  try { return { payload: JSON.parse(text) as unknown, hash: disclosureHash(text) }; }
+  catch { throw new DetailAcquisitionError("processing_failed", "detail_response_invalid"); }
+}
+
+/** Internal ingestion only. Public MCP readers never call this network acquisition. */
+export async function enrichOfficialAnnouncement(record: ResearchAnnouncementRecord, options: AnnouncementEnrichmentOptions = {}): Promise<AnnouncementEnrichmentResult> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const stamp = localStamp(record);
+  const retrievedAt = options.retrievedAt ?? new Date().toISOString();
+  try {
+    const history = await readOfficialJson(fetchImpl, MOPS_ANNOUNCEMENT_HISTORY_URL, {
+      companyId: record.ticker, year: String(Number(stamp.day.slice(0, 4)) - 1911), month: String(Number(stamp.day.slice(5, 7))),
+      firstDay: String(Number(stamp.day.slice(8, 10))), lastDay: String(Number(stamp.day.slice(8, 10))),
+    });
+    const parameters = selectOfficialAnnouncementDetailParameters(history.payload, record);
+    const detail = await readOfficialJson(fetchImpl, MOPS_ANNOUNCEMENT_DETAIL_URL, parameters);
+    return parseOfficialAnnouncementDetail(detail.payload, record, { contentHash: detail.hash, retrievedAt }, options.previousRecords);
+  } catch (error) {
+    const status = error instanceof DetailAcquisitionError ? error.status : "processing_failed";
+    const reason = error instanceof DetailAcquisitionError ? error.safeCode : "detail_evidence_unresolved";
+    return { record: { ...record, detailQuality: { status, reasonCodes: [reason] } }, detailStatus: status, reasonCodes: [reason] };
+  }
+}

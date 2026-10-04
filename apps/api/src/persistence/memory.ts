@@ -1,3 +1,6 @@
+import { validateResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
+import { researchDisclosureMaterialReferenceSchema, type ResearchDisclosureMaterialReference } from "../services/research/disclosureContracts.js";
+import { researchAnnouncementRecordSchema, researchDisclosureArtifactSchema, researchDisclosureScanSchema, type ResearchAnnouncementRecord, type ResearchDisclosureArtifact, type ResearchDisclosureScan, type ResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
 import { randomUUID } from "node:crypto";
 import {
   allocateSellLots,
@@ -1066,6 +1069,82 @@ export class MemoryPersistence implements Persistence {
     return [...dates].sort((left, right) => left.localeCompare(right));
   }
 
+  private readonly retainedDisclosureMaterialReferences = new Map<string, ResearchDisclosureMaterialReference>();
+  async appendResearchDisclosureMaterialReferences(records: readonly ResearchDisclosureMaterialReference[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureMaterialReferenceSchema.parse(record));
+    const staged = new Map(this.retainedDisclosureMaterialReferences);
+    for (const record of parsed) {
+      const previous = staged.get(record.id);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(record)) throw new Error("research_disclosure_immutable_conflict");
+      staged.set(record.id, record);
+    }
+    for (const record of parsed) this.retainedDisclosureMaterialReferences.set(record.id, structuredClone(record));
+  }
+  async listResearchDisclosureMaterialReferences(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureMaterialReference[]> {
+    validateResearchDisclosureStoreQuery(query);
+    return [...this.retainedDisclosureMaterialReferences.values()].filter((record) => record.issuerId === query.issuerId
+      && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.publishedAt) <= Date.parse(query.effectiveAt))
+      .map((record) => structuredClone(record));
+  }
+  private readonly retainedAnnouncements = new Map<string, ResearchAnnouncementRecord>();
+  async appendResearchAnnouncements(records: readonly ResearchAnnouncementRecord[]): Promise<void> {
+    const parsed = records.map((record) => researchAnnouncementRecordSchema.parse(record));
+    const staged = new Map(this.retainedAnnouncements);
+    for (const record of parsed) {
+      const previous = staged.get(record.id);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(record)) throw new Error("research_disclosure_immutable_conflict");
+      staged.set(record.id, record);
+    }
+    for (const record of parsed) this.retainedAnnouncements.set(record.id, structuredClone(record));
+  }
+  async listResearchAnnouncements(query: ResearchDisclosureStoreQuery): Promise<ResearchAnnouncementRecord[]> {
+    validateResearchDisclosureStoreQuery(query);
+    return [...this.retainedAnnouncements.values()].filter((record) => record.issuerId === query.issuerId
+      && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.publishedAt) <= Date.parse(query.effectiveAt))
+      .map((record) => structuredClone(record));
+  }
+  private readonly retainedDisclosureArtifacts = new Map<string, ResearchDisclosureArtifact>();
+  async appendResearchDisclosureArtifacts(records: readonly ResearchDisclosureArtifact[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureArtifactSchema.parse(record));
+    const staged = new Map(this.retainedDisclosureArtifacts);
+    for (const record of parsed) {
+      const previous = staged.get(record.id);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(record)) throw new Error("research_disclosure_immutable_conflict");
+      staged.set(record.id, record);
+    }
+    for (const record of parsed) this.retainedDisclosureArtifacts.set(record.id, structuredClone(record));
+  }
+  async listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureArtifact[]> {
+    validateResearchDisclosureStoreQuery(query);
+    return [...this.retainedDisclosureArtifacts.values()].filter((record) => record.issuerId === query.issuerId
+      && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.publishedAt) <= Date.parse(query.effectiveAt))
+      .map((record) => structuredClone(record));
+  }
+  private readonly retainedDisclosureScans = new Map<string, ResearchDisclosureScan>();
+  async appendResearchDisclosureScans(records: readonly ResearchDisclosureScan[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureScanSchema.parse(record));
+    const staged = new Map(this.retainedDisclosureScans);
+    for (const record of parsed) {
+      const previous = staged.get(record.id);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(record)) throw new Error("research_disclosure_immutable_conflict");
+      staged.set(record.id, record);
+    }
+    for (const record of parsed) this.retainedDisclosureScans.set(record.id, structuredClone(record));
+  }
+  async listResearchDisclosureScans(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureScan[]> {
+    validateResearchDisclosureStoreQuery(query);
+    return [...this.retainedDisclosureScans.values()].filter((record) => record.issuerId === query.issuerId
+      && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.checkedAt) <= Date.parse(query.effectiveAt) && Date.parse(record.knowledgeAt) <= Date.parse(query.knowledgeAt))
+      .map((record) => structuredClone(record));
+  }
   async appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void> {
     for (const record of records) {
       const key = researchMonthlyRevenueRecordKey(record);

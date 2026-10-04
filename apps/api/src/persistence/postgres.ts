@@ -1,3 +1,6 @@
+import { validateResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
+import { researchDisclosureMaterialReferenceSchema, type ResearchDisclosureMaterialReference } from "../services/research/disclosureContracts.js";
+import { researchAnnouncementRecordSchema, researchDisclosureArtifactSchema, researchDisclosureScanSchema, type ResearchAnnouncementRecord, type ResearchDisclosureArtifact, type ResearchDisclosureScan, type ResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -1496,6 +1499,94 @@ export class PostgresPersistence implements Persistence {
     }
   }
 
+  async appendResearchDisclosureMaterialReferences(records: readonly ResearchDisclosureMaterialReference[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureMaterialReferenceSchema.parse(record));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of parsed) {
+        const inserted = await client.query(`INSERT INTO research.disclosure_material_references (id, issuer_id, published_at, retrieved_at, processed_at, record)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+          WHERE research.disclosure_material_references.record = EXCLUDED.record RETURNING id`,
+          [record.id, record.issuerId, record.publishedAt, record.provenance.retrievedAt, record.provenance.processedAt, JSON.stringify(record)]);
+        if (inserted.rowCount !== 1) throw new Error("research_disclosure_immutable_conflict");
+      }
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async listResearchDisclosureMaterialReferences(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureMaterialReference[]> {
+    validateResearchDisclosureStoreQuery(query);
+    const result = await this.pool.query<{record: ResearchDisclosureMaterialReference}>(
+      `SELECT record FROM research.disclosure_material_references WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt]);
+    return result.rows.map((row) => researchDisclosureMaterialReferenceSchema.parse(row.record));
+  }
+  async appendResearchAnnouncements(records: readonly ResearchAnnouncementRecord[]): Promise<void> {
+    const parsed = records.map((record) => researchAnnouncementRecordSchema.parse(record));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of parsed) {
+        const inserted = await client.query(`INSERT INTO research.announcements (id, issuer_id, published_at, retrieved_at, processed_at, record)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+          WHERE research.announcements.record = EXCLUDED.record RETURNING id`,
+          [record.id, record.issuerId, record.publishedAt, record.provenance.retrievedAt, record.provenance.processedAt, JSON.stringify(record)]);
+        if (inserted.rowCount !== 1) throw new Error("research_disclosure_immutable_conflict");
+      }
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async listResearchAnnouncements(query: ResearchDisclosureStoreQuery): Promise<ResearchAnnouncementRecord[]> {
+    validateResearchDisclosureStoreQuery(query);
+    const result = await this.pool.query<{record: ResearchAnnouncementRecord}>(
+      `SELECT record FROM research.announcements WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt]);
+    return result.rows.map((row) => researchAnnouncementRecordSchema.parse(row.record));
+  }
+  async appendResearchDisclosureArtifacts(records: readonly ResearchDisclosureArtifact[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureArtifactSchema.parse(record));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of parsed) {
+        const inserted = await client.query(`INSERT INTO research.disclosure_artifacts (id, issuer_id, published_at, retrieved_at, processed_at, record)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+          WHERE research.disclosure_artifacts.record = EXCLUDED.record RETURNING id`,
+          [record.id, record.issuerId, record.publishedAt, record.provenance.retrievedAt, record.provenance.processedAt, JSON.stringify(record)]);
+        if (inserted.rowCount !== 1) throw new Error("research_disclosure_immutable_conflict");
+      }
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureArtifact[]> {
+    validateResearchDisclosureStoreQuery(query);
+    const result = await this.pool.query<{record: ResearchDisclosureArtifact}>(
+      `SELECT record FROM research.disclosure_artifacts WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt]);
+    return result.rows.map((row) => researchDisclosureArtifactSchema.parse(row.record));
+  }
+  async appendResearchDisclosureScans(records: readonly ResearchDisclosureScan[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureScanSchema.parse(record));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of parsed) {
+        const inserted = await client.query(`INSERT INTO research.disclosure_scans (id, issuer_id, published_at, retrieved_at, processed_at, record)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+          WHERE research.disclosure_scans.record = EXCLUDED.record RETURNING id`,
+          [record.id, record.issuerId, record.checkedAt, record.provenance.retrievedAt, record.provenance.processedAt, JSON.stringify(record)]);
+        if (inserted.rowCount !== 1) throw new Error("research_disclosure_immutable_conflict");
+      }
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async listResearchDisclosureScans(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureScan[]> {
+    validateResearchDisclosureStoreQuery(query);
+    const result = await this.pool.query<{record: ResearchDisclosureScan}>(
+      `SELECT record FROM research.disclosure_scans WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz AND (record->>'knowledgeAt')::timestamptz <= $3::timestamptz`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt]);
+    return result.rows.map((row) => researchDisclosureScanSchema.parse(row.record));
+  }
   async appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void> {
     if (records.length === 0) return;
     const client = await this.pool.connect();

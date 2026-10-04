@@ -44,5 +44,10 @@ When enabled, the API adds read-only canonical-store MCP tools under `research:r
 - `get_research_identity`
 - `get_price_series`
 - `get_monthly_revenue`
+- `get_financial_statements`
+- `list_material_announcements`
+- `get_disclosure_artifact`
 
 `get_monthly_revenue` returns authoritative MOPS monthly-revenue source facts, derived trend metrics with explicit lineage, freshness gating, and cursor pagination for one immutable listing and fixed temporal context. Reads are store-only: they do not fetch providers, enqueue work, populate caches, mutate freshness, or change portfolio state.
+
+Disclosure tools return publication-bounded official announcements and subject-referenced retained artifacts. A scheduled internal worker owns acquisition and extraction, with independent default-off `MCP_RESEARCH_ANNOUNCEMENTS_TWSE_ENABLED` and `MCP_RESEARCH_ANNOUNCEMENTS_TPEX_ENABLED` switches; public reads expose explicit coverage, restriction, correction and processing states. See [research disclosures](../../docs/001-architecture/research-disclosures.md) for cursor contracts, limits, report gates, persistence and operator recovery.

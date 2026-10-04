@@ -1,0 +1,171 @@
+import { createHmac } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
+import { MemoryPersistence } from "../../src/persistence/memory.js";
+import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import { getDisclosureArtifact, listMaterialAnnouncements } from "../../src/services/research/disclosures.js";
+import type { ResearchAnnouncementRecord, ResearchDisclosureArtifact, ResearchDisclosureScan } from "../../src/services/research/disclosureContracts.js";
+
+export async function disclosureFixture(venue: "TWSE" | "TPEX" = "TWSE") {
+  const persistence = new MemoryPersistence();
+  const identity = canonicalizeOfficialIdentityRow({ venue, snapshotDate: "2026-08-31", retrievedAt: "2026-08-31T02:00:00.000Z", artifact: { contentHash: "fixture", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" }, row: { kind: "company", ticker: "2330", legalName: "公司", displayName: "公司", unifiedBusinessNumber: "22099131", industryCode: "24", listedAt: "1994-09-05" } });
+  await persistence.appendResearchIdentityRecords([identity]);
+  const context = { knowledgeAt: "2026-09-01T02:00:00.000Z" };
+  const subject = { kind: "listing_id" as const, listingId: identity.listing.id };
+  const provenance: ResearchAnnouncementRecord["provenance"] = { id: "pr1", publisher: "MOPS", accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI", authorityRole: "authoritative", sourceUrl: "https://mops.twse.com.tw/a", contentHash: "a".repeat(64), retrievedAt: "2026-09-01T01:59:00.000Z", processedAt: "2026-09-01T01:59:00.000Z", acquisitionRunId: "run1", parserVersion: "disclosures/1.0.0", usagePolicyVersion: "taiwan-open-data/1.0.0" };
+  const announcement: ResearchAnnouncementRecord = { id: "ann1", issuerId: identity.issuer.id, listingId: identity.listing.id, ticker: "2330", venue, publishedAt: "2026-09-01T01:00:00.000Z", publicationPrecision: "second", subject: "重大訊息", ruleClause: "51", eventDate: "2026-09-01", explanation: "😀".repeat(20_001), sourceUrl: provenance.sourceUrl, attachments: [{ id: "attachment1", artifactId: "artifact1", title: "說明", mediaType: "text/plain", sourceUrl: provenance.sourceUrl }], relations: [], quality: "available", provenance };
+  const artifact: ResearchDisclosureArtifact = { id: "artifact1", issuerId: identity.issuer.id, publishedAt: announcement.publishedAt, contentHash: provenance.contentHash, extractionVersion: "extract/1", sourceUrl: provenance.sourceUrl, mediaType: "text/plain", reference: { kind: "announcement_attachment", id: announcement.id }, state: "available", totalPages: 4, blocks: Array.from({length: 4}, (_,i) => ({ id: `block${i}`, page: i+1, table: null, text: "證據", extractionState: "retained_text", subject: identity.issuer.id, period: null, unit: null })), verifiedClaims: [], provenance };
+  const scan: ResearchDisclosureScan = { id: "scan1", listingId: identity.listing.id, issuerId: identity.issuer.id, venue, checkedAt: "2026-09-01T01:59:00.000Z", publicationStart: "2026-09-01T00:00:00.000Z", publicationEnd: context.knowledgeAt, knowledgeAt: context.knowledgeAt, status: "success", exhaustive: false, provenance };
+  await persistence.appendResearchAnnouncements([announcement]); await persistence.appendResearchDisclosureArtifacts([artifact]); await persistence.appendResearchDisclosureScans([scan]);
+  return { persistence, identity, subject, context, announcement, artifact, scan };
+}
+describe("retained disclosure reads", () => {
+  it.each(["TWSE", "TPEX"] as const)("%s: bounded evidence → exact Unicode and current nonexhaustive scan", async (venue) => {
+    const f = await disclosureFixture(venue); const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("read must not fetch"));
+    const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context });
+    expect(result.items[0]?.explanation).toMatchObject({ originalCharacters: 20001, retainedCharacters: 20000, truncated: true });
+    expect(result.scan.status).toBe("current"); expect(result.window.exhaustive).toBe(false); expect(fetchSpy).not.toHaveBeenCalled(); fetchSpy.mockRestore();
+  });
+  it("cursor: continuation → bound authorization and stable complete records", async () => {
+    const f = await disclosureFixture(); await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "ann2" }]);
+    const options = { authorizationBinding: "alice", cursorSecret: "secret" };
+    const first = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, limit: 1 }, options);
+    const second = await listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor: first.page.nextCursor! }, options);
+    expect(second.items[0]?.id).not.toBe(first.items[0]?.id);
+    await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor: first.page.nextCursor! }, { ...options, authorizationBinding: "bob" })).rejects.toMatchObject({ code: "research_cursor_invalid" });
+  });
+  it("temporal read: later retraction → absent before knowledge cutoff, cross-page relation afterward", async () => {
+    const f = await disclosureFixture(); await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "retraction", publishedAt: "2026-09-01T01:30:00.000Z", relations: [{ kind: "retracts", targetAnnouncementId: "ann1" }] }]);
+    const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, limit: 1 });
+    expect(result.relationIndex).toContainEqual({ announcementId: "retraction", kind: "retracts", targetAnnouncementId: "ann1" });
+    const earlier = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: { knowledgeAt: "2026-09-01T01:00:00.000Z" } }); expect(earlier.items).toEqual([]);
+  });
+  it("artifact: retained reference → complete pages, rejected generic lookup and immutable conflict", async () => {
+    const f = await disclosureFixture(); const first = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: "artifact1" });
+    expect(first.page.returnedPages).toEqual([1,2,3]);
+    const second = await getDisclosureArtifact(f.persistence, { subject: f.subject, cursor: first.page.nextCursor! }); expect(second.page.returnedPages).toEqual([4]);
+    await expect(getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: "unknown" })).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
+    await expect(f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, extractionVersion: "altered" }])).rejects.toThrow("immutable_conflict");
+  });
+  it.each(["restricted", "processing_failed", "indeterminate"] as const)("%s: unavailable artifact → safe metadata without content", async (state) => {
+    const f = await disclosureFixture(); await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "ann2", attachments: [{ ...f.announcement.attachments[0]!, artifactId: "restricted" }] }]);
+    await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "restricted", reference: { kind: "announcement_attachment", id: "ann2" }, state }]);
+    const result = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: "restricted" });
+    expect(result.artifact?.blocks).toEqual([]); expect(result.artifact?.verifiedClaims).toEqual([]); expect(result.quality.status).toBe(state);
+  });
+});
+
+describe("disclosure invariant boundaries", () => {
+  it("material reference: artifact self-assertion → rejected until independently retained reference exists", async () => {
+    const f = await disclosureFixture();
+    const artifact = { ...f.artifact, id: "material_artifact", reference: { kind: "investor_material" as const, id: "material1" } };
+    await f.persistence.appendResearchDisclosureArtifacts([artifact]);
+    const input = { subject: f.subject, context: f.context, artifactId: artifact.id };
+    await expect(getDisclosureArtifact(f.persistence, input)).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
+    await f.persistence.appendResearchDisclosureMaterialReferences([{ id: "material1", issuerId: artifact.issuerId, publishedAt: artifact.publishedAt, artifactIds: [artifact.id], provenance: artifact.provenance }]);
+    expect((await getDisclosureArtifact(f.persistence, input)).artifact?.id).toBe(artifact.id);
+  });
+  it("missing attachment: retained reference and restricted acquisition attempt → typed metadata without invented artifact", async () => {
+    const f = await disclosureFixture();
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "missing_announcement", attachments: [{ ...f.announcement.attachments[0]!, artifactId: "missing_artifact" }] }]);
+    await f.persistence.appendResearchDisclosureScans([{ ...f.scan, id: "restricted_scan", artifactAttempts: [{ artifactId: "missing_artifact", sourceUrl: f.announcement.sourceUrl, attemptedAt: f.scan.checkedAt, status: "restricted" }] }]);
+    const result = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: "missing_artifact" });
+    expect(result.quality.status).toBe("restricted"); expect(result.artifact).toBeNull();
+  });
+  it.each([["2026-09-01T02:29:00.000Z", "current"], ["2026-09-01T02:29:00.001Z", "indeterminate"], ["2026-09-01T03:59:00.000Z", "indeterminate"], ["2026-09-01T03:59:00.001Z", "stale"]])("scan freshness at %s → %s", async (knowledgeAt, expected) => {
+    const f = await disclosureFixture(); const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: { knowledgeAt: knowledgeAt! } }); expect(result.scan.status).toBe(expected);
+  });
+  it("publication range: oversized or future bound → rejected before dataset read", async () => {
+    const f = await disclosureFixture(); const read = vi.spyOn(f.persistence, "listResearchAnnouncements");
+    await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, range: { publishedFrom: "2024-08-31T00:00:00.000Z", publishedTo: f.context.knowledgeAt } })).rejects.toMatchObject({ code: "research_range_invalid" });
+    expect(read).not.toHaveBeenCalled();
+  });
+});
+
+it("artifact coverage: four declared physical pages with one extracted page → explicit missing-page coverage", async () => {
+  const f = await disclosureFixture();
+  const artifact = { ...f.artifact, id: "partial_pages", blocks: f.artifact.blocks.slice(0, 1) };
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "partial_parent", attachments: [{ ...f.announcement.attachments[0]!, artifactId: artifact.id }] }]);
+  artifact.reference = { kind: "announcement_attachment", id: "partial_parent" };
+  await f.persistence.appendResearchDisclosureArtifacts([artifact]);
+  const result = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: artifact.id });
+  expect(result.page).toMatchObject({ returnedPages: [1,2,3], totalPages: 4, pageTruncated: true, totalTruncated: true });
+  expect(result.quality.completeness).toBe("indeterminate"); expect(result.page.nextCursor).not.toBeNull();
+  const last = await getDisclosureArtifact(f.persistence, { subject: f.subject, cursor: result.page.nextCursor! });
+  expect(last.page).toMatchObject({ returnedPages: [4], pageTruncated: true, totalTruncated: true });
+});
+it("artifact character counts: wrong-subject block and invalid-location claim → emitted Unicode only", async () => {
+  const f = await disclosureFixture();
+  const artifact: ResearchDisclosureArtifact = { ...f.artifact, id: "filtered_counts", totalPages: 1,
+    blocks: [f.artifact.blocks[0]!, { ...f.artifact.blocks[1]!, page: 1, text: "😀excluded", subject: "unrelated_issuer" }],
+    verifiedClaims: [{ id: "invalid_claim", kind: "source_fact", text: "must not count this", blockIds: [f.artifact.blocks[0]!.id], page: 1, table: "wrong_table", subject: f.identity.issuer.id, period: null, unit: null, verification: "verified", publisher: "MOPS", verifiedAt: f.artifact.provenance.processedAt }],
+    reference: { kind: "announcement_attachment", id: "filtered_parent" } };
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "filtered_parent", attachments: [{ ...f.announcement.attachments[0]!, artifactId: artifact.id }] }]);
+  await f.persistence.appendResearchDisclosureArtifacts([artifact]);
+  const result = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: artifact.id });
+  expect(result.artifact?.blocks).toHaveLength(1); expect(result.artifact?.verifiedClaims).toEqual([]);
+  expect(result.page.retainedCharacters).toBe(2);
+});
+
+it("evidence views: authoritative supersession → policy-selected current record or explicit immutable audit history", async () => {
+  const f = await disclosureFixture();
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "successor", relations: [{ kind: "supersedes", targetAnnouncementId: f.announcement.id }] }]);
+  const selected = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, purposes: ["factual_use"] });
+  expect(selected.items.map((item) => item.id)).toEqual(["successor"]);
+  expect(selected.selection).toMatchObject({ evidenceView: "selected_with_conflicts", purposes: ["factual_use"], excludedObservationCount: 1, selectedObservationIds: ["successor"] });
+  expect(selected.relationIndex).toContainEqual({ announcementId: "successor", kind: "supersedes", targetAnnouncementId: f.announcement.id });
+  const audit = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, evidenceView: "all_observations", limit: 1, purposes: ["factual_use"] });
+  const next = await listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor: audit.page.nextCursor! });
+  expect(next.selection.evidenceView).toBe("all_observations"); expect(next.selection.purposes).toEqual(["factual_use"]);
+  expect(new Set([...audit.items, ...next.items].map((item) => item.id))).toEqual(new Set(["successor", "ann1"]));
+  await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor: audit.page.nextCursor!, purposes: ["current_assessment"] } as never)).rejects.toThrow();
+});
+it("equal-authority conflict: unresolved sibling observations → all conflict participants and selection reason", async () => {
+  const f = await disclosureFixture();
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "conflict_a", collectionRecordId: "observation" }, { ...f.announcement, id: "conflict_b", collectionRecordId: "observation" }]);
+  const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context });
+  expect(new Set(result.selection.conflictObservationIds)).toEqual(new Set(["conflict_a", "conflict_b"]));
+  expect(result.selection.reasonCodes).toContain("open_equal_authority_conflict_retained");
+});
+it("failed refresh: current successful scan → retained until its own freshness boundary", async () => {
+  const f = await disclosureFixture();
+  const failedAt = "2026-09-01T02:04:00.000Z";
+  await f.persistence.appendResearchDisclosureScans([{ ...f.scan, id: "new_failure", checkedAt: failedAt, knowledgeAt: failedAt, status: "failed", provenance: { ...f.scan.provenance, id: "failed_provenance", retrievedAt: failedAt, processedAt: failedAt } }]);
+  const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: { knowledgeAt: failedAt } });
+  expect(result.scan).toMatchObject({ status: "current", checkedAt: f.scan.checkedAt, latestAttempt: { status: "failed" } });
+  expect(result.quality.readiness.currentAssessment).toBe("degraded");
+  expect((await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: { knowledgeAt: "2026-09-01T02:30:00.000Z" } })).scan.status).toBe("indeterminate");
+  expect((await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: { knowledgeAt: "2026-09-01T04:00:00.000Z" } })).scan.status).toBe("stale");
+});
+it("cursor defense: altered signature, subject, tool and 24-hour expiry → rejected", async () => {
+  const f = await disclosureFixture(); await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "ann2" }]);
+  const options = { cursorSecret: "defense-secret", authorizationBinding: "alice" };
+  const first = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, limit: 1 }, options);
+  const cursor = first.page.nextCursor!;
+  const [payload] = cursor.split(".");
+  await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor: `${payload}.invalid` }, options)).rejects.toMatchObject({ code: "research_cursor_invalid" });
+  await expect(listMaterialAnnouncements(f.persistence, { subject: { kind: "listing_id", listingId: "different_listing" }, cursor }, options)).rejects.toMatchObject({ code: "research_cursor_invalid" });
+  await expect(getDisclosureArtifact(f.persistence, { subject: f.subject, cursor }, options)).rejects.toMatchObject({ code: "research_cursor_invalid" });
+  const now = Date.now(); const clock = vi.spyOn(Date, "now").mockReturnValue(now + 86_400_001);
+  try { await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor }, options)).rejects.toMatchObject({ code: "research_cursor_invalid" }); } finally { clock.mockRestore(); }
+});
+it.each(["contentHash", "extractionVersion"] as const)("artifact cursor: changed %s behind retained selector → rejected", async (field) => {
+  const f = await disclosureFixture(); const first = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: f.artifact.id });
+  vi.spyOn(f.persistence, "listResearchDisclosureArtifacts").mockResolvedValue([{ ...f.artifact, [field]: field === "contentHash" ? "b".repeat(64) : "extract/2" }]);
+  await expect(getDisclosureArtifact(f.persistence, { subject: f.subject, cursor: first.page.nextCursor! })).rejects.toMatchObject({ code: "research_cursor_invalid" });
+});
+
+it("cursor contract: correctly signed retired version → rejected independently of signature", async () => {
+  const f = await disclosureFixture(); await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "ann2" }]);
+  const options = { cursorSecret: "version-test-secret" };
+  const first = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, limit: 1 }, options);
+  const payload = JSON.parse(Buffer.from(first.page.nextCursor!.split(".")[0]!, "base64url").toString("utf8"));
+  payload.version = "disclosures/retired";
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const cursor = `${encoded}.${createHmac("sha256", options.cursorSecret).update(encoded).digest("base64url")}`;
+  await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor }, options)).rejects.toMatchObject({ code: "research_cursor_invalid" });
+});
+it("purpose registry: unknown or excessive purpose IDs → strict input rejection", async () => {
+  const f = await disclosureFixture();
+  await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, purposes: ["invented_purpose"] } as never)).rejects.toThrow();
+  await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, purposes: Array(21).fill("factual_use") } as never)).rejects.toThrow();
+});

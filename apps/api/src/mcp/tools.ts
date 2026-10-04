@@ -11,6 +11,10 @@ import {
 import { unrealizedPnlAnalysisMcpInputSchema } from "../services/unrealizedPnlAnalysis.js";
 import { bookedChargeFieldSchema } from "../validation/bookedCharge.js";
 import {
+  researchAnnouncementsQuerySchema,
+  researchAnnouncementsToolOutputSchema,
+  researchDisclosureArtifactQuerySchema,
+  researchDisclosureArtifactToolOutputSchema,
   researchFinancialStatementsQuerySchema,
   researchFinancialStatementsToolOutputSchema,
   researchIdentityToolOutputSchema,
@@ -292,6 +296,20 @@ const toolDefinitions = {
     description: "Return authoritative MOPS XBRL financial-statement filing periods, source facts, typed quality states, and derived outcomes for one immutable listing and fixed temporal context. Reads the canonical store only.",
     inputSchema: researchFinancialStatementsQuerySchema,
     outputSchema: researchFinancialStatementsToolOutputSchema,
+    scope: "research:read" as const,
+    accessKind: "read" as const,
+  },
+  list_material_announcements: {
+    description: "Read retained official Taiwan material announcements for one immutable listing and publication-bounded range. Returns exact issuer text with explicit truncation, correction relations, provenance, and collection quality. Default window 90 days, maximum two years; 25 records per page, maximum 100. Continue using only the same subject and returned cursor. Never acquires evidence or supplies sentiment.",
+    inputSchema: researchAnnouncementsQuerySchema,
+    outputSchema: researchAnnouncementsToolOutputSchema,
+    scope: "research:read" as const,
+    accessKind: "read" as const,
+  },
+  get_disclosure_artifact: {
+    description: "Read a retained disclosure artifact referenced by the selected subject's announcements or investor materials. Requires an opaque artifactId, never a URL. Returns retained page/table blocks and verified claims with hash, extraction version, provenance, and access/processing quality. Default three pages, maximum ten, at most 50,000 Unicode characters. Continue using only the same subject and returned cursor. Never fetches or extracts content during the read.",
+    inputSchema: researchDisclosureArtifactQuerySchema,
+    outputSchema: researchDisclosureArtifactToolOutputSchema,
     scope: "research:read" as const,
     accessKind: "read" as const,
   },
@@ -1319,6 +1337,8 @@ export function listMcpToolDefinitions(options: {
         || tool.name === "get_price_series"
         || tool.name === "get_monthly_revenue"
         || tool.name === "get_financial_statements"
+        || tool.name === "list_material_announcements"
+        || tool.name === "get_disclosure_artifact"
       ) {
         return includeRolloutDisabled || researchScopeAcquisitionAllowed();
       }

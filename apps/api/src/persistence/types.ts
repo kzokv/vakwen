@@ -1,3 +1,5 @@
+import type { ResearchDisclosureMaterialReference } from "../services/research/disclosureContracts.js";
+import type { ResearchAnnouncementRecord, ResearchDisclosureArtifact, ResearchDisclosureScan, ResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
 import type { BackfillStatus, CurrencyCode, InstrumentRef, InstrumentType, Lot, VerificationStatus } from "@vakwen/domain";
 import type {
   AccountMarketDividendSettingsDto,
@@ -2869,6 +2871,14 @@ export interface Persistence {
     fromDate: string,
     knowledgeAt: string,
   ): Promise<string[]>;
+  appendResearchDisclosureMaterialReferences(records: readonly ResearchDisclosureMaterialReference[]): Promise<void>;
+  listResearchDisclosureMaterialReferences(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureMaterialReference[]>;
+  appendResearchAnnouncements(records: readonly ResearchAnnouncementRecord[]): Promise<void>;
+  listResearchAnnouncements(query: ResearchDisclosureStoreQuery): Promise<ResearchAnnouncementRecord[]>;
+  appendResearchDisclosureArtifacts(records: readonly ResearchDisclosureArtifact[]): Promise<void>;
+  listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureArtifact[]>;
+  appendResearchDisclosureScans(records: readonly ResearchDisclosureScan[]): Promise<void>;
+  listResearchDisclosureScans(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureScan[]>;
   appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void>;
   listResearchMonthlyRevenueRecords(query: ResearchMonthlyRevenueRecordQuery): Promise<ResearchMonthlyRevenueRecord[]>;
   listLatestResearchMonthlyRevenueRecords(query: ResearchMonthlyRevenueRecordQuery): Promise<ResearchMonthlyRevenueRecord[]>;

@@ -258,3 +258,25 @@ Use this shape when the user asked for financial-statement fundamentals and the 
 - Distinguish cumulative Source Facts from any discrete-quarter derived output; never claim a synthetic quarter as a source fact.
 - Withhold conclusions for unsupported sectors, missing required statements, unresolved basis or taxonomy or context ambiguity, unknown units, or insufficient windows.
 - Do not forecast, value, recommend, or rank securities from this artifact.
+
+## Focused material-disclosure contract
+
+Use `research-report/4.0.0` with profile `focused_disclosures`. The report fixes the manifest-returned listing and temporal context. Preserve canonical identity and the complete retrieved announcement/artifact results, including quality states, provenance, correction/retraction relationships, retained locations, hashes, extraction versions, and exact truncation. Record the requested `standard` (twelve months) or `focused` (ninety days) window; focused coverage is explicitly non-exhaustive. Pagination or budget exhaustion must remain visible.
+
+The internal specialist consumes schema-bound catalyst/risk candidates, not free narrative. Each candidate has an ID, kind (`catalyst` or `risk`), status (`observed`, `scheduled`, `conditional`, `speculative`), statement, material mechanism, affected metric/assumption, horizon, trigger evidence references, and confirming/disconfirming evidence or observable conditions. Conditional candidates state the unmet condition; speculative candidates remain explicitly provisional and cannot become observed facts. Evidence references identify an announcement or a separately verified retained-artifact claim. Restricted, failed, unverified, superseded, or retracted evidence withholds dependent candidates and preserves the reason.
+
+Keep collection readiness separate from claim support. A successful official check within thirty minutes passes the disclosure gate. Between thirty minutes and two hours it is indeterminate; beyond two hours it is stale. A current scan is mandatory for current catalyst/risk conclusions and a final recommendation. A missing artifact or incomplete historical window affects only claims needing it. The focused report's final recommendation remains `not_requested`, because the other mandatory datasets and valuation gates have not been evaluated.
+
+Markdown faithfully projects canonical identity/as-of context, original disclosure facts, scan status and recommendation prerequisite, candidate classifications and support, failed dependencies, recovery requirements, limits, and provenance. It must not add sentiment, comprehensive-coverage assertions, forecasts, or recommendations.
+
+### Disclosure specialist grounding
+
+Candidates include `statusEvidence: { reference, excerpt, eventDate?, eventDateText? }`. The candidate `statement` equals the excerpt exactly, and that excerpt must occur in the selected publisher explanation or verified artifact claim. For `observed` and `scheduled`, the date text must occur in the excerpt and normalize to `eventDate`; observed evidence establishes an occurrence by the fixed assessment time, scheduled evidence establishes a future schedule. Unknown or inconsistent status is withheld. A referenced record ID alone never validates caller prose.
+
+Each accepted assessment separates `sourceSupport: supported | withheld` from `support: provisional | withheld` and `interpretationType: analytical_judgment`. The causal mechanism, affected metric/assumption, horizon, and confirmation conditions are analytical proposals, not verified publisher facts. Unsupported sentiment or investment instructions are excluded; ordinary business operations such as selling inventory are allowed.
+
+The optional standard-window extension records `{ months: 13..24, reason, thesisItem }`, where the reason identifies an unresolved corporate action, litigation, financing, restructuring, or another unresolved long-lived thesis item. A current scan still satisfies only the announcement prerequisite. `renderFocusedDisclosureResearchReportMarkdown(report, "zh-TW")` translates labels and fixed policy explanations while preserving all original issuer evidence and claim text.
+
+### Selected scan versus acquisition attempt
+
+The report carries both the selected scan and latest attempt from canonical announcement output. A later failed/restricted/processing-failed attempt remains visible in limitations and rendering while a still-current prior success may support the disclosure prerequisite with degraded readiness. Freshness follows the successful scan's original `checkedAt`, never the failed attempt's timestamp. After thirty minutes it becomes indeterminate and current dependent judgments remain withheld. Preserve concrete freshness, completeness, confidence, and purpose readiness instead of reducing them to an overall grade.
