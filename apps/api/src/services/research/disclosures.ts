@@ -79,7 +79,8 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
   }
   const storeQuery = { issuerId: summary.issuer.id, knowledgeAt: query.context.knowledgeAt, effectiveAt: query.context.effectiveAt };
   const applicable = eligible(summary);
-  const [all, scans] = applicable ? await Promise.all([persistence.listResearchAnnouncements(storeQuery), persistence.listResearchDisclosureScans(storeQuery)]) : [[], []];
+  const [issuerAnnouncements, scans] = applicable ? await Promise.all([persistence.listResearchAnnouncements(storeQuery), persistence.listResearchDisclosureScans(storeQuery)]) : [[], []];
+  const all = issuerAnnouncements.filter((record) => record.listingId === summary.listing.id && record.venue === summary.listing.venue);
   const orderedScans = scans.filter((scan) => scan.listingId === summary.listing.id && scan.venue === summary.listing.venue)
     .sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt) || b.id.localeCompare(a.id));
   const latestAttempt = orderedScans[0];
@@ -152,15 +153,16 @@ export async function getDisclosureArtifact(persistence: Persistence, input: Res
   const identity = await getResearchIdentity(persistence, { subject: query.subject, context: query.context, history: { limit: 1 } });
   const summary = identitySummary(identity);
   const storeQuery = { issuerId: summary.issuer.id, knowledgeAt: query.context.knowledgeAt, effectiveAt: query.context.effectiveAt };
-  const [artifacts, announcements] = eligible(summary) ? await Promise.all([persistence.listResearchDisclosureArtifacts(storeQuery), persistence.listResearchAnnouncements(storeQuery)]) : [[], []];
+  const [artifacts, issuerAnnouncements] = eligible(summary) ? await Promise.all([persistence.listResearchDisclosureArtifacts(storeQuery), persistence.listResearchAnnouncements(storeQuery)]) : [[], []];
+  const announcements = issuerAnnouncements.filter((record) => record.listingId === summary.listing.id && record.venue === summary.listing.venue);
   const artifact = artifacts.find((record) => record.id === query.artifactId);
   const materialReferences = artifact?.reference.kind === "investor_material" ? await persistence.listResearchDisclosureMaterialReferences(storeQuery) : [];
   const announcementReferenced = announcements.some((record) => record.attachments.some((attachment) => attachment.artifactId === query.artifactId));
-  const materialReferenced = artifact?.reference.kind !== "investor_material" || materialReferences.some((reference) => reference.id === artifact.reference.id && reference.artifactIds.includes(artifact.id));
+  const materialReferenced = artifact?.reference.kind !== "investor_material" || materialReferences.some((reference) => reference.id === artifact.reference.id && reference.listingId === summary.listing.id && reference.venue === summary.listing.venue && reference.artifactIds.includes(artifact.id));
   if (eligible(summary) && ((!artifact && !announcementReferenced) || !materialReferenced || (artifact !== undefined && /xbrl/i.test(artifact.mediaType)) || (artifact?.reference.kind === "announcement_attachment" && !announcements.some((record) => record.id === artifact.reference.id && record.attachments.some((attachment) => attachment.artifactId === artifact.id))))) {
     throw new DisclosureServiceError("research_artifact_not_referenced", "Artifact must be retained evidence referenced by this subject's announcement or material.");
   }
-  const attempts = !artifact && announcementReferenced ? (await persistence.listResearchDisclosureScans(storeQuery)).flatMap((scan) => scan.artifactAttempts ?? [])
+  const attempts = !artifact && announcementReferenced ? (await persistence.listResearchDisclosureScans(storeQuery)).filter((scan) => scan.listingId === summary.listing.id && scan.venue === summary.listing.venue).flatMap((scan) => scan.artifactAttempts ?? [])
     .filter((attempt) => attempt.artifactId === query.artifactId && Date.parse(attempt.attemptedAt) <= Date.parse(query.context.knowledgeAt)).sort((a, b) => Date.parse(b.attemptedAt) - Date.parse(a.attemptedAt)) : [];
   const unavailableState = attempts[0]?.status === "restricted" ? "restricted" : attempts[0]?.status === "processing_failed" ? "processing_failed" : "not_acquired";
   const binding = artifact ? `${artifact.id}:${artifact.contentHash}:${artifact.extractionVersion}` : "";

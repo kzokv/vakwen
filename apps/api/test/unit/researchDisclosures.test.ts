@@ -61,7 +61,7 @@ describe("disclosure invariant boundaries", () => {
     await f.persistence.appendResearchDisclosureArtifacts([artifact]);
     const input = { subject: f.subject, context: f.context, artifactId: artifact.id };
     await expect(getDisclosureArtifact(f.persistence, input)).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
-    await f.persistence.appendResearchDisclosureMaterialReferences([{ id: "material1", issuerId: artifact.issuerId, publishedAt: artifact.publishedAt, artifactIds: [artifact.id], provenance: artifact.provenance }]);
+    await f.persistence.appendResearchDisclosureMaterialReferences([{ id: "material1", issuerId: artifact.issuerId, listingId: f.identity.listing.id, venue: f.identity.listing.venue, publishedAt: artifact.publishedAt, artifactIds: [artifact.id], provenance: artifact.provenance }]);
     expect((await getDisclosureArtifact(f.persistence, input)).artifact?.id).toBe(artifact.id);
   });
   it("missing attachment: retained reference and restricted acquisition attempt → typed metadata without invented artifact", async () => {
@@ -168,4 +168,33 @@ it("purpose registry: unknown or excessive purpose IDs → strict input rejectio
   const f = await disclosureFixture();
   await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, purposes: ["invented_purpose"] } as never)).rejects.toThrow();
   await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, purposes: Array(21).fill("factual_use") } as never)).rejects.toThrow();
+});
+
+it.each(["TWSE", "TPEX"] as const)("%s listing scope: shared issuer across boards → no implicit announcement or attachment transfer", async (venue) => {
+  const f = await disclosureFixture(venue);
+  const otherVenue = venue === "TWSE" ? "TPEX" : "TWSE";
+  const otherIdentity = canonicalizeOfficialIdentityRow({ venue: otherVenue, snapshotDate: "2026-08-31", retrievedAt: "2026-08-31T02:00:00.000Z", artifact: { contentHash: "other-board-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" }, row: { kind: "company", ticker: "2330", legalName: "公司", displayName: "公司", unifiedBusinessNumber: "22099131", industryCode: "24", listedAt: "1994-09-05" } });
+  expect(otherIdentity.issuer.id).toBe(f.identity.issuer.id); expect(otherIdentity.listing.id).not.toBe(f.identity.listing.id);
+  await f.persistence.appendResearchIdentityRecords([otherIdentity]);
+  const otherAnnouncement = { ...f.announcement, id: "other_board_announcement", listingId: otherIdentity.listing.id, venue: otherVenue,
+    attachments: [{ ...f.announcement.attachments[0]!, artifactId: "other_board_artifact" }],
+    relations: [{ kind: "supersedes" as const, targetAnnouncementId: f.announcement.id }] };
+  await f.persistence.appendResearchAnnouncements([otherAnnouncement]);
+  await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "other_board_artifact", reference: { kind: "announcement_attachment", id: otherAnnouncement.id } }]);
+  const query = { subject: f.subject, context: f.context };
+  const selected = await listMaterialAnnouncements(f.persistence, query);
+  const audit = await listMaterialAnnouncements(f.persistence, { ...query, evidenceView: "all_observations" });
+  expect(selected.items.map((item) => item.id)).toEqual([f.announcement.id]); expect(audit.items.map((item) => item.id)).toEqual([f.announcement.id]);
+  expect(selected.relationIndex).toEqual([]);
+  await expect(getDisclosureArtifact(f.persistence, { ...query, artifactId: "other_board_artifact" })).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
+  expect((await getDisclosureArtifact(f.persistence, { ...query, artifactId: f.artifact.id })).artifact?.id).toBe(f.artifact.id);
+  const otherSubject = { kind: "listing_id" as const, listingId: otherIdentity.listing.id };
+  expect((await listMaterialAnnouncements(f.persistence, { subject: otherSubject, context: f.context })).items.map((item) => item.id)).toEqual([otherAnnouncement.id]);
+  expect((await getDisclosureArtifact(f.persistence, { subject: otherSubject, context: f.context, artifactId: "other_board_artifact" })).artifact?.id).toBe("other_board_artifact");
+});
+it.each(["listing", "venue"] as const)("material reference scope: mismatched %s despite issuer match → rejected", async (mismatch) => {
+  const f = await disclosureFixture();
+  await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "material_cross_listing", reference: { kind: "investor_material", id: "material_cross_reference" } }]);
+  await f.persistence.appendResearchDisclosureMaterialReferences([{ id: "material_cross_reference", issuerId: f.identity.issuer.id, listingId: mismatch === "listing" ? "other_listing" : f.identity.listing.id, venue: mismatch === "venue" ? "TPEX" : f.identity.listing.venue, publishedAt: f.artifact.publishedAt, artifactIds: ["material_cross_listing"], provenance: f.artifact.provenance }]);
+  await expect(getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: "material_cross_listing" })).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
 });

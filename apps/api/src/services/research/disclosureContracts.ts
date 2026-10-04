@@ -62,8 +62,9 @@ export interface ResearchDisclosureStoreQuery { issuerId: string; knowledgeAt: s
 
 // A material reference is admitted by internal ingestion independently of an
 // artifact. This is a narrow authorization seam, not a discovery endpoint.
+// The effective listing and venue are required even when the artifact belongs to its issuer.
 export const researchDisclosureMaterialReferenceSchema = z.object({
-  id, issuerId: id, publishedAt: time, artifactIds: z.array(id).min(1), provenance: disclosureProvenanceSchema,
+  id, issuerId: id, listingId: id, venue: z.enum(["TWSE", "TPEX"]), publishedAt: time, artifactIds: z.array(id).min(1), provenance: disclosureProvenanceSchema,
 }).strict();
 export type ResearchDisclosureMaterialReference = z.infer<typeof researchDisclosureMaterialReferenceSchema>;
 

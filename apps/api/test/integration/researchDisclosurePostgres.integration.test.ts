@@ -70,4 +70,27 @@ describePostgres("disclosure memory/Postgres conformance", () => {
     expect(await postgres.listResearchDisclosureScans(query)).toEqual([f.scan]);
     expect(await postgres.listResearchAnnouncements({ ...query, issuerId: "unrelated_issuer" })).toEqual([]);
   });
+  it("shared issuer across boards: listing-scoped announcements and artifacts → memory/Postgres parity", async () => {
+    const results = [];
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const f = await disclosureFixture(persistence);
+      const otherIdentity = canonicalizeOfficialIdentityRow({ venue: "TPEX", snapshotDate: "2026-08-31", retrievedAt: "2026-08-31T02:00:00.000Z", artifact: { contentHash: "other-board-identity", sourceUrl: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O" }, row: { kind: "company", ticker: "2330", legalName: "公司", displayName: "公司", unifiedBusinessNumber: "22099131", industryCode: "24", listedAt: "1994-09-05" } });
+      expect(otherIdentity.issuer.id).toBe(f.identity.issuer.id);
+      await persistence.appendResearchIdentityRecords([otherIdentity]);
+      const otherAnnouncement = { ...f.announcement, id: "other_listing_announcement", listingId: otherIdentity.listing.id, venue: "TPEX" as const, attachments: [{ ...f.announcement.attachments[0]!, artifactId: "other_listing_artifact" }], relations: [{ kind: "supersedes" as const, targetAnnouncementId: f.announcement.id }] };
+      await persistence.appendResearchAnnouncements([otherAnnouncement]);
+      await persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "other_listing_artifact", reference: { kind: "announcement_attachment", id: otherAnnouncement.id } }]);
+      const result = await listMaterialAnnouncements(persistence, { subject: f.subject, context: f.context });
+      expect(result.items.map((item) => item.id)).toEqual([f.announcement.id]); expect(result.relationIndex).toEqual([]);
+      await expect(getDisclosureArtifact(persistence, { subject: f.subject, context: f.context, artifactId: "other_listing_artifact" })).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
+      const otherSubject = { kind: "listing_id" as const, listingId: otherIdentity.listing.id };
+      const otherResult = await listMaterialAnnouncements(persistence, { subject: otherSubject, context: f.context });
+      expect(otherResult.items.map((item) => item.id)).toEqual([otherAnnouncement.id]);
+      const otherArtifact = await getDisclosureArtifact(persistence, { subject: otherSubject, context: f.context, artifactId: "other_listing_artifact", limit: 10 });
+      expect(otherArtifact.artifact?.id).toBe("other_listing_artifact");
+      results.push({ result, otherResult, otherArtifact });
+    }
+    expect(results[1]).toEqual(results[0]);
+  });
+
 });
