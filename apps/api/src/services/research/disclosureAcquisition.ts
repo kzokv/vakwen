@@ -87,7 +87,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         const retainedRecord = existing.find((prior) => prior.id === record.id);
         // Content-changing observations retain both records and their explicit
         // revision relation; the previous evidence is never updated in place.
-        const previous = existing.filter((prior) => prior.id !== record.id && prior.publishedAt === record.publishedAt && prior.subject === record.subject);
+        const previous = existing.filter((prior) => prior.id !== record.id && prior.publishedAt === record.publishedAt && (prior.collectionRecordId === collectionRecordId || prior.subject === record.subject));
         if (!retainedRecord) for (const prior of previous) record.relations.push({ kind: "supersedes", targetAnnouncementId: prior.id });
         if (!retainedRecord) await persistence.appendResearchAnnouncements([record]);
         const stableRecord = retainedRecord ?? record;

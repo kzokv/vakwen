@@ -255,3 +255,49 @@ it("response budget: metadata and echoed cursors → capped payload with final r
   }
   expect(seen).toBe(8);
 });
+
+it("exhaustive pagination: terminal continuation → page remains partial and exhaustive judgment blocked", async () => {
+  const f = await disclosureFixture();
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "second" }]);
+  await f.persistence.appendResearchDisclosureScans([{ ...f.scan, id: "exhaustive_scan", exhaustive: true, publicationStart: "2026-01-01T00:00:00.000Z", checkedAt: f.context.knowledgeAt }]);
+  const initial = { subject: f.subject, context: f.context, limit: 1, purposes: ["exhaustive_conclusion" as const] };
+  const first = await listMaterialAnnouncements(f.persistence, initial);
+  const last = await listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor: first.page.nextCursor! });
+  expect(last.window.exhaustive).toBe(true);
+  expect(last.page.nextCursor).toBeNull();
+  expect(last.quality.completeness).toBe("partial");
+  expect(last.quality.readiness.exhaustiveConclusion).toBe("blocked");
+  expect(last.selection.readinessByPurpose[0]?.status).toBe("blocked");
+  const whole = await listMaterialAnnouncements(f.persistence, { ...initial, limit: 100 });
+  expect(whole.quality.completeness).toBe("complete");
+  expect(whole.quality.readiness.exhaustiveConclusion).toBe("ready");
+});
+it.each(["publication", "event"] as const)("selection metadata: excluded %s range → unrelated supersession and conflicts omitted", async (filter) => {
+  const f = await disclosureFixture();
+  const outside = { ...f.announcement, publishedAt: filter === "publication" ? "2026-08-01T01:00:00.000Z" : f.announcement.publishedAt, eventDate: "2026-08-01" };
+  await f.persistence.appendResearchAnnouncements([
+    { ...outside, id: "outside_old" },
+    { ...outside, id: "outside_new", relations: [{ kind: "supersedes", targetAnnouncementId: "outside_old" }] },
+    { ...outside, id: "outside_conflict_a", collectionRecordId: "outside_collection" },
+    { ...outside, id: "outside_conflict_b", collectionRecordId: "outside_collection" },
+  ]);
+  const range = { publishedFrom: filter === "publication" ? "2026-09-01T00:00:00.000Z" : "2026-08-01T00:00:00.000Z", publishedTo: f.context.knowledgeAt, ...(filter === "event" ? { eventFrom: "2026-09-01" } : {}) };
+  const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, range });
+  expect(result.items.map((item) => item.id)).toEqual([f.announcement.id]);
+  expect(result.selection.excludedObservationCount).toBe(0);
+  expect(result.selection.conflictObservationIds).toEqual([]);
+  expect(result.selection.reasonCodes).not.toContain("open_equal_authority_conflict_retained");
+});
+
+it("range-local metadata: out-of-window revision → in-window predecessor stays superseded", async () => {
+  const f = await disclosureFixture();
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "outside_revision", eventDate: "2026-08-31", relations: [{ kind: "supersedes", targetAnnouncementId: f.announcement.id }] }]);
+  const initial = { subject: f.subject, context: f.context, range: { publishedFrom: "2026-08-01T00:00:00.000Z", publishedTo: f.context.knowledgeAt, eventFrom: "2026-09-01" } };
+  const selected = await listMaterialAnnouncements(f.persistence, initial);
+  expect(selected.items).toEqual([]);
+  expect(selected.selection.excludedObservationCount).toBe(1);
+  const audit = await listMaterialAnnouncements(f.persistence, { ...initial, evidenceView: "all_observations" });
+  expect(audit.items.map((record) => record.id)).toEqual([f.announcement.id]);
+  expect(audit.selection.excludedObservationCount).toBe(0);
+  expect(audit.relationIndex).toContainEqual({ announcementId: "outside_revision", kind: "supersedes", targetAnnouncementId: f.announcement.id });
+});

@@ -97,10 +97,14 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
   const groups = new Map<string, string[]>();
   for (const record of selectedRecords) { const key = record.collectionRecordId ?? record.id; groups.set(key, [...(groups.get(key) ?? []), record.id]); }
   const conflictIds = new Set([...groups.values()].filter((ids) => ids.length > 1).flat());
-  const viewRecords = query.evidenceView === "all_observations" ? all : selectedRecords;
-  const rows = viewRecords.filter((record) => Date.parse(record.publishedAt) >= Date.parse(start) && Date.parse(record.publishedAt) <= Date.parse(end)
+  // Resolve lineage across retained listing evidence before restricting metadata
+  // to the requested window: an out-of-window revision still invalidates its target.
+  const inRange = (record: (typeof all)[number]) => Date.parse(record.publishedAt) >= Date.parse(start) && Date.parse(record.publishedAt) <= Date.parse(end)
     && (!query.range?.eventFrom || (record.eventDate !== null && record.eventDate >= query.range.eventFrom))
-    && (!query.range?.eventTo || (record.eventDate !== null && record.eventDate <= query.range.eventTo)))
+    && (!query.range?.eventTo || (record.eventDate !== null && record.eventDate <= query.range.eventTo));
+  const scopedAll = all.filter(inRange);
+  const scopedSelected = selectedRecords.filter(inRange);
+  const rows = (query.evidenceView === "all_observations" ? scopedAll : scopedSelected)
     .sort((a, b) => (Date.parse(a.publishedAt) - Date.parse(b.publishedAt) || a.id.localeCompare(b.id)) * (query.order === "asc" ? 1 : -1));
   const queryHash = continuityHash({ purpose: "announcements", version: VERSION, query: { ...query, subject: identity.selector, context: identity.context }, range: { start, end }, rows });
   const offset = cursor ? rows.findIndex((row) => row.id === cursor.after) + 1 : 0;
@@ -123,16 +127,16 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
   const status = applicable ? scanState(selectedScan, query.context.effectiveAt) : "not_applicable";
   const quality: MaterialAnnouncementsOutput["quality"] = {
     freshness: status === "current" ? "current" : status === "stale" ? "stale" : !applicable ? "not_applicable" : "indeterminate",
-    completeness: !applicable ? "not_applicable" : exhaustive ? more ? "partial" : "complete" : "indeterminate",
+    completeness: !applicable ? "not_applicable" : exhaustive ? more || offset > 0 ? "partial" : "complete" : "indeterminate",
     confidence: selectedScan?.status === "success" ? "supported" : "indeterminate",
-    readiness: { factualUse: !applicable ? "not_applicable" : items.some((item) => item.quality === "available") ? "degraded" : "blocked", currentAssessment: !applicable ? "not_applicable" : status === "current" ? latestAttempt?.status === "success" ? "ready" : "degraded" : "blocked", exhaustiveConclusion: !applicable ? "not_applicable" : exhaustive && !more ? "ready" : "blocked" },
+    readiness: { factualUse: !applicable ? "not_applicable" : items.some((item) => item.quality === "available") ? "degraded" : "blocked", currentAssessment: !applicable ? "not_applicable" : status === "current" ? latestAttempt?.status === "success" ? "ready" : "degraded" : "blocked", exhaustiveConclusion: !applicable ? "not_applicable" : exhaustive && !more && offset === 0 ? "ready" : "blocked" },
     versions: { contract: VERSION, freshnessPolicy: "official-scan/1.0.0", exposurePolicy: "retained-disclosures/1.0.0" },
     status: !applicable ? "not_applicable" : status === "not_acquired" ? "not_acquired" : status === "restricted" || status === "processing_failed" ? status : status === "current" ? "available" : "indeterminate",
     reasonCodes: [...(latestAttempt && latestAttempt.status !== "success" ? ["latest_refresh_failed"] : []), ...(!exhaustive ? ["non_exhaustive_window"] : []), ...(status !== "current" ? [`official_scan_${status}`] : [])],
     recovery: applicable && (status !== "current" || latestAttempt?.status !== "success") ? ["Wait for a successful scheduled official announcement scan."] : [],
   };
   const output = materialAnnouncementsOutputSchema.parse({ contractVersion: "material-announcements/1.0.0", selector: identity.selector, context: identity.context, identity: summary,
-    selection: evidenceSelection(query, quality.readiness, items.filter((item) => !superseded.has(item.id)).map((item) => item.id), items.filter((item) => conflictIds.has(item.id)).map((item) => item.id), query.evidenceView === "all_observations" ? 0 : all.length - selectedRecords.length, [query.evidenceView === "all_observations" ? "audit_all_retained_observations" : "authoritative_supersession_selected", ...(conflictIds.size > 0 ? ["open_equal_authority_conflict_retained"] : [])]),
+    selection: evidenceSelection(query, quality.readiness, items.filter((item) => !superseded.has(item.id)).map((item) => item.id), items.filter((item) => conflictIds.has(item.id)).map((item) => item.id), query.evidenceView === "all_observations" ? 0 : scopedAll.length - scopedSelected.length, [query.evidenceView === "all_observations" ? "audit_all_retained_observations" : "authoritative_supersession_selected", ...(rows.some((row) => conflictIds.has(row.id)) ? ["open_equal_authority_conflict_retained"] : [])]),
     window: { publishedFrom: start, publishedTo: end, ...(query.range?.eventFrom ? { eventFrom: query.range.eventFrom } : {}), ...(query.range?.eventTo ? { eventTo: query.range.eventTo } : {}), exhaustive }, quality,
     scan: { status, checkedAt: selectedScan?.checkedAt ?? null, record: selectedScan ?? null, latestAttempt: latestAttempt ?? null, eventFactFreshness: "not_applicable" }, items,
     relationIndex: all.flatMap((row) => row.relations.filter((relation) => items.some((item) => item.id === row.id || item.id === relation.targetAnnouncementId)).map((relation) => ({ announcementId: row.id, ...relation }))),

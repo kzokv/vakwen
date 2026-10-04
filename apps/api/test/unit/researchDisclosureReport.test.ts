@@ -266,6 +266,13 @@ describe("focused disclosure report", () => {
       artifactPages: [f.artifactPages[0]!], candidates: [artifactCandidate] });
     expect(report.reportStatus).toBe("partial");
     expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).not.toThrow();
+    expect(f.announcementPages).toHaveLength(3);
+    expect(f.announcementPages.at(-1)!.page.nextCursor).toBeNull();
+    for (const page of f.announcementPages) {
+      expect(page.quality.completeness).toBe("partial");
+      expect(page.quality.readiness.exhaustiveConclusion).toBe("blocked");
+      expect(page.window.exhaustive).toBe(true);
+    }
     const complete = composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: f.announcementPages,
       artifactPages: f.artifactPages, candidates: [artifactCandidate], mode: "standard" });
     expect(complete.reportStatus).toBe("complete");

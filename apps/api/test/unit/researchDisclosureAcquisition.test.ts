@@ -163,3 +163,35 @@ it.each(["TWSE", "TPEX"] as const)("%s issuer-wide history: identical title/time
   expect(acquired.relations).toEqual([{ kind: "supersedes", targetAnnouncementId: local.id }]);
   expect(retained.find((record) => record.id === foreign.id)).toEqual(foreign);
 });
+
+it("detail retry: accepted whitespace-normalized title → same collection supersedes failed observation", async () => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  const persistence = new MemoryPersistence(); const { rows, identity } = fixture("TWSE");
+  await persistence.appendResearchIdentityRecords([identity]);
+  const history = JSON.parse(readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8"));
+  const detail = JSON.parse(readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8"));
+  detail.result.data[0][6] = String(detail.result.data[0][6]).replace(/\s+/g, " ");
+  let restricted = true;
+  const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+    const source = String(url);
+    if (restricted && source.endsWith("t05st01")) return new Response("denied", { status: 403 });
+    return new Response(JSON.stringify(source.endsWith("t05st01_detail") ? detail : source.endsWith("t05st01") ? history : rows));
+  }) as unknown as typeof fetch;
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "detail_retry_1" });
+  restricted = false;
+  const later = "2026-10-04T05:15:00.000Z";
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: later, acquisitionRunId: "detail_retry_2" });
+  const records = await persistence.listResearchAnnouncements({ issuerId: identity.issuer.id, knowledgeAt: later, effectiveAt: later });
+  expect(records).toHaveLength(2);
+  const success = records.find((record) => record.detailQuality?.status === "available")!;
+  const failed = records.find((record) => record.detailQuality?.status === "restricted")!;
+  expect(success.subject).not.toBe(failed.subject);
+  expect(success.collectionRecordId).toBe(failed.collectionRecordId);
+  expect(success.relations).toContainEqual({ kind: "supersedes", targetAnnouncementId: failed.id });
+  const selected = await listMaterialAnnouncements(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: later } });
+  expect(selected.items.map((record) => record.id)).toEqual([success.id]);
+  expect(selected.selection.conflictObservationIds).toEqual([]);
+  const retryAt = "2026-10-04T05:20:00.000Z";
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: retryAt, acquisitionRunId: "detail_retry_3" });
+  expect(await persistence.listResearchAnnouncements({ issuerId: identity.issuer.id, knowledgeAt: retryAt, effectiveAt: retryAt })).toEqual(records);
+});
