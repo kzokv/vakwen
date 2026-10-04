@@ -118,6 +118,28 @@ describe("focused disclosure report", () => {
     expect(report.window.exhaustive).toBe(true);
     expect(report.finalRecommendation.state).toBe("not_requested");
   });
+  it.each([
+    ["2026-10-31T12:34:56.789Z", 13, "2025-09-30T12:34:56.789Z"],
+    ["2028-03-31T12:34:56.789Z", 13, "2027-02-28T12:34:56.789Z"],
+    ["2029-03-31T12:34:56.789Z", 13, "2028-02-29T12:34:56.789Z"],
+    ["2028-02-29T12:34:56.789Z", 12, "2027-02-28T12:34:56.789Z"],
+  ] as const)("calendar window %s minus %s months: clamp end of month → preserve precise time and require full coverage", async (effectiveAt, months, expectedStart) => {
+    const f = await fixture();
+    const query = { ...f.query, context: { ...context, effectiveAt, knowledgeAt: effectiveAt } };
+    const extension = months > 12 ? { months, reason: "litigation" as const, thesisItem: "Unresolved litigation" } : undefined;
+    await f.persistence.appendResearchDisclosureScans([{ ...f.scan, checkedAt: effectiveAt, knowledgeAt: effectiveAt,
+      publicationStart: expectedStart, publicationEnd: effectiveAt }]);
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, query, { mode: "standard", extension, readBudget: 10 });
+    expect(report.window.publishedFrom).toBe(expectedStart);
+    expect(report.window.publishedTo).toBe(effectiveAt);
+    expect(report.window.exhaustive).toBe(true);
+
+    const identity = await getResearchIdentity(f.persistence, { ...query, history: { limit: 1 } });
+    const incompletePages = report.announcementPages.map((page) => ({ ...page, window: { ...page.window,
+      publishedFrom: new Date(Date.parse(expectedStart) + 1).toISOString() } }));
+    const incomplete = composeFocusedDisclosureResearchReport({ identity, announcementPages: incompletePages, mode: "standard", extension });
+    expect(incomplete.window.exhaustive).toBe(false);
+  });
   it.each(["corrects", "retracts"] as const)("%s relation: original evidence invalidated → only dependent judgment withheld", async (kind) => {
     const f = await seeded();
     await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "revision", publishedAt: "2026-10-04T03:00:00.000Z", subject: "更正公告", relations: [{ kind, targetAnnouncementId: f.announcement.id }] }]);
@@ -214,6 +236,8 @@ describe("focused disclosure report", () => {
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "standard", extension: { months: 24, reason: "litigation", thesisItem: "Unresolved litigation" }, readBudget: 10 });
     expect(report.window.publishedFrom).toBe("2024-10-04T04:00:00.000Z");
     expect(report.window.extension?.reason).toBe("litigation");
+    const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+    expect(() => composeFocusedDisclosureResearchReport({ identity, announcementPages: report.announcementPages, mode: "focused", extension: report.window.extension })).toThrow(/standard/);
     await expect(buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "standard", extension: { months: 25, reason: "litigation", thesisItem: "Unresolved litigation" }, readBudget: 10 })).rejects.toThrow();
     await expect(buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "focused", extension: { months: 24, reason: "litigation", thesisItem: "Unresolved litigation" }, readBudget: 10 })).rejects.toThrow(/standard/);
   });

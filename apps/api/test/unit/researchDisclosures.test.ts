@@ -176,7 +176,7 @@ it.each(["TWSE", "TPEX"] as const)("%s listing scope: shared issuer across board
   const otherIdentity = canonicalizeOfficialIdentityRow({ venue: otherVenue, snapshotDate: "2026-08-31", retrievedAt: "2026-08-31T02:00:00.000Z", artifact: { contentHash: "other-board-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" }, row: { kind: "company", ticker: "2330", legalName: "公司", displayName: "公司", unifiedBusinessNumber: "22099131", industryCode: "24", listedAt: "1994-09-05" } });
   expect(otherIdentity.issuer.id).toBe(f.identity.issuer.id); expect(otherIdentity.listing.id).not.toBe(f.identity.listing.id);
   await f.persistence.appendResearchIdentityRecords([otherIdentity]);
-  const otherAnnouncement = { ...f.announcement, id: "other_board_announcement", listingId: otherIdentity.listing.id, venue: otherVenue,
+  const otherAnnouncement: ResearchAnnouncementRecord = { ...f.announcement, id: "other_board_announcement", listingId: otherIdentity.listing.id, venue: otherVenue,
     attachments: [{ ...f.announcement.attachments[0]!, artifactId: "other_board_artifact" }],
     relations: [{ kind: "supersedes" as const, targetAnnouncementId: f.announcement.id }] };
   await f.persistence.appendResearchAnnouncements([otherAnnouncement]);
@@ -197,4 +197,12 @@ it.each(["listing", "venue"] as const)("material reference scope: mismatched %s 
   await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "material_cross_listing", reference: { kind: "investor_material", id: "material_cross_reference" } }]);
   await f.persistence.appendResearchDisclosureMaterialReferences([{ id: "material_cross_reference", issuerId: f.identity.issuer.id, listingId: mismatch === "listing" ? "other_listing" : f.identity.listing.id, venue: mismatch === "venue" ? "TPEX" : f.identity.listing.venue, publishedAt: f.artifact.publishedAt, artifactIds: ["material_cross_listing"], provenance: f.artifact.provenance }]);
   await expect(getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: "material_cross_listing" })).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
+});
+
+it("leap-day publication bound: two calendar years → clamp to February28 without accepting earlier day", async () => {
+  const f = await disclosureFixture();
+  const context = { knowledgeAt: "2028-02-29T02:00:00.000Z" };
+  const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context, range: { publishedFrom: "2026-02-28T02:00:00.000Z", publishedTo: context.knowledgeAt } });
+  expect(result.window.publishedFrom).toBe("2026-02-28T02:00:00.000Z");
+  await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, context, range: { publishedFrom: "2026-02-27T02:00:00.000Z", publishedTo: context.knowledgeAt } })).rejects.toMatchObject({ code: "research_range_invalid" });
 });

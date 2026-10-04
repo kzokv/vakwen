@@ -88,6 +88,18 @@ export const focusedDisclosureReportSchema = z.object({
 }).strict();
 export type FocusedDisclosureResearchReport = z.infer<typeof focusedDisclosureReportSchema>;
 
+/** Preserve UTC time and clamp month-end dates instead of rolling into the next month. */
+function subtractUtcCalendarMonths(date: Date, months: number): Date {
+  const result = new Date(date);
+  const day = result.getUTCDate();
+  result.setUTCDate(1);
+  result.setUTCMonth(result.getUTCMonth() - months);
+  const lastDay = new Date(result);
+  lastDay.setUTCMonth(lastDay.getUTCMonth() + 1, 0);
+  result.setUTCDate(Math.min(day, lastDay.getUTCDate()));
+  return result;
+}
+
 function sameContext(left: MaterialAnnouncementsOutput["context"], right: MaterialAnnouncementsOutput["context"]): boolean {
   return left.knowledgeAt === right.knowledgeAt && left.effectiveAt === right.effectiveAt
     && left.assessmentMode === right.assessmentMode && left.policySetVersion === right.policySetVersion;
@@ -109,6 +121,10 @@ export function composeFocusedDisclosureResearchReport(input: {
   const first = pages[0];
   if (!first) throw new Error("A disclosure report requires an official collection result");
   const mode = input.mode ?? "focused";
+  if (input.extension) {
+    focusedDisclosureReportSchema.shape.window.shape.extension.parse(input.extension);
+    if (mode !== "standard") throw new Error("Long-lived thesis extensions require standard disclosure research");
+  }
   for (const result of [...pages, ...artifacts]) {
     if (result.selector.listingId !== identity.selector.listingId
       || result.identity.issuer.id !== identity.identity.issuer.id
@@ -122,8 +138,7 @@ export function composeFocusedDisclosureResearchReport(input: {
     throw new Error("Disclosure report collection window mismatch");
   }
   const collectionIncomplete = pages.at(-1)!.page.nextCursor !== null;
-  const requiredStart = new Date(identity.context.effectiveAt);
-  requiredStart.setUTCMonth(requiredStart.getUTCMonth() - (input.extension?.months ?? 12));
+  const requiredStart = subtractUtcCalendarMonths(new Date(identity.context.effectiveAt), input.extension?.months ?? 12);
   const exhaustive = mode === "standard" && !collectionIncomplete && pages.every((page) => page.window.exhaustive)
     && Date.parse(first.window.publishedFrom) <= requiredStart.getTime()
     && first.window.publishedTo === identity.context.effectiveAt;
@@ -282,12 +297,12 @@ export async function buildFocusedDisclosureResearchReport(
   const identity = await (deps.getResearchIdentityImpl ?? getResearchIdentity)(persistence, { ...frozen, history: { limit: 1 } });
   const mode = options.mode ?? "focused";
   const end = new Date(manifest.context.effectiveAt);
-  const start = new Date(end);
+  let start = new Date(end);
   if (options.extension) {
     focusedDisclosureReportSchema.shape.window.shape.extension.parse(options.extension);
     if (mode !== "standard") throw new Error("Long-lived thesis extensions require standard disclosure research");
-    start.setUTCMonth(start.getUTCMonth() - options.extension.months);
-  } else if (mode === "standard") start.setUTCFullYear(start.getUTCFullYear() - 1);
+    start = subtractUtcCalendarMonths(end, options.extension.months);
+  } else if (mode === "standard") start = subtractUtcCalendarMonths(end, 12);
   else start.setUTCDate(start.getUTCDate() - 90);
   const readAnnouncements = deps.listMaterialAnnouncementsImpl ?? listMaterialAnnouncements;
   const readArtifact = deps.getDisclosureArtifactImpl ?? getDisclosureArtifact;

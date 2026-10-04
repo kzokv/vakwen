@@ -46,7 +46,8 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
     if (!researchDisclosureAcquisitionEnabled(venue)) continue;
     const sourceUrl = OFFICIAL_ANNOUNCEMENT_SOURCES[venue];
     const identities = await persistence.listLatestResearchIdentityRecords({ subject: { kind: "venue", venue }, effectiveAt: at, knowledgeAt: at });
-    if (identities.length === 0) { outcomes.push({ venue, status: "failed", announcementCount: 0 }); continue; }
+    const eligibleIdentities = identities.filter((identity) => identity.security.type === "common_equity" && identity.eligibility.profile === "operating_company" && identity.eligibility.state === "eligible");
+    if (eligibleIdentities.length === 0) { outcomes.push({ venue, status: "failed", announcementCount: 0 }); continue; }
     let status: ResearchDisclosureScan["status"] = "success";
     let contentHash: string | null = null;
     let count = 0;
@@ -119,7 +120,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
       status = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : error instanceof SyntaxError ? "processing_failed" : "failed";
     }
     const checkedAt = options.retrievedAt ?? new Date().toISOString();
-    const scans: ResearchDisclosureScan[] = identities.filter((identity) => identity.security.type === "common_equity" && identity.eligibility.profile === "operating_company").map((identity) => ({
+    const scans: ResearchDisclosureScan[] = eligibleIdentities.map((identity) => ({
       id: disclosureId("scan", acquisitionRunId, checkedAt, venue, identity.listing.id), listingId: identity.listing.id, issuerId: identity.issuer.id, venue, checkedAt, publicationStart, publicationEnd: checkedAt, knowledgeAt: checkedAt, status,
       // Daily snapshots are not historical collection coverage or a guarantee
       // that attachment discovery is exhaustive.

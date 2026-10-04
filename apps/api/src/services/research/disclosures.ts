@@ -72,7 +72,10 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
   const summary = identitySummary(identity);
   const end = query.range?.publishedTo ?? query.context.effectiveAt;
   const start = query.range?.publishedFrom ?? new Date(Date.parse(end) - 90 * DAY).toISOString();
-  const maxStart = new Date(end); maxStart.setUTCFullYear(maxStart.getUTCFullYear() - 2);
+  const maxStart = new Date(end);
+  const endMonth = maxStart.getUTCMonth();
+  maxStart.setUTCFullYear(maxStart.getUTCFullYear() - 2);
+  if (maxStart.getUTCMonth() !== endMonth) maxStart.setUTCDate(0);
   if (Date.parse(start) > Date.parse(end) || Date.parse(start) < maxStart.getTime() || Date.parse(end) > Date.parse(query.context.effectiveAt)
     || (query.range?.eventFrom && query.range.eventTo && query.range.eventFrom > query.range.eventTo)) {
     throw new DisclosureServiceError("research_range_invalid", "Publication range must be ordered, no wider than two years, and bounded by effectiveAt.");

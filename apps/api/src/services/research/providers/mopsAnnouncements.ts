@@ -31,13 +31,16 @@ function publication(dateValue: string, timeValue: string) {
 export function parseOfficialAnnouncementSnapshot(payload: unknown, metadata: AnnouncementSnapshotMetadata, venue: "TWSE" | "TPEX", identities: readonly ResearchIdentityRecord[]): ResearchAnnouncementRecord[] {
   const rows = z.array(z.record(z.string(), z.unknown())).parse(payload).map((raw) => rowSchema.parse({ ...raw, 公司代號: raw.公司代號 ?? raw.SecuritiesCompanyCode, 主旨: raw.主旨 ?? raw["主旨 "] }));
   return rows.flatMap((row) => {
+    const issuerListings = identities.filter((identity) => identity.listing.venue === venue && identity.listing.ticker === row.公司代號.trim());
+    // Keep known ineligible listings distinguishable from an unknown subject.
+    // Their rows must not poison the collection check for eligible issuers.
+    if (issuerListings.length === 1 && issuerListings.every((identity) => identity.security.type !== "common_equity" || identity.eligibility.profile !== "operating_company" || identity.eligibility.state !== "eligible")) return [];
     const stamp = publication(row.發言日期, row.發言時間);
     const day = parseTaiwanOfficialDate(row.發言日期)!;
-    const candidates = identities.filter((identity) => identity.listing.venue === venue && identity.listing.ticker === row.公司代號.trim()
-      && identity.listing.listedAt <= day && (!identity.listing.inactiveAt || identity.listing.inactiveAt >= day));
+    const candidates = issuerListings.filter((identity) => identity.listing.listedAt <= day && (!identity.listing.inactiveAt || identity.listing.inactiveAt > day));
     if (candidates.length !== 1) throw new Error("announcement_identity_unresolved");
     const identity = candidates[0]!;
-    if (identity.security.type !== "common_equity" || identity.eligibility.profile !== "operating_company") return [];
+    if (identity.security.type !== "common_equity" || identity.eligibility.profile !== "operating_company" || identity.eligibility.state !== "eligible") return [];
     const id = disclosureId("ann", identity.issuer.id, venue, stamp.publishedAt, row.主旨, row.說明);
     const officialUrl = typeof row.網址 === "string" && safeDisclosureUrl(row.網址) ? row.網址 : metadata.sourceUrl;
     const attachments: ResearchAnnouncementRecord["attachments"] = [];

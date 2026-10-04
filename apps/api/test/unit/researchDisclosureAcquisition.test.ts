@@ -1,7 +1,10 @@
+import { getResearchManifest } from "../../src/services/research/service.js";
+import { listMaterialAnnouncements } from "../../src/services/research/disclosures.js";
+import { researchQuerySchema } from "../../src/services/research/contracts.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
-import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import { appendOfficialListingStatusRevision, canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
 import { parseOfficialAnnouncementSnapshot, retainAnnouncementExplanation, disclosureHash, OFFICIAL_ANNOUNCEMENT_SOURCES } from "../../src/services/research/providers/mopsAnnouncements.js";
 import { runOfficialDisclosureAcquisition } from "../../src/services/research/disclosureAcquisition.js";
 import { setResearchRolloutOverrideForTest } from "../../src/services/research/rollout.js";
@@ -92,4 +95,47 @@ it("attachment retry: official detail reference with restricted first fetch → 
   const finalScans = await persistence.listResearchDisclosureScans(query);
   expect(finalScans).toHaveLength(3); expect(new Set(finalScans.map((scan) => scan.provenance.id)).size).toBe(3);
   expect(finalScans.at(-1)?.detailAttempts?.[0]).toMatchObject({ status: "restricted", reasonCodes: ["detail_access_restricted"] });
+});
+
+it.each(["TWSE", "TPEX"] as const)("%s inactive listing: scheduled scan and manifest → no fresh coverage or available dataset", async (venue) => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+  const persistence = new MemoryPersistence(); const { identity } = fixture(venue);
+  await persistence.appendResearchIdentityRecords([identity]);
+  const fetchImpl = vi.fn(async () => new Response("[]", { headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "before-inactive" });
+  const inactive = appendOfficialListingStatusRevision(identity, { status: "inactive", effectiveDate: "2026-10-04", retrievedAt: "2026-10-04T05:05:00.000Z", artifact: { contentHash: "inactive-event", sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], publisherDataset: "official_listing_status" } });
+  await persistence.appendResearchIdentityRecords([inactive]);
+  expect(parseOfficialAnnouncementSnapshot(fixture(venue).rows, { retrievedAt: at, contentHash: "a".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "inactive-provider" }, venue, [inactive])).toEqual([]);
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: "2026-10-04T05:15:00.000Z", acquisitionRunId: "after-inactive" });
+  const subject = { kind: "listing_id" as const, listingId: identity.listing.id };
+  const context = { knowledgeAt: "2026-10-04T05:16:00.000Z" };
+  const scans = await persistence.listResearchDisclosureScans({ issuerId: identity.issuer.id, effectiveAt: context.knowledgeAt, knowledgeAt: context.knowledgeAt });
+  expect(scans).toHaveLength(1); expect(scans[0]?.checkedAt).toBe(at);
+  const manifest = await getResearchManifest(persistence, researchQuerySchema.parse({ subject, context }));
+  expect(manifest.datasets.find((dataset) => dataset.id === "material_announcements")).toMatchObject({ status: "unavailable", reasonCode: "not_applicable_subject" });
+  expect((await listMaterialAnnouncements(persistence, { subject, context })).scan.status).toBe("not_applicable");
+});
+
+it.each([["TWSE", "2026-10-02"], ["TWSE", "2026-10-03"], ["TPEX", "2026-10-02"], ["TPEX", "2026-10-03"]] as const)("%s mixed feed: known inactive row ending %s → skipped without poisoning eligible issuer scan", async (venue, inactiveOn) => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+  const persistence = new MemoryPersistence(); const { identity, rows } = fixture(venue);
+  const otherIdentity = canonicalizeOfficialIdentityRow({ venue, snapshotDate: "2026-10-02", retrievedAt: "2026-10-02T00:00:00.000Z", artifact: { sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], contentHash: "inactive-identity" }, row: { kind: "company", ticker: "9999", legalName: "已下市公司", displayName: "已下市公司", unifiedBusinessNumber: "99999999", industryCode: "24", listedAt: "2000-01-01" } });
+  const inactive = appendOfficialListingStatusRevision(otherIdentity, { status: "inactive", effectiveDate: inactiveOn, retrievedAt: "2026-10-02T01:00:00.000Z", artifact: { contentHash: "inactive-status", sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], publisherDataset: "official_listing_status" } });
+  await persistence.appendResearchIdentityRecords([identity, otherIdentity, inactive]);
+  const mixedRows = [rows[0], { ...rows[0], 公司代號: "9999", SecuritiesCompanyCode: "9999" }];
+  const fetchImpl = vi.fn(async () => new Response(JSON.stringify(mixedRows), { headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+  const result = await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "mixed-feed" });
+  expect(result.outcomes).toEqual([{ venue, status: "success", announcementCount: 1 }]);
+  const query = { issuerId: identity.issuer.id, effectiveAt: at, knowledgeAt: at };
+  expect(await persistence.listResearchDisclosureScans(query)).toHaveLength(1);
+  expect(await persistence.listResearchAnnouncements(query)).toHaveLength(1);
+  expect(await persistence.listResearchDisclosureScans({ ...query, issuerId: inactive.issuer.id })).toEqual([]);
+  expect(await persistence.listResearchAnnouncements({ ...query, issuerId: inactive.issuer.id })).toEqual([]);
+});
+
+it("identity resolution: unknown or overlapping eligible listings → source rejection remains explicit", () => {
+  const { rows, identity } = fixture("TWSE");
+  const metadata = { retrievedAt: at, contentHash: "c".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES.TWSE, acquisitionRunId: "ambiguous" };
+  expect(() => parseOfficialAnnouncementSnapshot(rows, metadata, "TWSE", [])).toThrow("announcement_identity_unresolved");
+  expect(() => parseOfficialAnnouncementSnapshot(rows, metadata, "TWSE", [identity, { ...identity, listing: { ...identity.listing, id: "overlapping_listing" } }])).toThrow("announcement_identity_unresolved");
 });
