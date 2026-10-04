@@ -198,6 +198,64 @@ describe("AiConnectorsSettingsClient", () => {
     window.history.replaceState(null, "", "/");
   });
 
+  it.each(["en", "zh-TW"])("authentication history (%s): attributed denial → shows label, localized reason, and request correlation", async (locale) => {
+    mockUseOptionalAppShellData.mockReturnValue({ locale, sessionUserRole: "member" });
+    mockFetchAiConnectorSummary.mockResolvedValue({ connections: [buildConnection()], policy: buildPolicy() });
+    mockFetchAiConnectorLogs.mockResolvedValue({ accessLogs: [{
+      id: "log-auth", connectionId: "conn-1", connectionDisplayName: "ChatGPT personal", clientKind: "chatgpt_app",
+      portfolioContextUserId: "user-1", shareId: null, toolName: "mcp_authentication", accessKind: "read", result: "denied",
+      denialReason: "mcp_connection_replaced", requestId: "req-trusted-123", createdAt: "2026-10-02T12:00:00Z",
+    }], hasMore: false, nextOffset: null });
+    await act(async () => root.render(<AiConnectorsSettingsClient />));
+    await flushEffects();
+    await act(async () => (document.querySelector("[data-testid='ai-connectors-tab-activity']") as HTMLButtonElement).click());
+    await flushEffects();
+    expect(document.body.textContent).toContain("ChatGPT personal");
+    expect(document.body.textContent).toContain(locale === "en" ? "This connection was replaced by a new authorization." : "此連線已由新的授權取代。");
+    expect(document.body.textContent).toContain("req-trusted-123");
+  });
+
+  it("connection refresh: unsaved name → preserves editor and mounted entry", async () => {
+    mockFetchAiConnectorSummary.mockResolvedValue({ connections: [buildConnection()], policy: buildPolicy() });
+    await act(async () => root.render(<AiConnectorsSettingsClient />));
+    await flushEffects();
+    await act(async () => (document.querySelector("[data-testid='ai-connectors-tab-connections']") as HTMLButtonElement).click());
+    const card = document.querySelector("[data-testid='ai-connector-conn-1']");
+    await act(async () => Array.from(card?.querySelectorAll("button") ?? []).find((button) => button.textContent?.includes("Rename"))?.click());
+    const input = card?.querySelector("input") as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "Unsaved name");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.includes("Refresh"))?.click());
+    expect(mockFetchAiConnectorSummary).toHaveBeenCalledTimes(2);
+    expect(document.querySelector("[data-testid='ai-connector-conn-1']")).toBe(card);
+    expect(card?.querySelector("input")).toBe(input);
+    expect(input.value).toBe("Unsaved name");
+  });
+
+  it("independent connections: rename selected entry → updates only its label without remount", async () => {
+    const connections = [buildConnection(), buildConnection({ id: "conn-2", displayName: "ChatGPT work" })];
+    mockFetchAiConnectorSummary.mockResolvedValue({ connections, policy: buildPolicy() });
+    mockUpdateAiConnector.mockResolvedValue({ ...connections[1], displayName: "Research" });
+    await act(async () => root.render(<AiConnectorsSettingsClient />));
+    await flushEffects();
+    await act(async () => (document.querySelector("[data-testid='ai-connectors-tab-connections']") as HTMLButtonElement).click());
+    const firstCard = document.querySelector("[data-testid='ai-connector-conn-1']");
+    const card = document.querySelector("[data-testid='ai-connector-conn-2']");
+    const rename = Array.from(card?.querySelectorAll("button") ?? []).find((button) => button.textContent?.includes("Rename"));
+    expect(rename).toBeDefined();
+    await act(async () => rename?.click());
+    const input = card?.querySelector("input") as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "Research");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => Array.from(card?.querySelectorAll("button") ?? []).find((button) => button.textContent === "Save name")?.click());
+    expect(mockUpdateAiConnector).toHaveBeenCalledExactlyOnceWith("conn-2", { displayName: "Research" });
+    expect(document.querySelector("[data-testid='ai-connector-conn-1']")).toBe(firstCard);
+  });
+
   it("renders responsive section controls and policy recovery messaging", async () => {
     mockFetchAiConnectorSummary.mockResolvedValue({
       connections: [buildConnection()],

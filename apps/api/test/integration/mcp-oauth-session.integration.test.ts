@@ -132,7 +132,7 @@ describe("MCP OAuth consent under AUTH_MODE=oauth", () => {
       headers: { host: "localhost:4000", cookie: cookieHeader },
       payload: {
         csrfToken: consentBody.csrfToken,
-        scopes: ["portfolio:mcp_read"],
+        connectionAction: "create", scopes: ["portfolio:mcp_read"],
         lifetimeDays: 7,
       },
     });

@@ -18,6 +18,21 @@ import type {
   SaveAiConnectorPolicySettingsInput,
 } from "../persistence/types.js";
 
+/** Bind live delivery to this app's persistence; safe to rebind after a backend swap. */
+export function registerImplicitAiConnectorExpiryPublisher(app: FastifyInstance): void {
+  app.persistence.setImplicitAiConnectorExpiryPublisher(async ({ connection, notificationId }) => {
+    if (!notificationId) return;
+    try {
+      await app.eventBus.publishEvent(connection.userId, "ai_connector_notification", {
+        connectionId: connection.id, provider: connection.provider, status: "expired", notificationId,
+      });
+    } catch (error) {
+      // Storage already committed. A live-delivery failure must not fail the successful operation.
+      app.log.warn({ err: error, connectionId: connection.id, notificationId }, "ai_connector_expiry_event_delivery_failed");
+    }
+  });
+}
+
 const FRESH_AUTH_HEADER = "x-vakwen-fresh-auth-at";
 const FRESH_AUTH_TOKEN_VERSION = 1;
 const GENERATED_BEARER_TOKEN_PREFIX = "vakwen-mcpb";
@@ -456,27 +471,23 @@ export async function expireAiConnectorConnection(
   connection: AiConnectorConnectionRecord,
   reason: "absolute_expiry" | "inactivity_expiry",
 ): Promise<AiConnectorConnectionRecord> {
-  if (connection.status === "expired") return connection;
-  const now = nowIso();
-  const next = await app.persistence.saveAiConnectorConnection({
-    ...connection,
-    status: "expired",
-    expiryNotifiedAt: connection.expiryNotifiedAt ?? now,
-    updatedAt: now,
+  const finalized = await app.persistence.finalizeAiConnectorExpiry({
+    connectionId: connection.id, userId: connection.userId, reason,
   });
-  await app.persistence.revokeAiConnectorCredentialsForConnection(connection.id);
-  await app.persistence.appendAuditLog({
-    actorUserId: null,
-    action: "ai_connector_expired",
-    targetUserId: connection.userId,
-    metadata: {
-      connectionId: connection.id,
-      provider: connection.provider,
-      reason,
-    },
-  });
-  await createConnectorNotification(app, next, "expired", { reason });
-  return next;
+  if (finalized.notificationId) {
+    try {
+      await app.eventBus.publishEvent(finalized.connection.userId, "ai_connector_notification", {
+        connectionId: finalized.connection.id,
+        provider: finalized.connection.provider,
+        status: "expired",
+        notificationId: finalized.notificationId,
+      });
+    } catch (error) {
+      // Durable expiry and notification already committed. Live delivery must not repeat finalization.
+      app.log.warn({ err: error, connectionId: finalized.connection.id, notificationId: finalized.notificationId }, "ai_connector_expiry_event_delivery_failed");
+    }
+  }
+  return finalized.connection;
 }
 
 export async function maybeNotifyAiConnectorExpiringSoon(

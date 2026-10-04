@@ -181,6 +181,7 @@ export async function fetchAiConnectorLogs(input: {
 export async function updateAiConnector(
   id: string,
   patch: {
+    displayName?: string;
     scopes?: string[];
     toolToggles?: Record<string, boolean>;
     expiresAt?: string | null;
@@ -212,7 +213,7 @@ export async function fetchMcpOAuthConsent(requestId: string): Promise<McpOAuthC
 
 export async function approveMcpOAuthConsent(
   requestId: string,
-  input: { csrfToken: string; scopes: string[]; lifetimeDays: number },
+  input: { csrfToken: string; scopes: string[]; lifetimeDays: number; connectionAction: "create" | "replace"; replacementConnectionId?: string; displayName?: string },
 ): Promise<McpOAuthConsentDecisionDto> {
   return postJson<McpOAuthConsentDecisionDto>(
     `/oauth/consent/${encodeURIComponent(requestId)}/approve`,

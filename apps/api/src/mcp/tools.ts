@@ -14,6 +14,12 @@ const adviceBoundary =
   "Descriptive portfolio and draft workflow only. Do not use this tool for investment, tax, suitability, target-price, buy/sell/hold, or rebalancing advice.";
 
 const genericMcpToolOutputSchema = z.object({}).passthrough();
+const connectedProfileOutputSchema = z.object({
+  id: z.string().min(1).regex(/\S/),
+  name: z.string().optional(),
+  email: z.string().optional(),
+  nickname: z.string().optional(),
+}).strict();
 
 export interface McpToolAnnotations {
   readOnlyHint: boolean;
@@ -577,6 +583,13 @@ const toolDefinitions = {
     }),
     scope: "portfolio:mcp_read" as const,
     accessKind: "read" as const,
+  },
+  get_profile: {
+    description: "Return the stable Connected Profile represented by the authenticated credentials.",
+    inputSchema: z.object({}).strict(),
+    scope: "portfolio:mcp_read" as const,
+    accessKind: "read" as const,
+    _meta: { "openai/profile": true },
   },
   list_portfolio_contexts: {
     description: "List the self portfolio and active delegated portfolios visible to this MCP connection, including the model-facing label/email/capabilities selectors for follow-up calls.",
@@ -1212,7 +1225,7 @@ export function listMcpToolDefinitions(): Array<{
   name: McpToolName;
   description: string;
   inputSchema: McpToolDefinition["inputSchema"];
-  outputSchema: typeof genericMcpToolOutputSchema;
+  outputSchema: typeof genericMcpToolOutputSchema | typeof connectedProfileOutputSchema;
   annotations: McpToolAnnotations;
   scope: AiConnectorScope;
   accessKind: AiConnectorAccessKind;
@@ -1222,7 +1235,7 @@ export function listMcpToolDefinitions(): Array<{
     name: name as McpToolName,
     description: value.description,
     inputSchema: value.inputSchema,
-    outputSchema: genericMcpToolOutputSchema,
+    outputSchema: name === "get_profile" ? connectedProfileOutputSchema : genericMcpToolOutputSchema,
     annotations: getToolAnnotations(name as McpToolName, value.accessKind),
     scope: value.scope,
     accessKind: value.accessKind,

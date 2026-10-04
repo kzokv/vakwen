@@ -1,3 +1,4 @@
+import { rememberVerifiedConnection } from "./authDiagnostics.js";
 import { Buffer } from "node:buffer";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -139,7 +140,7 @@ export class DefaultMcpAuthService implements McpAuthService {
   ): Promise<McpAuthContext> {
     let payload;
     try {
-      payload = verifyMcpOAuthAccessToken(await getMcpOAuthTokenSecret(app), token);
+      payload = verifyMcpOAuthAccessToken(await getMcpOAuthTokenSecret(app), token, { allowExpired: true });
     } catch (error) {
       if (error instanceof Error && "statusCode" in error) throw error;
       throw routeError(401, "mcp_auth_invalid", "Invalid MCP bearer token");
@@ -152,12 +153,17 @@ export class DefaultMcpAuthService implements McpAuthService {
     }
 
     const authUser = await app.persistence.getAuthUserById(payload.sub);
-    if (!authUser || authUser.deactivatedAt || authUser.deletedAt) {
+    const connection = await app.persistence.getAiConnectorConnection(payload.connectionId);
+    if (!authUser || !connection || connection.userId !== authUser.userId
+      || connection.authMode !== "oauth" || connection.oauthClientId !== payload.client_id) {
+      throw routeError(401, "mcp_auth_invalid_connection", "MCP bearer token connection is not valid");
+    }
+    rememberVerifiedConnection(req, connection);
+    if (authUser.deactivatedAt || authUser.deletedAt) {
       throw routeError(401, "mcp_auth_invalid_user", "MCP bearer token user is not active");
     }
-    const connection = await app.persistence.getAiConnectorConnection(payload.connectionId);
-    if (!connection || connection.userId !== authUser.userId) {
-      throw routeError(401, "mcp_auth_invalid_connection", "MCP bearer token connection is not valid");
+    if (payload.exp <= Math.floor(Date.now() / 1000)) {
+      throw routeError(401, "mcp_auth_expired", "MCP bearer token has expired");
     }
     if (authUser.sessionVersion !== payload.sv) {
       await revokeAiConnectorConnection(app, connection.id, {
@@ -193,18 +199,26 @@ export class DefaultMcpAuthService implements McpAuthService {
     token: string,
   ): Promise<McpAuthContext> {
     const credential = await app.persistence.getAiConnectorCredentialByHash(hashGeneratedBearerToken(token));
-    if (
-      !credential
-      || credential.credentialType !== "bearer_token"
-      || credential.revokedAt
-      || credential.replacedByCredentialId
-    ) {
+    if (!credential || credential.credentialType !== "bearer_token") {
       throw routeError(401, "mcp_auth_invalid", "Invalid MCP bearer token");
     }
 
     const connection = await app.persistence.getAiConnectorConnection(credential.connectionId);
     if (!connection) {
       throw routeError(401, "mcp_auth_invalid_connection", "MCP bearer token connection is not valid");
+    }
+    rememberVerifiedConnection(req, connection);
+    if (connection.status === "expired") {
+      const expiryReason = connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now()
+        ? "absolute_expiry"
+        : "inactivity_expiry";
+      await expireAiConnectorConnection(app, connection, expiryReason);
+      throw routeError(401, "mcp_connection_expired", "MCP connector connection has expired");
+    }
+    if (credential.revokedAt || credential.replacedByCredentialId) {
+      const replaced = connection.revocationReason === "replaced_by_oauth_authorization";
+      throw routeError(401, replaced ? "mcp_connection_replaced" : "mcp_connection_revoked",
+        replaced ? "MCP connector connection was replaced" : "MCP connector credential was revoked");
     }
     if (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now()) {
       await expireAiConnectorConnection(app, connection, "absolute_expiry");
@@ -237,9 +251,8 @@ export class DefaultMcpAuthService implements McpAuthService {
     const bearerAllowedScopes = credential.scopes.filter((scope) =>
       policySettings.bearerFallback.allowedToolGroups.includes(connectorGroupForScope(scope))
     );
-    if (credential.scopes.length > 0 && bearerAllowedScopes.length === 0) {
-      throw routeError(403, "mcp_bearer_tool_group_disabled", "MCP bearer fallback is disabled for token tool groups");
-    }
+    // An empty effective scope set still permits authenticated get_profile.
+    // Data tools retain their bearer group and scope checks in the tool policy.
     const notified = await this.validateConnection(app, req, connection, policySettings);
     return {
       token,
@@ -265,6 +278,18 @@ export class DefaultMcpAuthService implements McpAuthService {
       throw routeError(403, "mcp_client_kind_disabled", `AI connector client kind ${clientKind} is disabled`);
     }
     if (connection.status !== "active") {
+      if (connection.status === "expired") {
+        const expiryReason = connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now()
+          ? "absolute_expiry"
+          : "inactivity_expiry";
+        await expireAiConnectorConnection(app, connection, expiryReason);
+        throw routeError(403, "mcp_connection_expired", "MCP connector connection has expired");
+      }
+      if (connection.status === "revoked") {
+        const replaced = connection.revocationReason === "replaced_by_oauth_authorization";
+        throw routeError(403, replaced ? "mcp_connection_replaced" : "mcp_connection_revoked",
+          replaced ? "MCP connector connection was replaced" : "MCP connector connection was revoked");
+      }
       throw routeError(403, "mcp_connection_inactive", "MCP connector connection is not active");
     }
     if (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now()) {

@@ -223,6 +223,7 @@ import { enqueueCloseRefresh } from "../services/market-data/closeRefreshWorker.
 import { TwseStockDayCloseProvider, YahooChartCloseProvider } from "../services/market-data/providers/index.js";
 import { MockTwelveDataAuCatalogProvider } from "../services/market-data/providers/mockTwelveDataAu.js";
 import { routeError } from "../lib/routeError.js";
+import { toAiConnectorConnectionDto } from "../services/aiConnectorDto.js";
 import { listMcpToolDefinitions } from "../mcp/tools.js";
 import { scopesForToolAccess } from "../mcp/policy.js";
 import {
@@ -1392,29 +1393,6 @@ function assertDelegableShareCapabilities(
   );
 }
 
-function toAiConnectorConnectionDto(record: AiConnectorConnectionRecord) {
-  return {
-    id: record.id,
-    provider: record.provider,
-    vendor: record.vendor,
-    clientKind: record.clientKind,
-    authMode: record.authMode,
-    capabilities: record.capabilities,
-    displayName: record.displayName,
-    status: record.status,
-    hiddenAt: record.hiddenAt ?? null,
-    scopes: record.scopes,
-    toolToggles: record.toolToggles,
-    expiresAt: record.expiresAt,
-    expiryNotifiedAt: record.expiryNotifiedAt,
-    lastUsedAt: record.lastUsedAt,
-    revokedAt: record.revokedAt,
-    revocationReason: record.revocationReason,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-  };
-}
-
 function connectorVisibleInOperationalView(connection: AiConnectorConnectionRecord): boolean {
   return !connection.hiddenAt && (connection.status === "active" || connection.status === "pending");
 }
@@ -1433,6 +1411,7 @@ function toAiConnectorAccessLogDto(record: AiConnectorAccessLogRecord, connectio
   return {
     id: record.id,
     connectionId: record.connectionId,
+    requestId: record.requestId,
     connectionDisplayName: connection?.displayName ?? null,
     clientKind: connection?.clientKind ?? null,
     portfolioContextUserId: record.portfolioContextUserId,
@@ -1450,11 +1429,12 @@ function buildAiConnectorToolCatalog(
   connections: AiConnectorConnectionRecord[] = [],
 ) {
   return listMcpToolDefinitions().map((tool) => {
+    const profile = tool.name === "get_profile";
     const group = connectorGroupForScope(tool.scope);
-    const enabledByPolicy = policy.enabled && policy.groupToggles[group];
+    const enabledByPolicy = policy.enabled && (profile || policy.groupToggles[group]);
     const unavailableReason = !policy.enabled
       ? "AI connector deployment is disabled by admin policy."
-      : !policy.groupToggles[group]
+      : !profile && !policy.groupToggles[group]
         ? `${group === "read" ? "Read" : group === "drafts" ? "Draft" : "Write"} MCP tools are disabled by admin policy.`
         : null;
     return {
@@ -1563,6 +1543,12 @@ function getToolEffectiveAccessBlocker(
   if (!policy.allowedClientKinds[connection.clientKind]) return "client_kind_disabled";
   if (connection.status !== "active") return "connector_inactive";
   if (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now()) return "connector_inactive";
+  if (connection.toolToggles[toolName] === false) return "connector_override_disabled";
+  if (toolName === "get_profile") {
+    if (connection.authMode === "bearer" && !policy.bearerFallback.enabled) return "admin_tool_policy_disabled";
+    if (connection.authMode === "bearer" && !policy.bearerFallback.allowedClientKinds.includes(connection.clientKind)) return "client_kind_disabled";
+    return null;
+  }
   const requiredScopes = scopesForToolAccess(accessKind, toolName, scope);
   if (!requiredScopes.some((requiredScope) => connection.scopes.includes(requiredScope))) return "missing_scope";
   if (!enabledByPolicy || !policy.groupToggles[group]) return "admin_tool_policy_disabled";
@@ -1571,7 +1557,6 @@ function getToolEffectiveAccessBlocker(
     if (!policy.bearerFallback.allowedClientKinds.includes(connection.clientKind)) return "client_kind_disabled";
     if (!policy.bearerFallback.allowedToolGroups.includes(group)) return "admin_tool_policy_disabled";
   }
-  if (connection.toolToggles[toolName] === false) return "connector_override_disabled";
   return null;
 }
 
@@ -9153,6 +9138,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const userId = requireSessionUserId(req);
     const params = z.object({ id: userScopedIdSchema }).parse(req.params);
     const body = z.object({
+      displayName: z.string().trim().min(1).max(120).optional(),
       scopes: aiConnectorScopesSchema.optional(),
       toolToggles: z.record(z.string().min(1).max(120), z.boolean()).optional(),
       expiresAt: z.union([isoDateTimeSchema, z.null()]).optional(),
@@ -9193,7 +9179,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         "Bearer connector lifetime is fixed at token creation; create a new bearer connector to choose a different lifetime",
       );
     }
-    const allowedScopes = requestedScopes.filter((scope) => settings.groupToggles[connectorGroupForScope(scope)]);
+    const allowedScopes = body.scopes === undefined ? connection.scopes : requestedScopes.filter((scope) => settings.groupToggles[connectorGroupForScope(scope)]);
     if (connection.oauthClientId && nextExpiresAt !== connection.expiresAt) {
       throw routeError(
         400,
@@ -9203,6 +9189,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
     const updated = await app.persistence.saveAiConnectorConnection({
       ...connection,
+      displayName: body.displayName ?? connection.displayName,
       scopes: allowedScopes,
       toolToggles: body.toolToggles ?? connection.toolToggles,
       expiresAt: nextExpiresAt,
