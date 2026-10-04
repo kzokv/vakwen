@@ -165,7 +165,7 @@ export async function getDisclosureArtifact(persistence: Persistence, input: Res
   const identity = await getResearchIdentity(persistence, { subject: query.subject, context: query.context, history: { limit: 1 } });
   const summary = identitySummary(identity);
   const storeQuery = { issuerId: summary.issuer.id, knowledgeAt: query.context.knowledgeAt, effectiveAt: query.context.effectiveAt };
-  const [artifacts, issuerAnnouncements] = eligible(summary) ? await Promise.all([persistence.listResearchDisclosureArtifacts(storeQuery), persistence.listResearchAnnouncements(storeQuery)]) : [[], []];
+  const [artifacts, issuerAnnouncements] = eligible(summary) ? await Promise.all([persistence.listResearchDisclosureArtifacts({ ...storeQuery, artifactId: query.artifactId }), persistence.listResearchAnnouncements(storeQuery)]) : [[], []];
   const announcements = issuerAnnouncements.filter((record) => record.listingId === summary.listing.id && record.venue === summary.listing.venue);
   const artifact = artifacts.find((record) => record.id === query.artifactId);
   const materialReferences = artifact?.reference.kind === "investor_material" ? await persistence.listResearchDisclosureMaterialReferences(storeQuery) : [];
@@ -210,7 +210,7 @@ export async function getDisclosureArtifact(persistence: Persistence, input: Res
       freshness: "not_applicable", completeness: !eligible(summary) ? "not_applicable" : available && !missingPages ? more || offset > 0 ? "partial" : "complete" : "indeterminate", confidence: !available || missingPages ? "indeterminate" : provisional ? "provisional" : verifiedClaims.length > 0 ? "verified" : "supported",
       readiness: artifactReadiness,
       versions: { contract: VERSION, freshnessPolicy: "official-scan/1.0.0", exposurePolicy: "retained-disclosures/1.0.0" },
-      status: !eligible(summary) ? "not_applicable" : artifact?.state === "unavailable" ? "not_acquired" : artifact?.state ?? unavailableState, reasonCodes: available ? [] : [artifact?.state ?? (eligible(summary) ? unavailableState : "not_applicable_subject")], recovery: available ? [] : ["Retained artifact content is unavailable; dependent claims must remain withheld."] },
+      status: !eligible(summary) ? "not_applicable" : artifact?.state === "unavailable" ? "not_acquired" : artifact?.state ?? unavailableState, reasonCodes: available ? [] : [artifact?.state ?? (eligible(summary) ? unavailableState : "not_applicable_subject"), ...(attempts[0]?.reasonCode ? [attempts[0].reasonCode] : [])], recovery: available ? [] : [attempts[0]?.reasonCode === "disclosure_source_too_large" ? "Operator action required: review the official attachment size against acquisition limits and retain a supported bounded source; dependent claims remain withheld." : "Retained artifact content is unavailable; dependent claims must remain withheld."] },
     artifact: exposedArtifact ? { ...exposedArtifact,
       blocks: blocks.map((block) => ({ ...block, qualifiers: { period: qualifier(block.period), unit: qualifier(block.unit) } })),
       verifiedClaims: verifiedClaims.map((claim) => ({ ...claim, qualifiers: { period: qualifier(claim.period), unit: qualifier(claim.unit) } })),

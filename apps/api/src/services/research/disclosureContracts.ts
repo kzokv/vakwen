@@ -50,7 +50,7 @@ export const researchDisclosureScanSchema = z.object({
   publicationStart: time, publicationEnd: time, knowledgeAt: time,
   status: z.enum(["success", "failed", "restricted", "processing_failed"]), exhaustive: z.boolean(),
   detailAttempts: z.array(z.object({ announcementId: id, attemptedAt: time, status: z.enum(["available", "restricted", "unavailable", "processing_failed"]), reasonCodes: z.array(z.string()) }).strict()).optional(),
-  artifactAttempts: z.array(z.object({ artifactId: id, sourceUrl: safeUrl, attemptedAt: time, status: z.enum(["retained", "restricted", "unavailable", "processing_failed"]) }).strict()).optional(),
+  artifactAttempts: z.array(z.object({ artifactId: id, sourceUrl: safeUrl, attemptedAt: time, status: z.enum(["retained", "restricted", "unavailable", "processing_failed"]), reasonCode: z.literal("disclosure_source_too_large").optional() }).strict()).optional(),
   provenance: disclosureProvenanceSchema.extend({ contentHash: z.string().regex(/^[a-f0-9]{64}$/).nullable() }).strict(),
 }).strict();
 export type ResearchAnnouncementRecord = z.infer<typeof researchAnnouncementRecordSchema>;
@@ -68,5 +68,10 @@ export type ResearchDisclosureMaterialReference = z.infer<typeof researchDisclos
 
 export function validateResearchDisclosureStoreQuery(query: ResearchDisclosureStoreQuery): void {
   z.object({ issuerId: id, effectiveAt: time, knowledgeAt: time }).strict()
+    .refine((value) => Date.parse(value.effectiveAt) <= Date.parse(value.knowledgeAt), "effectiveAt must not exceed knowledgeAt").parse(query);
+}
+
+export function validateResearchDisclosureArtifactStoreQuery(query: ResearchDisclosureStoreQuery & { artifactId?: string }): void {
+  z.object({ issuerId: id, effectiveAt: time, knowledgeAt: time, artifactId: id.optional() }).strict()
     .refine((value) => Date.parse(value.effectiveAt) <= Date.parse(value.knowledgeAt), "effectiveAt must not exceed knowledgeAt").parse(query);
 }

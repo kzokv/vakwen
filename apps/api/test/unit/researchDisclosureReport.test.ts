@@ -535,6 +535,21 @@ describe("focused disclosure report", () => {
     await expect(buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "standard", extension: { months: 25, reason: "litigation", thesisItem: "Unresolved litigation" }, readBudget: 10 })).rejects.toThrow();
     await expect(buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "focused", extension: { months: 24, reason: "litigation", thesisItem: "Unresolved litigation" }, readBudget: 10 })).rejects.toThrow(/standard/);
   });
+  it("oversized official attachment: operator recovery → faithful zh-TW guidance without changing canonical evidence", async () => {
+    const f = await fixture();
+    await f.persistence.appendResearchAnnouncements([f.announcement]);
+    await f.persistence.appendResearchDisclosureScans([{ ...f.scan, artifactAttempts: [{ artifactId: f.artifact.id,
+      sourceUrl: f.artifact.sourceUrl, attemptedAt: f.scan.checkedAt, status: "processing_failed", reasonCode: "disclosure_source_too_large" }] }]);
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [artifactCandidate], readBudget: 10 });
+    const recovery = "Operator action required: review the official attachment size against acquisition limits and retain a supported bounded source; dependent claims remain withheld.";
+    expect(report.recoveryRequirements).toContain(recovery);
+    const before = JSON.stringify(report);
+    expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, "en"))).toContain(recovery);
+    const zh = literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, "zh-TW"));
+    expect(zh).toContain("需由維運人員處理：依擷取上限檢查官方附件大小，並留存系統支援且大小受限的來源；依賴該附件的判斷仍暫不提出。");
+    expect(zh).not.toContain(recovery);
+    expect(JSON.stringify(report)).toBe(before);
+  });
   it("zh-TW rendering: localized labels and policy explanations → identical original evidence and claims", async () => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [candidate], readBudget: 10 });

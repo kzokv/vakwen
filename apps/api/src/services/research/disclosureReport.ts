@@ -477,6 +477,7 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     "Await a successful current official announcement collection check.": "等待成功且符合時效要求的官方公告掃描。",
     "Obtain the exact failed evidence dependencies before reevaluating withheld judgments.": "補齊缺漏的必要證據後，再重新評估暫不提出的判斷。",
     "Wait for a successful scheduled official announcement scan.": "等待排程的官方公告掃描成功完成。",
+    "Operator action required: review the official attachment size against acquisition limits and retain a supported bounded source; dependent claims remain withheld.": "需由維運人員處理：依擷取上限檢查官方附件大小，並留存系統支援且大小受限的來源；依賴該附件的判斷仍暫不提出。",
     "Retained artifact content is unavailable; dependent claims must remain withheld.": "留存文件內容不可用；依賴此內容的判斷須暫不提出。",
   };
   const t = (value: string) => locale === "zh-TW" ? translations[value] ?? value : value;

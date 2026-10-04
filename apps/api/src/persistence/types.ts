@@ -2876,7 +2876,7 @@ export interface Persistence {
   appendResearchAnnouncements(records: readonly ResearchAnnouncementRecord[]): Promise<void>;
   listResearchAnnouncements(query: ResearchDisclosureStoreQuery): Promise<ResearchAnnouncementRecord[]>;
   appendResearchDisclosureArtifacts(records: readonly ResearchDisclosureArtifact[]): Promise<void>;
-  listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureArtifact[]>;
+  listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery & { artifactId?: string }): Promise<ResearchDisclosureArtifact[]>;
   appendResearchDisclosureScans(records: readonly ResearchDisclosureScan[]): Promise<void>;
   listResearchDisclosureScans(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureScan[]>;
   appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void>;

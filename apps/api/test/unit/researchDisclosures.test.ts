@@ -301,3 +301,16 @@ it("range-local metadata: out-of-window revision → in-window predecessor stays
   expect(audit.selection.excludedObservationCount).toBe(0);
   expect(audit.relationIndex).toContainEqual({ announcementId: "outside_revision", kind: "supersedes", targetAnnouncementId: f.announcement.id });
 });
+
+it("artifact ID bound: requested or unknown ID → persistence never bulk-loads issuer payloads", async () => {
+  const f = await disclosureFixture();
+  await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "large_unrelated", retainedBytesBase64: "YQ==".repeat(250_000) }]);
+  const reads = vi.spyOn(f.persistence, "listResearchDisclosureArtifacts");
+  expect((await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: f.artifact.id })).artifact?.id).toBe(f.artifact.id);
+  await expect(getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: "unknown" })).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
+  expect(reads.mock.calls.map(([query]) => query.artifactId)).toEqual([f.artifact.id, "unknown"]);
+  const query = { issuerId: f.identity.issuer.id, effectiveAt: f.context.knowledgeAt, knowledgeAt: f.context.knowledgeAt, artifactId: f.artifact.id };
+  expect(await f.persistence.listResearchDisclosureArtifacts(query)).toEqual([f.artifact]);
+  expect(await f.persistence.listResearchDisclosureArtifacts({ ...query, issuerId: "other" })).toEqual([]);
+  expect(await f.persistence.listResearchDisclosureArtifacts({ ...query, knowledgeAt: "2026-09-01T01:00:00.000Z", effectiveAt: "2026-09-01T01:00:00.000Z" })).toEqual([]);
+});

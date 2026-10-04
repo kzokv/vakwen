@@ -1,6 +1,6 @@
 import { twoPagePdf } from "../fixtures/research/disclosurePdf.js";
 import { getResearchManifest } from "../../src/services/research/service.js";
-import { listMaterialAnnouncements } from "../../src/services/research/disclosures.js";
+import { getDisclosureArtifact, listMaterialAnnouncements } from "../../src/services/research/disclosures.js";
 import { researchQuerySchema } from "../../src/services/research/contracts.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, afterEach, vi } from "vitest";
@@ -236,4 +236,41 @@ it.each([
     expect(afterRetry).toHaveLength(2);
     expect(afterRetry.find((artifact) => artifact.sourceUrl.endsWith("attachment.pdf"))?.blocks[0]?.text).toBe("Recovered issuer evidence");
   }
+});
+
+it.each(["declared", "streamed"] as const)("oversized %s attachment: body limit → processing failure and operator recovery", async (mode) => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  const persistence = new MemoryPersistence(); const { rows, identity } = fixture("TWSE");
+  await persistence.appendResearchIdentityRecords([identity]);
+  const history = JSON.parse(readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8"));
+  const detail = JSON.parse(readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8"));
+  detail.result.titles.push({ main: "附件", sub: [] });
+  detail.result.data[0].push({ url: "https://mops.twse.com.tw/oversized.pdf", fileName: "oversized.pdf" });
+  const cancel = vi.fn();
+  const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+    const source = String(url);
+    if (source.endsWith("oversized.pdf")) return mode === "declared" ? new Response("", { headers: { "content-length": String(8 * 1024 * 1024 + 1) } }) : new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1)); }, cancel }));
+    return new Response(JSON.stringify(source.endsWith("t05st01_detail") ? detail : source.endsWith("t05st01") ? history : rows));
+  }) as unknown as typeof fetch;
+  const reads = vi.spyOn(persistence, "listResearchDisclosureArtifacts");
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "oversized" });
+  expect(reads.mock.calls.every(([query]) => typeof query.artifactId === "string")).toBe(true);
+  const query = { issuerId: identity.issuer.id, knowledgeAt: at, effectiveAt: at };
+  const attempts = (await persistence.listResearchDisclosureScans(query))[0]!.artifactAttempts!;
+  expect(attempts[0]).toMatchObject({ status: "processing_failed", reasonCode: "disclosure_source_too_large" });
+  expect(await persistence.listResearchDisclosureArtifacts(query)).toHaveLength(1);
+  const result = await getDisclosureArtifact(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: at }, artifactId: attempts[0]!.artifactId });
+  expect(result.artifact).toBeNull();
+  expect(result.quality.status).toBe("processing_failed");
+  expect(result.quality.reasonCodes).toContain("disclosure_source_too_large");
+  expect(result.quality.recovery[0]).toContain("Operator action required");
+  if (mode === "streamed") expect(cancel).toHaveBeenCalledOnce();
+  const explanation = (await persistence.listResearchDisclosureArtifacts(query))[0]!;
+  const retained = { ...explanation, id: attempts[0]!.artifactId, sourceUrl: attempts[0]!.sourceUrl };
+  await persistence.appendResearchDisclosureArtifacts([retained]);
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: "2026-10-04T05:15:00.000Z", acquisitionRunId: "retained_retry" });
+  expect(vi.mocked(fetchImpl).mock.calls.filter(([url]) => String(url).endsWith("oversized.pdf"))).toHaveLength(1);
+  const preserved = await getDisclosureArtifact(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: "2026-10-04T05:15:00.000Z" }, artifactId: retained.id });
+  expect(preserved.quality.status).toBe("available");
+  expect(preserved.quality.reasonCodes).toEqual([]);
 });

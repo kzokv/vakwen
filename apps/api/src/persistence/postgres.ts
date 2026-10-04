@@ -1,4 +1,4 @@
-import { validateResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
+import { validateResearchDisclosureStoreQuery, validateResearchDisclosureArtifactStoreQuery } from "../services/research/disclosureContracts.js";
 import { researchDisclosureMaterialReferenceSchema, type ResearchDisclosureMaterialReference } from "../services/research/disclosureContracts.js";
 import { researchAnnouncementRecordSchema, researchDisclosureArtifactSchema, researchDisclosureScanSchema, type ResearchAnnouncementRecord, type ResearchDisclosureArtifact, type ResearchDisclosureScan, type ResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -1558,11 +1558,11 @@ export class PostgresPersistence implements Persistence {
       await client.query("COMMIT");
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
-  async listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureArtifact[]> {
-    validateResearchDisclosureStoreQuery(query);
+  async listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery & { artifactId?: string }): Promise<ResearchDisclosureArtifact[]> {
+    validateResearchDisclosureArtifactStoreQuery(query);
     const result = await this.pool.query<{record: ResearchDisclosureArtifact}>(
-      `SELECT record FROM research.disclosure_artifacts WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz`,
-      [query.issuerId, query.effectiveAt, query.knowledgeAt]);
+      `SELECT record FROM research.disclosure_artifacts WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz${query.artifactId === undefined ? "" : " AND id=$4"}`,
+      query.artifactId === undefined ? [query.issuerId, query.effectiveAt, query.knowledgeAt] : [query.issuerId, query.effectiveAt, query.knowledgeAt, query.artifactId]);
     return result.rows.map((row) => researchDisclosureArtifactSchema.parse(row.record));
   }
   async appendResearchDisclosureScans(records: readonly ResearchDisclosureScan[]): Promise<void> {

@@ -1,4 +1,4 @@
-import { validateResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
+import { validateResearchDisclosureStoreQuery, validateResearchDisclosureArtifactStoreQuery } from "../services/research/disclosureContracts.js";
 import { researchDisclosureMaterialReferenceSchema, type ResearchDisclosureMaterialReference } from "../services/research/disclosureContracts.js";
 import { researchAnnouncementRecordSchema, researchDisclosureArtifactSchema, researchDisclosureScanSchema, type ResearchAnnouncementRecord, type ResearchDisclosureArtifact, type ResearchDisclosureScan, type ResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
 import { randomUUID } from "node:crypto";
@@ -1118,9 +1118,10 @@ export class MemoryPersistence implements Persistence {
     }
     for (const record of parsed) this.retainedDisclosureArtifacts.set(record.id, structuredClone(record));
   }
-  async listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureArtifact[]> {
-    validateResearchDisclosureStoreQuery(query);
-    return [...this.retainedDisclosureArtifacts.values()].filter((record) => record.issuerId === query.issuerId
+  async listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery & { artifactId?: string }): Promise<ResearchDisclosureArtifact[]> {
+    validateResearchDisclosureArtifactStoreQuery(query);
+    const candidates = query.artifactId === undefined ? [...this.retainedDisclosureArtifacts.values()] : [this.retainedDisclosureArtifacts.get(query.artifactId)].filter((record): record is ResearchDisclosureArtifact => record !== undefined);
+    return candidates.filter((record) => record.issuerId === query.issuerId
       && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt)
       && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
       && Date.parse(record.publishedAt) <= Date.parse(query.effectiveAt))

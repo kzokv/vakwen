@@ -94,13 +94,14 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         if (!retainedRecord) await persistence.appendResearchAnnouncements([record]);
         const stableRecord = retainedRecord ?? record;
         const explanation = retainAnnouncementExplanation(stableRecord);
-        const retainedArtifacts = await persistence.listResearchDisclosureArtifacts({ issuerId: record.issuerId, effectiveAt: at, knowledgeAt: at });
-        if (!retainedArtifacts.some((artifact) => artifact.id === explanation.id)) await persistence.appendResearchDisclosureArtifacts([explanation]);
+        const artifactQuery = { issuerId: record.issuerId, effectiveAt: at, knowledgeAt: at };
+        if ((await persistence.listResearchDisclosureArtifacts({ ...artifactQuery, artifactId: explanation.id })).length === 0) await persistence.appendResearchDisclosureArtifacts([explanation]);
         for (const attachment of record.attachments.filter((item) => item.artifactId !== explanation.id && item.artifactId !== null)) {
           artifactOwners.set(attachment.artifactId!, listingKey);
-          if (retainedArtifacts.some((artifact) => artifact.id === attachment.artifactId && artifact.state === "available")) continue;
+          if ((await persistence.listResearchDisclosureArtifacts({ ...artifactQuery, artifactId: attachment.artifactId! })).some((artifact) => artifact.state === "available")) continue;
           let attemptStatus: NonNullable<ResearchDisclosureScan["artifactAttempts"]>[number]["status"] = "unavailable";
           let fetched = false;
+          let reasonCode: "disclosure_source_too_large" | undefined;
           let artifact: ResearchDisclosureArtifact | undefined;
           try {
             const retained = await officialResponse(fetchImpl, attachment.sourceUrl);
@@ -112,18 +113,19 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
               provenance: { ...record.provenance, id: disclosureId("pr", attachment.artifactId!, createHash("sha256").update(retained.bytes).digest("hex")), sourceUrl: attachment.sourceUrl, contentHash: createHash("sha256").update(retained.bytes).digest("hex"), parserVersion: extracted.extractionVersion, retrievedAt: options.retrievedAt ?? new Date().toISOString(), processedAt: options.retrievedAt ?? new Date().toISOString(), acquisitionRunId } };
             attemptStatus = "retained";
           } catch (error) {
-            attemptStatus = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : fetched ? "processing_failed" : "unavailable";
+            reasonCode = error instanceof Error && error.message === "disclosure_source_too_large" ? "disclosure_source_too_large" : undefined;
+            attemptStatus = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : fetched || reasonCode ? "processing_failed" : "unavailable";
           }
           if (artifact) await persistence.appendResearchDisclosureArtifacts([artifact]);
           // A failed request is an acquisition attempt, never a retained empty
           // artifact. Subsequent scheduled runs retry unresolved references.
-          artifactAttempts.push({ artifactId: attachment.artifactId!, sourceUrl: attachment.sourceUrl, attemptedAt: at, status: attemptStatus });
+          artifactAttempts.push({ artifactId: attachment.artifactId!, sourceUrl: attachment.sourceUrl, attemptedAt: at, status: attemptStatus, ...(reasonCode ? { reasonCode } : {}) });
         }
         if (!retainedRecord) { existing.push(record); count++; }
       }
       publicationStart = records.reduce((start, record) => record.publishedAt < start ? record.publishedAt : start, at);
     } catch (error) {
-      status = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : error instanceof SyntaxError ? "processing_failed" : "failed";
+      status = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : (error instanceof SyntaxError || (error instanceof Error && error.message === "disclosure_source_too_large")) ? "processing_failed" : "failed";
     }
     const checkedAt = options.retrievedAt ?? new Date().toISOString();
     const scans: ResearchDisclosureScan[] = eligibleIdentities.map((identity) => ({

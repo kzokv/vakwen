@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { PostgresPersistence } from "../../src/persistence/postgres.js";
 import type { Persistence } from "../../src/persistence/types.js";
@@ -91,6 +91,22 @@ describePostgres("disclosure memory/Postgres conformance", () => {
       results.push({ result, otherResult, otherArtifact });
     }
     expect(results[1]).toEqual(results[0]);
+  });
+
+  it("artifact lookup: ID-bounded SQL → no unrelated JSONB payload transfer with temporal parity", async () => {
+    const f = await disclosureFixture(postgres);
+    await postgres.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "unrelated_large", retainedBytesBase64: "YQ==".repeat(250_000) }]);
+    const query = { issuerId: f.identity.issuer.id, effectiveAt: f.context.knowledgeAt, knowledgeAt: f.context.knowledgeAt, artifactId: f.artifact.id };
+    const sql = vi.spyOn(Pool.prototype, "query");
+    try {
+      expect(await postgres.listResearchDisclosureArtifacts(query)).toEqual([f.artifact]);
+      expect(await postgres.listResearchDisclosureArtifacts({ ...query, artifactId: "unknown" })).toEqual([]);
+      expect(await postgres.listResearchDisclosureArtifacts({ ...query, issuerId: "other_issuer" })).toEqual([]);
+      expect(await postgres.listResearchDisclosureArtifacts({ ...query, knowledgeAt: "2026-09-01T01:00:00.000Z", effectiveAt: "2026-09-01T01:00:00.000Z" })).toEqual([]);
+      const selects = sql.mock.calls.filter(([statement]) => typeof statement === "string" && statement.includes("SELECT record FROM research.disclosure_artifacts"));
+      expect(selects).toHaveLength(4);
+      expect(selects.every(([statement]) => String(statement).includes("AND id=$4"))).toBe(true);
+    } finally { sql.mockRestore(); }
   });
 
 });
