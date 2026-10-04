@@ -130,6 +130,12 @@ function validateDisclosurePageChain(pages: Array<{
   return offset < first.continuity.totalCount;
 }
 
+// Status excerpts are conservative evidence anchors: negated, conditional, or revoked
+// assertions cannot establish an affirmative occurrence or schedule by keyword alone.
+function hasUncertainStatusAssertion(excerpt: string): boolean {
+  return /(?:未|無法|並無|尚無|無(?:完成|發生|決議|通過|批准)|沒有|否認|並非|並不|不是|不曾|不會|不再|不予|不排除|不(?:完成|發生|決議|通過|批准|預計|預定|訂於)|取消|撤回|撤銷|否決|暫緩|中止|終止|尚待|如果|假如|假設|倘若|若|可能|如獲)|\b(?:not|never|no|cannot|can't|isn't|wasn't|weren't|hasn't|haven't|hadn't|won't|wouldn't|didn't|doesn't|don't|denied|cancelled|canceled|rescinded|withdrawn|unapproved|uncompleted|incomplete|unscheduled|unplanned|if|unless|pending|will|shall|should|would|could|might|may)\b|\b(?:failed\s+to|subject\s+to)\b/i.test(excerpt.replaceAll("’", "'"));
+}
+
 /** Validate a specialist fragment against retained evidence without making new publisher assertions. */
 export function composeFocusedDisclosureResearchReport(input: {
   identity: z.infer<typeof researchIdentityOutputSchema>;
@@ -269,11 +275,13 @@ export function composeFocusedDisclosureResearchReport(input: {
       && (candidate.status === "observed" ? date <= Date.parse(identity.context.effectiveAt) : date > Date.parse(identity.context.effectiveAt)));
     const anchorAnnouncementId = anchor.reference.kind === "announcement" ? anchor.reference.announcementId : null;
     const occurrenceVerified = candidate.status !== "observed" || (
-      /(?:已|完成|決議|發生|approved|completed|occurred)/i.test(anchor.excerpt)
-      && !/(?:預計|預定|將於|scheduled|planned|expected)/i.test(anchor.excerpt)
+      /(?:完成|決議|發生|批准|通過|\b(?:approved|completed|occurred)\b)/i.test(anchor.excerpt)
+      && !hasUncertainStatusAssertion(anchor.excerpt)
+      && !/(?:預計|預定|預估|預期|計畫|擬|將於|scheduled|planned|expected)/i.test(anchor.excerpt)
       && (anchorAnnouncementId === null || announcements.find((item) => item.id === anchorAnnouncementId)?.eventDate === anchor.eventDate)
     );
-    const scheduleVerified = candidate.status !== "scheduled" || /(?:預計|預定|訂於|將於|scheduled|planned|expected)/i.test(anchor.excerpt);
+    const scheduleVerified = candidate.status !== "scheduled" || (!hasUncertainStatusAssertion(anchor.excerpt)
+      && /(?:預計|預定|訂於|將於|\b(?:scheduled|planned|expected)\b)/i.test(anchor.excerpt));
     const failures = refs.map((reference) => ({ reference, reason: failedReason(reference) })).filter((failure) => failure.reason !== null);
     const reasons = [...new Set([
       ...(!applicable ? ["disclosures_not_applicable"] : !current ? [scanFailure] : []),
@@ -411,7 +419,11 @@ export async function buildFocusedDisclosureResearchReport(
 }
 
 function markdown(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("|", "\\|").replaceAll("\n", " ");
+  // Entities render as literal punctuation without enabling Markdown syntax or
+  // GFM bare-URL autolinking. Encode the original characters in one pass so
+  // backslashes and preexisting entity spellings cannot bypass escaping.
+  return value.replace(/[\r\n\u2028\u2029]/g, " ")
+    .replace(/[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/g, (character) => `&#${character.charCodeAt(0)};`);
 }
 
 export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisclosureResearchReport, locale: "en" | "zh-TW" = "en"): string {
@@ -465,42 +477,42 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     throw new Error("Disclosure report claims or readiness do not match retained evidence");
   }
   return [
-    `# ${t("Taiwan Disclosure Research")}: ${report.identity.listing.venue}:${report.identity.listing.ticker}`,
-    "", `- ${t("Listing ID")}: ${report.selector.listingId}`, `- ${t("Knowledge at")}: ${report.context.knowledgeAt}`, `- ${t("Effective at")}: ${report.context.effectiveAt}`,
-    `- ${t("Publication window")}: ${report.window.publishedFrom} – ${report.window.publishedTo}`,
+    `# ${t("Taiwan Disclosure Research")}: ${report.identity.listing.venue}:${markdown(report.identity.listing.ticker)}`,
+    "", `- ${t("Listing ID")}: ${markdown(report.selector.listingId)}`, `- ${t("Knowledge at")}: ${markdown(report.context.knowledgeAt)}`, `- ${t("Effective at")}: ${markdown(report.context.effectiveAt)}`,
+    `- ${t("Publication window")}: ${markdown(report.window.publishedFrom)} – ${markdown(report.window.publishedTo)}`,
     `- ${t("Official scan prerequisite")}: ${t(report.officialScanGate.status)}`,
     `- ${t("Collection quality")}: ${t("freshness")}=${t(report.announcementPages[0]!.quality.freshness)}, ${t("completeness")}=${t(report.announcementPages[0]!.quality.completeness)}, ${t("confidence")}=${t(report.announcementPages[0]!.quality.confidence)}, ${t("current assessment")}=${t(report.announcementPages[0]!.quality.readiness.currentAssessment)}`,
-    ...(report.announcementPages[0]!.scan.record?.status === "success" ? [`- ${t("Selected successful scan")}: ${report.announcementPages[0]!.scan.record.checkedAt}`] : []),
-    ...(report.announcementPages[0]!.scan.latestAttempt ? [`- ${t("Latest acquisition attempt")}: ${t(report.announcementPages[0]!.scan.latestAttempt.status)} (${report.announcementPages[0]!.scan.latestAttempt.checkedAt})`] : []),
+    ...(report.announcementPages[0]!.scan.record?.status === "success" ? [`- ${t("Selected successful scan")}: ${markdown(report.announcementPages[0]!.scan.record.checkedAt)}`] : []),
+    ...(report.announcementPages[0]!.scan.latestAttempt ? [`- ${t("Latest acquisition attempt")}: ${t(report.announcementPages[0]!.scan.latestAttempt.status)} (${markdown(report.announcementPages[0]!.scan.latestAttempt.checkedAt)})`] : []),
     t(report.officialScanGate.statement), t(report.finalRecommendation.statement),
     "", `## ${t("Official disclosures")}`, "",
     ...report.announcementPages.flatMap((page) => page.items.flatMap((item) => [
-      `- ${item.publishedAt}: ${markdown(item.subject)} [${item.id}; ${item.provenance.id}]`,
+      `- ${markdown(item.publishedAt)}: ${markdown(item.subject)} [${markdown(item.id)}; ${markdown(item.provenance.id)}]`,
       `  ${markdown(item.explanation.text)}`,
-      `  ${t("Quality")}: ${t(item.quality)}; ${t("text truncated")}: ${item.explanation.truncated}; ${t("rule")}: ${markdown(item.ruleClause)}; ${t("event")}: ${item.eventDate ?? t("not reported")}`,
-      ...(page.selection.conflictObservationIds.includes(item.id) ? [`  ${t("Unresolved source conflict")}: ${item.id}`] : []),
-      ...item.relations.map((relation) => `  ${relation.kind}: ${relation.targetAnnouncementId}`),
+      `  ${t("Quality")}: ${t(item.quality)}; ${t("text truncated")}: ${item.explanation.truncated}; ${t("rule")}: ${markdown(item.ruleClause)}; ${t("event")}: ${markdown(item.eventDate ?? t("not reported"))}`,
+      ...(page.selection.conflictObservationIds.includes(item.id) ? [`  ${t("Unresolved source conflict")}: ${markdown(item.id)}`] : []),
+      ...item.relations.map((relation) => `  ${relation.kind}: ${markdown(relation.targetAnnouncementId)}`),
       ...page.relationIndex.filter((relation) => relation.targetAnnouncementId === item.id)
-        .map((relation) => `  ${relation.kind}: ${relation.announcementId} → ${item.id}`),
-      ...(item.detailQuality ? [`  ${t("Quality")} (${t("source")}): ${t(item.detailQuality.status)}; ${item.detailQuality.reasonCodes.join(", ")}`] : []),
+        .map((relation) => `  ${relation.kind}: ${markdown(relation.announcementId)} → ${markdown(item.id)}`),
+      ...(item.detailQuality ? [`  ${t("Quality")} (${t("source")}): ${t(item.detailQuality.status)}; ${markdown(item.detailQuality.reasonCodes.join(", "))}`] : []),
     ])),
     "", `## ${t("Retained artifact evidence")}`, "",
     ...report.artifactPages.flatMap((page) => page.artifact ? [
-      `- ${page.artifact.id}: ${t(page.artifact.state)}; ${t("hash")} ${page.artifact.contentHash}; ${t("extraction")} ${page.artifact.extractionVersion}; ${t("source")} ${markdown(page.artifact.sourceUrl)}`,
-      ...page.artifact.verifiedClaims.map((claim) => `  ${markdown(claim.text)} [${claim.id}; ${t("page")} ${claim.page}; ${t("table")} ${claim.table ?? t("not applicable")}; ${t("subject")} ${claim.subject}; ${t("period")} ${claim.period ?? t("unknown")}; ${t("unit")} ${claim.unit ?? t("unknown")}; ${page.artifact!.provenance.id}]`),
+      `- ${markdown(page.artifact.id)}: ${t(page.artifact.state)}; ${t("hash")} ${markdown(page.artifact.contentHash)}; ${t("extraction")} ${markdown(page.artifact.extractionVersion)}; ${t("source")} ${markdown(page.artifact.sourceUrl)}`,
+      ...page.artifact.verifiedClaims.map((claim) => `  ${markdown(claim.text)} [${markdown(claim.id)}; ${t("page")} ${claim.page}; ${t("table")} ${markdown(claim.table ?? t("not applicable"))}; ${t("subject")} ${markdown(claim.subject)}; ${t("period")} ${markdown(claim.period ?? t("unknown"))}; ${t("unit")} ${markdown(claim.unit ?? t("unknown"))}; ${markdown(page.artifact!.provenance.id)}]`),
     ] : []),
     "", `## ${t("Catalysts and risks")}`, "",
     ...report.assessments.flatMap((assessment) => [
-      `- ${t(assessment.candidate.kind)} / ${t(assessment.candidate.status)} / ${t(assessment.support)}: ${markdown(assessment.support === "withheld" ? t(assessment.statement) : assessment.statement)} [${assessment.candidate.id}]`,
-      ...(assessment.support === "withheld" ? [`  ${t("Reasons")}: ${assessment.reasonCodes.join(", ")}`] : [
+      `- ${t(assessment.candidate.kind)} / ${t(assessment.candidate.status)} / ${t(assessment.support)}: ${markdown(assessment.support === "withheld" ? t(assessment.statement) : assessment.statement)} [${markdown(assessment.candidate.id)}]`,
+      ...(assessment.support === "withheld" ? [`  ${t("Reasons")}: ${markdown(assessment.reasonCodes.join(", "))}`] : [
         `  ${t("Analytical judgment (provisional); source assertion")}: ${t(assessment.sourceSupport)}. ${t("Mechanism")}: ${markdown(assessment.candidate.materialMechanism)}; ${t("affected")}: ${markdown(assessment.candidate.affectedMetricOrAssumption)}; ${t("horizon")}: ${markdown(assessment.candidate.horizon)}`,
         `  ${t("Confirm")}: ${markdown(assessment.candidate.confirmationCondition)}; ${t("disconfirm")}: ${markdown(assessment.candidate.disconfirmationCondition)}`,
         ...(assessment.candidate.condition ? [`  ${t("Condition")}: ${markdown(assessment.candidate.condition)}`] : []),
-        ...[...assessment.candidate.triggeringEvidence, ...assessment.candidate.confirmingEvidence, ...assessment.candidate.disconfirmingEvidence].map((reference) => `  ${t("Evidence")}: ${reference.kind === "announcement" ? reference.announcementId : `${reference.artifactId}/${reference.claimId}`}`),
+        ...[...assessment.candidate.triggeringEvidence, ...assessment.candidate.confirmingEvidence, ...assessment.candidate.disconfirmingEvidence].map((reference) => `  ${t("Evidence")}: ${markdown(reference.kind === "announcement" ? reference.announcementId : `${reference.artifactId}/${reference.claimId}`)}`),
       ]),
     ]),
     "", `## ${t("Limitations and recovery")}`, "", ...report.limitations.map((item) => `- ${markdown(t(item))}`),
     ...report.recoveryRequirements.map((item) => `- ${markdown(t(item))}`),
-    "", `## ${t("Provenance")}`, "", ...report.evidence.provenanceIds.map((id) => `- ${id}`),
+    "", `## ${t("Provenance")}`, "", ...report.evidence.provenanceIds.map((id) => `- ${markdown(id)}`),
   ].join("\n");
 }

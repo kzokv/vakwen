@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import { disclosureCandidateSchema } from "../../src/services/research/disclosureReport.js";
 
+function literalMarkdownText(value: string): string {
+  return value.replace(/&#(\d+);/g, (_, code: string) => String.fromCharCode(Number(code)));
+}
+
 const candidate = {
   id: "capacity", kind: "catalyst", status: "conditional",
   statement: "董事會於2026-10-03決議擴建產能，預計於2027-01-01完工。",
@@ -184,7 +188,7 @@ describe("focused disclosure report", () => {
     expect(report.assessments.map((item) => item.support)).toEqual(["provisional", "withheld"]);
     expect(report.officialScanGate.status).toBe("passed");
     expect(report.artifactPages[0]!.artifact!.blocks).toEqual([]);
-    expect(renderFocusedDisclosureResearchReportMarkdown(report)).toContain(f.announcement.explanation);
+    expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report))).toContain(f.announcement.explanation);
   });
   it("verified artifact: page/table identity and units → evidence retained in canonical report", async () => {
     const f = await seeded();
@@ -371,6 +375,64 @@ describe("focused disclosure report", () => {
     expect(report.assessments[0]!.reasonCodes).toContain("classification_status_not_verified");
     expect(disclosureCandidateSchema.safeParse({ ...candidate, status: "scheduled" }).success).toBe(false);
   });
+  it.each([
+    ["observed", "尚未發生", "2026-10-03"], ["observed", "並未完成", "2026-10-03"],
+    ["observed", "已取消原決議", "2026-10-03"], ["observed", "若通過將完成", "2026-10-03"],
+    ["observed", "not completed", "2026-10-03"], ["observed", "hasn't occurred", "2026-10-03"],
+    ["observed", "uncompleted", "2026-10-03"], ["observed", "if approved", "2026-10-03"],
+    ["observed", "completed subject to approval", "2026-10-03"],
+    ["observed", "will be completed", "2026-10-03"], ["observed", "並無發生", "2026-10-03"],
+    ["observed", "不排除發生", "2026-10-03"], ["observed", "預估完成", "2026-10-03"],
+    ["scheduled", "尚未預定", "2027-01-01"], ["scheduled", "取消原訂於", "2027-01-01"],
+    ["scheduled", "not scheduled", "2027-01-01"], ["scheduled", "no longer planned", "2027-01-01"],
+    ["scheduled", "scheduled but cancelled", "2027-01-01"],
+  ] as const)("%s negative/conditional cue %s: exact dated source → withhold affirmative classification", async (status, cue, date) => {
+    const f = await fixture();
+    const statement = `${date}: ${cue}`;
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: statement, eventDate: date }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate,
+      status, statement, statusEvidence: { ...candidate.statusEvidence, excerpt: statement, eventDate: date, eventDateText: date } }], readBudget: 10 });
+    expect(report.assessments[0]!.reasonCodes).toContain("classification_status_not_verified");
+    expect(report.assessments[0]!.support).toBe("withheld");
+    for (const locale of ["en", "zh-TW"] as const) {
+      expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, locale))).toContain(statement);
+    }
+  });
+  it.each(["已完成", "董事會決議通過", "approved", "completed", "occurred"])("affirmative occurrence %s: exact past dated source → retain supported classification", async (cue) => {
+    const f = await fixture();
+    const statement = `2026-10-03: ${cue}`;
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: statement }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, status: "observed", statement,
+      statusEvidence: { ...candidate.statusEvidence, excerpt: statement, eventDate: "2026-10-03", eventDateText: "2026-10-03" } }], readBudget: 10 });
+    expect(report.assessments[0]!.sourceSupport).toBe("supported");
+  });
+  it.each(["en", "zh-TW"] as const)("%s literal rendering: source prose and metadata Markdown injection → inert text without changing evidence", async (locale) => {
+    const f = await fixture();
+    const injection = "\\`code` **bold** _em_ [link](https://evil.example) ![image](https://evil.example/p.png) <img src=\"https://evil.example\"> <https://evil.example> www.evil.example &#91;x&#93; | # heading\r\n> block - item";
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, subject: injection, explanation: injection,
+      ruleClause: injection, eventDate: injection, detailQuality: { status: "available", reasonCodes: [injection] } }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, extractionVersion: injection,
+      blocks: f.artifact.blocks.map((block) => ({ ...block, table: injection, period: injection, unit: injection })),
+      verifiedClaims: f.artifact.verifiedClaims.map((claim) => ({ ...claim, text: injection, table: injection, period: injection, unit: injection })) }]);
+    const maliciousCandidate = { ...candidate, id: injection, statement: injection,
+      statusEvidence: { ...candidate.statusEvidence, excerpt: injection }, materialMechanism: injection,
+      affectedMetricOrAssumption: injection, horizon: injection, condition: injection,
+      confirmationCondition: injection, disconfirmationCondition: injection };
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [maliciousCandidate,
+      { ...artifactCandidate, statement: injection, statusEvidence: { ...artifactCandidate.statusEvidence, excerpt: injection } }], readBudget: 10 });
+    expect(report.assessments.every((assessment) => assessment.sourceSupport === "supported")).toBe(true);
+    const before = JSON.stringify(report);
+    const rendered = renderFocusedDisclosureResearchReportMarkdown(report, locale);
+    expect(rendered).not.toMatch(/!\[|\]\(|<img|<https|`|https:\/\/|www\.|\\/);
+    expect(rendered).toContain("&#91;link&#93;&#40;https&#58;&#47;&#47;evil&#46;example&#41;");
+    expect(rendered).toContain("&#92;&#96;code&#96;");
+    expect(rendered).toContain("&#38;&#35;91&#59;x&#38;&#35;93&#59;");
+    expect(literalMarkdownText(rendered)).toContain(injection.replace(/[\r\n\u2028\u2029]/g, " "));
+    expect(JSON.stringify(report)).toBe(before);
+  });
   it("long-lived thesis: declared extension → bounded two-year scan", async () => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "standard", extension: { months: 24, reason: "litigation", thesisItem: "Unresolved litigation" }, readBudget: 10 });
@@ -390,8 +452,8 @@ describe("focused disclosure report", () => {
     expect(zh).toContain("台灣重大訊息研究");
     expect(zh).toContain("本專題報告未評估其他必要條件，因此不提出最終建議。");
     expect(zh).toContain("催化因素 / 有條件 / 暫定");
-    expect(zh).toContain(f.announcement.explanation);
-    expect(en).toContain(f.announcement.explanation);
+    expect(literalMarkdownText(zh)).toContain(f.announcement.explanation);
+    expect(literalMarkdownText(en)).toContain(f.announcement.explanation);
     expect(JSON.stringify(report)).toBe(before);
     expect(report.assessments[0]!.sourceSupport).toBe("supported");
     expect(report.assessments[0]!.interpretationType).toBe("analytical_judgment");
@@ -438,7 +500,7 @@ describe("focused disclosure report", () => {
     expect(report.assessments[0]!.reasonCodes).toContain("announcement_conflict_unresolved");
     expect(report.assessments[1]!.reasonCodes).toContain("artifact_parent_conflict_unresolved");
     expect(report.officialScanGate.status).toBe("passed");
-    expect(renderFocusedDisclosureResearchReportMarkdown(report)).toContain("Unresolved source conflict: announcement_1");
+    expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report))).toContain("Unresolved source conflict: announcement_1");
   });
 
 });
