@@ -61,6 +61,10 @@ import { registerMcpReplayPositionRunWorker } from "../services/mcpReplayPositio
 import { EodhdEodProvider } from "../services/market-data/providers/eodhdEod.js";
 import { registerResearchIdentityAcquisitionWorker } from "../services/research/registerIdentityAcquisitionWorker.js";
 import { registerResearchPriceAcquisitionWorker } from "../services/research/registerPriceAcquisitionWorker.js";
+import {
+  buildCurrentMopsFinancialStatementDescriptors,
+  registerResearchFinancialStatementAcquisitionWorker,
+} from "../services/research/registerFinancialStatementAcquisitionWorker.js";
 import { researchAcquisitionEnabled } from "../services/research/rollout.js";
 
 function createRedisIntradayRefreshRequestBudget(
@@ -221,6 +225,27 @@ export async function registerPgBoss(app: AppInstance, persistenceOverride?: str
     await registerResearchPriceAcquisitionWorker(boss, {
       persistence: app.persistence,
       log: app.log,
+    });
+    await registerResearchFinancialStatementAcquisitionWorker(boss, {
+      persistence: app.persistence,
+      log: app.log,
+      resolveDescriptors: async () => {
+        const now = new Date();
+        const at = now.toISOString();
+        const identities = await Promise.all([
+          app.persistence.listLatestResearchIdentityRecords({
+            subject: { kind: "venue", venue: "TWSE" },
+            effectiveAt: at,
+            knowledgeAt: at,
+          }),
+          app.persistence.listLatestResearchIdentityRecords({
+            subject: { kind: "venue", venue: "TPEX" },
+            effectiveAt: at,
+            knowledgeAt: at,
+          }),
+        ]);
+        return buildCurrentMopsFinancialStatementDescriptors(identities.flat(), now);
+      },
     });
   }
 

@@ -11,6 +11,8 @@ import {
 import { unrealizedPnlAnalysisMcpInputSchema } from "../services/unrealizedPnlAnalysis.js";
 import { bookedChargeFieldSchema } from "../validation/bookedCharge.js";
 import {
+  researchFinancialStatementsQuerySchema,
+  researchFinancialStatementsToolOutputSchema,
   researchIdentityToolOutputSchema,
   researchIdentityQuerySchema,
   researchMonthlyRevenueQuerySchema,
@@ -283,6 +285,13 @@ const toolDefinitions = {
     description: "Return authoritative MOPS monthly revenue source facts, derived trend metrics with lineage, freshness gating, and cursor pagination for one immutable listing and fixed temporal context. Reads the canonical store only.",
     inputSchema: researchMonthlyRevenueQuerySchema,
     outputSchema: researchMonthlyRevenueToolOutputSchema,
+    scope: "research:read" as const,
+    accessKind: "read" as const,
+  },
+  get_financial_statements: {
+    description: "Return authoritative MOPS XBRL financial-statement filing periods, source facts, typed quality states, and derived outcomes for one immutable listing and fixed temporal context. Reads the canonical store only.",
+    inputSchema: researchFinancialStatementsQuerySchema,
+    outputSchema: researchFinancialStatementsToolOutputSchema,
     scope: "research:read" as const,
     accessKind: "read" as const,
   },
@@ -1309,6 +1318,7 @@ export function listMcpToolDefinitions(options: {
         || tool.name === "get_research_identity"
         || tool.name === "get_price_series"
         || tool.name === "get_monthly_revenue"
+        || tool.name === "get_financial_statements"
       ) {
         return includeRolloutDisabled || researchScopeAcquisitionAllowed();
       }
