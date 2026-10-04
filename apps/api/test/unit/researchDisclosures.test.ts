@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
+import { materialAnnouncementsOutputSchema, disclosureArtifactOutputSchema } from "../../src/services/research/contracts.js";
 import { getDisclosureArtifact, listMaterialAnnouncements } from "../../src/services/research/disclosures.js";
 import type { ResearchAnnouncementRecord, ResearchDisclosureArtifact, ResearchDisclosureScan } from "../../src/services/research/disclosureContracts.js";
 
@@ -205,4 +206,52 @@ it("leap-day publication bound: two calendar years → clamp to February28 witho
   const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context, range: { publishedFrom: "2026-02-28T02:00:00.000Z", publishedTo: context.knowledgeAt } });
   expect(result.window.publishedFrom).toBe("2026-02-28T02:00:00.000Z");
   await expect(listMaterialAnnouncements(f.persistence, { subject: f.subject, context, range: { publishedFrom: "2026-02-27T02:00:00.000Z", publishedTo: context.knowledgeAt } })).rejects.toMatchObject({ code: "research_range_invalid" });
+});
+
+it("announcement continuity: complete cursor chain → stable query/content binding and exact offsets", async () => {
+  const f = await disclosureFixture();
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "ann2" }, { ...f.announcement, id: "foreign", listingId: "other_listing" }]);
+  const initial = { subject: f.subject, context: f.context, limit: 1 };
+  const first = await listMaterialAnnouncements(f.persistence, initial);
+  const repeated = await listMaterialAnnouncements(f.persistence, initial);
+  const last = await listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor: first.page.nextCursor! });
+  expect(first.page.continuity).toEqual({ queryHash: expect.stringMatching(/^[a-f0-9]{64}$/), offset: 0, returnedCount: 1, totalCount: 2, requestCursor: null });
+  expect(repeated.page.continuity.queryHash).toBe(first.page.continuity.queryHash);
+  expect(last.page.continuity).toEqual({ ...first.page.continuity, offset: 1, requestCursor: first.page.nextCursor });
+  expect(last.page.nextCursor).toBeNull();
+  const differentOrder = await listMaterialAnnouncements(f.persistence, { ...initial, order: "asc" });
+  expect(differentOrder.page.continuity.queryHash).not.toBe(first.page.continuity.queryHash);
+  const changedRows = vi.spyOn(f.persistence, "listResearchAnnouncements").mockResolvedValue([{ ...f.announcement, explanation: "changed retained content" }, { ...f.announcement, id: "ann2" }]);
+  expect((await listMaterialAnnouncements(f.persistence, initial)).page.continuity.queryHash).not.toBe(first.page.continuity.queryHash);
+  changedRows.mockRestore();
+  for (const page of [{ ...first.page, nextCursor: null }, { ...first.page, continuity: { ...first.page.continuity, returnedCount: 0 } }]) {
+    expect(materialAnnouncementsOutputSchema.safeParse({ ...first, page }).success).toBe(false);
+  }
+});
+it("artifact continuity: physical pages and empty reads → exact returned and total counts", async () => {
+  const f = await disclosureFixture();
+  const first = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: f.artifact.id });
+  const last = await getDisclosureArtifact(f.persistence, { subject: f.subject, cursor: first.page.nextCursor! });
+  expect(first.page.continuity).toEqual({ queryHash: expect.stringMatching(/^[a-f0-9]{64}$/), offset: 0, returnedCount: 3, totalCount: 4, requestCursor: null });
+  expect(last.page.continuity).toEqual({ ...first.page.continuity, offset: 3, returnedCount: 1, requestCursor: first.page.nextCursor });
+  expect(disclosureArtifactOutputSchema.safeParse({ ...last, page: { ...last.page, continuity: { ...last.page.continuity, totalCount: 5 } } }).success).toBe(false);
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "missing_ref", attachments: [{ ...f.announcement.attachments[0]!, artifactId: "missing_artifact" }] }]);
+  const missing = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: "missing_artifact" });
+  expect(missing.page.continuity).toMatchObject({ offset: 0, returnedCount: 0, totalCount: 0, requestCursor: null });
+  const empty = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, range: { publishedFrom: "2026-08-31T00:00:00.000Z", publishedTo: "2026-08-31T23:59:59.000Z" } });
+  expect(empty.page.continuity).toMatchObject({ offset: 0, returnedCount: 0, totalCount: 0, requestCursor: null });
+});
+it("response budget: metadata and echoed cursors → capped payload with final returned count", async () => {
+  const f = await disclosureFixture();
+  await f.persistence.appendResearchAnnouncements(Array.from({ length: 7 }, (_, index) => ({ ...f.announcement, id: `budget_${index}` })));
+  let page = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, limit: 100 });
+  let seen = 0;
+  for (;;) {
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(255 * 1024);
+    expect(page.page.continuity).toMatchObject({ offset: seen, returnedCount: page.items.length, totalCount: 8 });
+    seen += page.items.length;
+    if (page.page.nextCursor === null) break;
+    page = await listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor: page.page.nextCursor });
+  }
+  expect(seen).toBe(8);
 });

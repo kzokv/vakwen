@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Env } from "@vakwen/config";
 import type { Persistence } from "../../persistence/types.js";
 import {
@@ -22,6 +22,9 @@ export class DisclosureServiceError extends Error {
 type AnnouncementQuery = ReturnType<typeof researchAnnouncementsInitialQuerySchema.parse>;
 type ArtifactQuery = ReturnType<typeof researchDisclosureArtifactInitialQuerySchema.parse>;
 interface Cursor { requestedSubject: unknown; version: string; purpose: string; auth: string; issuedAt: number; query: AnnouncementQuery | ArtifactQuery; after: string; artifactBinding?: string }
+function continuityHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
 function secret(options: DisclosureReadOptions) { return options.cursorSecret ?? Env.SESSION_SECRET ?? processSecret; }
 function encode(value: Cursor, options: DisclosureReadOptions): string {
   const payload = Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -99,6 +102,7 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
     && (!query.range?.eventFrom || (record.eventDate !== null && record.eventDate >= query.range.eventFrom))
     && (!query.range?.eventTo || (record.eventDate !== null && record.eventDate <= query.range.eventTo)))
     .sort((a, b) => (Date.parse(a.publishedAt) - Date.parse(b.publishedAt) || a.id.localeCompare(b.id)) * (query.order === "asc" ? 1 : -1));
+  const queryHash = continuityHash({ purpose: "announcements", version: VERSION, query: { ...query, subject: identity.selector, context: identity.context }, range: { start, end }, rows });
   const offset = cursor ? rows.findIndex((row) => row.id === cursor.after) + 1 : 0;
   if (cursor && offset === 0) throw new DisclosureServiceError("research_cursor_invalid", "Announcement cursor boundary no longer matches retained evidence.");
   const items: MaterialAnnouncementsOutput["items"] = [];
@@ -132,11 +136,12 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
     window: { publishedFrom: start, publishedTo: end, ...(query.range?.eventFrom ? { eventFrom: query.range.eventFrom } : {}), ...(query.range?.eventTo ? { eventTo: query.range.eventTo } : {}), exhaustive }, quality,
     scan: { status, checkedAt: selectedScan?.checkedAt ?? null, record: selectedScan ?? null, latestAttempt: latestAttempt ?? null, eventFactFreshness: "not_applicable" }, items,
     relationIndex: all.flatMap((row) => row.relations.filter((relation) => items.some((item) => item.id === row.id || item.id === relation.targetAnnouncementId)).map((relation) => ({ announcementId: row.id, ...relation }))),
-    page: { nextCursor, order: query.order, limit: query.limit, truncatedBy: more ? budgetTruncated ? "response_budget" : "page_limit" : null },
+    page: { continuity: { queryHash, offset, returnedCount: items.length, totalCount: rows.length, requestCursor: "cursor" in parsed ? parsed.cursor : null }, nextCursor, order: query.order, limit: query.limit, truncatedBy: more ? budgetTruncated ? "response_budget" : "page_limit" : null },
     provenance: [...new Map(items.map((item) => [item.provenance.id, item.provenance])).values()],
   });
   while (Buffer.byteLength(JSON.stringify(output)) > RESPONSE_BYTES && output.items.length > 1) {
     output.items.pop();
+    output.page.continuity.returnedCount = output.items.length;
     const retainedIds = new Set(output.items.map((item) => item.id));
     output.relationIndex = output.relationIndex.filter((relation) => retainedIds.has(relation.announcementId) || retainedIds.has(relation.targetAnnouncementId));
     output.provenance = [...new Map(output.items.map((item) => [item.provenance.id, item.provenance])).values()];
@@ -172,6 +177,7 @@ export async function getDisclosureArtifact(persistence: Persistence, input: Res
   if (cursor && cursor.artifactBinding !== binding) throw new DisclosureServiceError("research_cursor_invalid", "Artifact hash or extraction version does not match cursor.");
   const available = artifact?.state === "available";
   const pages = artifact && available ? Array.from({ length: artifact.totalPages }, (_, index) => index + 1).sort((a, b) => (a - b) * (query.order === "asc" ? 1 : -1)) : [];
+  const queryHash = continuityHash({ purpose: "artifact", version: VERSION, query: { ...query, subject: identity.selector, context: identity.context }, binding, artifact, pages });
   const offset = cursor ? pages.indexOf(Number(cursor.after)) + 1 : 0;
   if (cursor && offset === 0) throw new DisclosureServiceError("research_cursor_invalid", "Artifact page boundary is invalid.");
   const selectedPages: number[] = [];
@@ -205,7 +211,7 @@ export async function getDisclosureArtifact(persistence: Persistence, input: Res
       blocks: blocks.map((block) => ({ ...block, qualifiers: { period: qualifier(block.period), unit: qualifier(block.unit) } })),
       verifiedClaims: verifiedClaims.map((claim) => ({ ...claim, qualifiers: { period: qualifier(claim.period), unit: qualifier(claim.unit) } })),
     } : null,
-    page: { nextCursor, returnedPages: selectedPages, totalPages: artifact?.totalPages ?? 0, retainedCharacters,
+    page: { continuity: { queryHash, offset, returnedCount: selectedPages.length, totalCount: pages.length, requestCursor: "cursor" in parsed ? parsed.cursor : null }, nextCursor, returnedPages: selectedPages, totalPages: artifact?.totalPages ?? 0, retainedCharacters,
       originalCharacters: artifact ? artifact.blocks.reduce((total, block) => total + Array.from(block.text).length, 0) + artifact.verifiedClaims.reduce((total, claim) => total + Array.from(claim.text).length, 0) : 0,
       pageTruncated: missingPages, totalTruncated: more || offset > 0 || !available || missingPages },
   });

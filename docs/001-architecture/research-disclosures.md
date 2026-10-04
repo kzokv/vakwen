@@ -27,6 +27,10 @@ Optional `purposes` accepts at most twenty unique IDs from the versioned registr
 
 Continue with only the repeated `subject` and `cursor`. Do not repeat or change context, artifact ID, range, ordering, or limit. A signed cursor binds the immutable Listing, normalized query, fixed temporal context, versions, operation and authenticated connector context. Artifact cursors also bind content hash and extraction version. Chains expire after 24 hours.
 
+Each response includes `page.continuity`: `queryHash`, `offset`, `returnedCount`, `totalCount`, and `requestCursor`. Counts cover the authorized, filtered selection; artifact counts cover retained numbered pages available to the read. Initial pages start at offset zero with a null request cursor. Subsequent pages must match the preceding continuation cursor and advance by the actual returned count, preserving query identity and total count. Terminal cursors must agree with the count boundary.
+
+Report composition checks the complete supplied chain from its initial page, including artifact page-number order. A valid unfinished chain remains partial; terminal-only, skipped, duplicate or inconsistent pages are rejected. These checks establish structural consistency of retained responses, not authenticity of wholly caller-forged report data. Added metadata remains subject to the final response-byte budget.
+
 Character caps and serialized response-byte budgets are separate. Responses preserve complete records and expose response-budget truncation; an oversized indivisible record returns `record_too_large`. Callers must not interpret an incomplete page chain as exhaustive evidence.
 
 ### Artifact authorization and exposure

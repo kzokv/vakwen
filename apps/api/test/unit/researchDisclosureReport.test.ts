@@ -86,6 +86,31 @@ async function seeded(venue: "TWSE" | "TPEX" = "TWSE") {
   await f.persistence.appendResearchDisclosureScans([f.scan]);
   return f;
 }
+async function paginatedFixture(artifactOrder: "asc" | "desc" = "asc") {
+  const f = await fixture();
+  await f.persistence.appendResearchAnnouncements([f.announcement,
+    { ...f.announcement, id: "announcement_2" }, { ...f.announcement, id: "announcement_3" }]);
+  await f.persistence.appendResearchDisclosureScans([f.scan]);
+  await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, totalPages: 3,
+    blocks: [1, 2, 3].map((page) => ({ ...f.artifact.blocks[0]!, id: `block_${page}`, page })) }]);
+  const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+  const announcementPages: Awaited<ReturnType<typeof listMaterialAnnouncements>>[] = [];
+  const artifactPages: Awaited<ReturnType<typeof getDisclosureArtifact>>[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await listMaterialAnnouncements(f.persistence, cursor ? { subject: f.query.subject, cursor }
+      : { ...f.query, limit: 1, range: { publishedFrom: f.scan.publicationStart, publishedTo: f.scan.publicationEnd } });
+    announcementPages.push(page);
+    cursor = page.page.nextCursor;
+  } while (cursor);
+  do {
+    const page = await getDisclosureArtifact(f.persistence, cursor ? { subject: f.query.subject, cursor }
+      : { ...f.query, artifactId: f.artifact.id, limit: 1, order: artifactOrder });
+    artifactPages.push(page);
+    cursor = page.page.nextCursor;
+  } while (cursor);
+  return { ...f, identity, announcementPages, artifactPages };
+}
 const artifactCandidate = { ...candidate, id: "artifact_dependent", statement: "Planned capacity is 100 units",
   statusEvidence: { reference: { kind: "artifact_claim" as const, artifactId: "artifact_1", claimId: "claim_1" }, excerpt: "Planned capacity is 100 units" }, triggeringEvidence: [{ kind: "artifact_claim" as const, artifactId: "artifact_1", claimId: "claim_1" }] };
 
@@ -226,11 +251,8 @@ describe("focused disclosure report", () => {
     expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).toThrow(/do not match retained evidence/);
   });
   it("announcement pagination: unread continuation → partial report without invented budget cause", async () => {
-    const f = await seeded();
-    const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
-    const page = await listMaterialAnnouncements(f.persistence, f.query);
-    page.page.nextCursor = "retained_continuation";
-    const report = composeFocusedDisclosureResearchReport({ identity, announcementPages: [page] });
+    const f = await paginatedFixture();
+    const report = composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: [f.announcementPages[0]!] });
     expect(report.reportStatus).toBe("partial");
     expect(renderFocusedDisclosureResearchReportMarkdown(report)).toContain("Announcement reads are incomplete");
     expect(renderFocusedDisclosureResearchReportMarkdown(report, "zh-TW")).toContain("公告讀取尚未完成");
@@ -239,18 +261,78 @@ describe("focused disclosure report", () => {
     expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).toThrow(/do not match retained evidence/);
   });
   it("artifact pagination: unread continuation → independently derive partial report", async () => {
-    const f = await seeded();
-    const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
-    const page = await listMaterialAnnouncements(f.persistence, f.query);
-    const artifact = await getDisclosureArtifact(f.persistence, { ...f.query, artifactId: "artifact_1" });
-    artifact.page.nextCursor = "retained_continuation";
-    const report = composeFocusedDisclosureResearchReport({ identity, announcementPages: [page], artifactPages: [artifact], candidates: [artifactCandidate] });
+    const f = await paginatedFixture();
+    const report = composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: f.announcementPages,
+      artifactPages: [f.artifactPages[0]!], candidates: [artifactCandidate] });
     expect(report.reportStatus).toBe("partial");
     expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).not.toThrow();
-    const complete = composeFocusedDisclosureResearchReport({ identity, announcementPages: [page],
-      artifactPages: [artifact, { ...artifact, page: { ...artifact.page, nextCursor: null } }], candidates: [artifactCandidate] });
+    const complete = composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: f.announcementPages,
+      artifactPages: f.artifactPages, candidates: [artifactCandidate], mode: "standard" });
     expect(complete.reportStatus).toBe("complete");
+    expect(complete.window.exhaustive).toBe(true);
     expect(() => renderFocusedDisclosureResearchReportMarkdown(complete)).not.toThrow();
+  });
+  it("descending artifact chain: contiguous physical pages → complete renderable report", async () => {
+    const f = await paginatedFixture("desc");
+    expect(f.artifactPages.flatMap((page) => page.page.returnedPages)).toEqual([3, 2, 1]);
+    const report = composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: f.announcementPages,
+      artifactPages: f.artifactPages, candidates: [artifactCandidate] });
+    expect(report.reportStatus).toBe("complete");
+    expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).not.toThrow();
+  });
+  it.each(["terminal_only", "missing_middle", "forged_terminal"] as const)("announcement %s: broken page chain → reject incomplete coverage", async (mutation) => {
+    const f = await paginatedFixture();
+    const announcementPages = mutation === "terminal_only" ? [f.announcementPages[2]!]
+      : mutation === "missing_middle" ? [f.announcementPages[0]!, f.announcementPages[2]!]
+        : [{ ...f.announcementPages[0]!, page: { ...f.announcementPages[0]!.page, nextCursor: null } }];
+    expect(() => composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages, mode: "standard" })).toThrow(/page continuity/);
+  });
+  it.each(["terminal_only", "missing_middle", "forged_terminal"] as const)("artifact %s: broken page chain → reject incomplete coverage", async (mutation) => {
+    const f = await paginatedFixture();
+    const artifactPages = mutation === "terminal_only" ? [f.artifactPages[2]!]
+      : mutation === "missing_middle" ? [f.artifactPages[0]!, f.artifactPages[2]!]
+        : [{ ...f.artifactPages[0]!, page: { ...f.artifactPages[0]!.page, nextCursor: null } }];
+    expect(() => composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: f.announcementPages,
+      artifactPages, candidates: [artifactCandidate] })).toThrow(/page continuity/);
+  });
+  it.each(["duplicate", "reversed"] as const)("%s page arrays: announcement and artifact chains → reject repeated or reordered responses", async (mutation) => {
+    const f = await paginatedFixture();
+    const announcements = mutation === "duplicate" ? [f.announcementPages[0]!, ...f.announcementPages] : [...f.announcementPages].reverse();
+    const artifacts = mutation === "duplicate" ? [f.artifactPages[0]!, ...f.artifactPages] : [...f.artifactPages].reverse();
+    expect(() => composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: announcements })).toThrow(/page continuity/);
+    expect(() => composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: f.announcementPages, artifactPages: artifacts })).toThrow(/page continuity/);
+  });
+  it.each(["duplicate", "reversed"] as const)("%s announcement payload: unchanged boundary counts → reject repeated or unordered records", async (mutation) => {
+    const f = await paginatedFixture();
+    if (mutation === "duplicate") f.announcementPages[1]!.items = f.announcementPages[0]!.items;
+    else {
+      const firstItems = f.announcementPages[0]!.items;
+      f.announcementPages[0]!.items = f.announcementPages[2]!.items;
+      f.announcementPages[2]!.items = firstItems;
+    }
+    expect(() => composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: f.announcementPages })).toThrow(/page continuity/);
+  });
+  it.each(["offset", "count", "total", "query", "cursor"] as const)("page boundary %s mutation: inconsistent service metadata → reject", async (field) => {
+    const f = await paginatedFixture();
+    const page = f.announcementPages[1]!;
+    if (field === "offset") page.page.continuity.offset += 1;
+    if (field === "count") page.page.continuity.returnedCount += 1;
+    if (field === "total") page.page.continuity.totalCount += 1;
+    if (field === "query") page.page.continuity.queryHash = "f".repeat(64);
+    if (field === "cursor") page.page.continuity.requestCursor = "unrelated_cursor";
+    expect(() => composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: f.announcementPages })).toThrow(/page continuity/);
+  });
+  it("artifact physical pages: duplicate or skipped number → reject despite consistent counts", async () => {
+    const f = await paginatedFixture();
+    f.artifactPages[1]!.page.returnedPages = [1];
+    expect(() => composeFocusedDisclosureResearchReport({ identity: f.identity, announcementPages: f.announcementPages,
+      artifactPages: f.artifactPages })).toThrow(/page continuity/);
+  });
+  it("empty collection: initial zero-count terminal page → valid complete read", async () => {
+    const f = await fixture();
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { readBudget: 10 });
+    expect(report.reportStatus).toBe("complete");
+    expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).not.toThrow();
   });
   it("missing retained artifact: unavailable dependency → only dependent claim withheld", async () => {
     const f = await fixture();

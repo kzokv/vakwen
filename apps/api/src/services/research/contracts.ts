@@ -1237,6 +1237,18 @@ const disclosureSelectionOutputSchema = z.object({
   selectedObservationIds: z.array(canonicalIdSchema), conflictObservationIds: z.array(canonicalIdSchema), excludedObservationCount: z.number().int().nonnegative(), reasonCodes: z.array(z.string()),
   readinessByPurpose: z.array(z.object({ purposeId: disclosurePurposeSchema, status: z.enum(["ready", "degraded", "blocked", "indeterminate", "not_applicable"]), reasonCodes: z.array(z.string()) }).strict()),
 }).strict();
+const disclosurePageContinuitySchema = z.object({
+  queryHash: z.string().regex(/^[a-f0-9]{64}$/), offset: z.number().int().nonnegative(),
+  returnedCount: z.number().int().nonnegative(), totalCount: z.number().int().nonnegative(), requestCursor: z.string().min(1).nullable(),
+}).strict();
+function validateDisclosurePageContinuity(page: { nextCursor: string | null; continuity: z.infer<typeof disclosurePageContinuitySchema> }, count: number, ctx: z.RefinementCtx) {
+  const { offset, returnedCount, totalCount, requestCursor } = page.continuity;
+  const end = offset + returnedCount;
+  if (returnedCount !== count || end > totalCount || (page.nextCursor !== null) !== (end < totalCount)
+    || (offset === 0) !== (requestCursor === null) || (page.nextCursor !== null && returnedCount === 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["page", "continuity"], message: "Disclosure page continuity is inconsistent with its payload or terminal cursor." });
+  }
+}
 export const materialAnnouncementsOutputSchema = z.object({
   contractVersion: z.literal("material-announcements/1.0.0"), selector: immutableListingSelectorSchema, context: fixedResearchContextSchema,
   identity: disclosureIdentitySummarySchema,
@@ -1247,9 +1259,9 @@ export const materialAnnouncementsOutputSchema = z.object({
     explanation: z.object({ text: z.string(), originalCharacters: z.number().int().nonnegative(), retainedCharacters: z.number().int().nonnegative(), truncated: z.boolean(), contentHash: z.string(), sourceUrl: z.string().url(), location: z.literal("issuer_explanation") }).strict(),
   }).strict()),
   relationIndex: z.array(z.object({ announcementId: canonicalIdSchema, kind: z.enum(["corrects", "retracts", "supersedes"]), targetAnnouncementId: canonicalIdSchema }).strict()),
-  page: z.object({ nextCursor: z.string().nullable(), order: z.enum(["asc", "desc"]), limit: z.number().int(), truncatedBy: z.enum(["page_limit", "response_budget"]).nullable() }).strict(),
+  page: z.object({ continuity: disclosurePageContinuitySchema, nextCursor: z.string().nullable(), order: z.enum(["asc", "desc"]), limit: z.number().int(), truncatedBy: z.enum(["page_limit", "response_budget"]).nullable() }).strict(),
   provenance: z.array(disclosureProvenanceSchema),
-}).strict();
+}).strict().superRefine((output, ctx) => validateDisclosurePageContinuity(output.page, output.items.length, ctx));
 const disclosureQualifierStateSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("present"), value: z.string() }).strict(),
   z.object({ state: z.literal("missing"), reason: z.literal("unknown") }).strict(),
@@ -1264,8 +1276,8 @@ export const disclosureArtifactOutputSchema = z.object({
   contractVersion: z.literal("disclosure-artifact/1.0.0"), selector: immutableListingSelectorSchema, context: fixedResearchContextSchema,
   identity: disclosureIdentitySummarySchema, quality: disclosureQualitySchema, selection: disclosureSelectionOutputSchema,
   artifact: retainedArtifactOutputSchema.nullable(),
-  page: z.object({ nextCursor: z.string().nullable(), returnedPages: z.array(z.number().int()), totalPages: z.number().int().nonnegative(), retainedCharacters: z.number().int().nonnegative(), originalCharacters: z.number().int().nonnegative(), pageTruncated: z.boolean(), totalTruncated: z.boolean() }).strict(),
-}).strict();
+  page: z.object({ continuity: disclosurePageContinuitySchema, nextCursor: z.string().nullable(), returnedPages: z.array(z.number().int()), totalPages: z.number().int().nonnegative(), retainedCharacters: z.number().int().nonnegative(), originalCharacters: z.number().int().nonnegative(), pageTruncated: z.boolean(), totalTruncated: z.boolean() }).strict(),
+}).strict().superRefine((output, ctx) => validateDisclosurePageContinuity(output.page, output.page.returnedPages.length, ctx));
 export const researchAnnouncementsToolOutputSchema = z.object({ result: z.union([materialAnnouncementsOutputSchema, researchToolErrorOutputSchema]) }).strict();
 export const researchDisclosureArtifactToolOutputSchema = z.object({ result: z.union([disclosureArtifactOutputSchema, researchToolErrorOutputSchema]) }).strict();
 export type MaterialAnnouncementsOutput = z.infer<typeof materialAnnouncementsOutputSchema>;

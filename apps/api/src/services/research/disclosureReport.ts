@@ -105,6 +105,31 @@ function sameContext(left: MaterialAnnouncementsOutput["context"], right: Materi
     && left.assessmentMode === right.assessmentMode && left.policySetVersion === right.policySetVersion;
 }
 
+/** Check the structural continuity of service responses, not the authenticity of caller-authored data. */
+function validateDisclosurePageChain(pages: Array<{
+  nextCursor: string | null;
+  continuity: { queryHash: string; offset: number; returnedCount: number; totalCount: number; requestCursor: string | null };
+}>, counts: number[]): boolean {
+  const first = pages[0];
+  if (!first) throw new Error("Disclosure report page continuity is missing");
+  let offset = 0;
+  let requestCursor: string | null = null;
+  for (const [index, page] of pages.entries()) {
+    const c = page.continuity;
+    const end = offset + counts[index]!;
+    if (c.offset !== offset || c.requestCursor !== requestCursor || c.queryHash !== first.continuity.queryHash
+      || c.totalCount !== first.continuity.totalCount || c.returnedCount !== counts[index]
+      || end > c.totalCount || (end < c.totalCount) !== (page.nextCursor !== null)
+      || (c.returnedCount === 0 && (c.totalCount !== 0 || index !== 0))
+      || (index > 0 && requestCursor === null)) {
+      throw new Error("Disclosure report page continuity does not match retained boundaries");
+    }
+    offset = end;
+    requestCursor = page.nextCursor;
+  }
+  return offset < first.continuity.totalCount;
+}
+
 /** Validate a specialist fragment against retained evidence without making new publisher assertions. */
 export function composeFocusedDisclosureResearchReport(input: {
   identity: z.infer<typeof researchIdentityOutputSchema>;
@@ -136,7 +161,38 @@ export function composeFocusedDisclosureResearchReport(input: {
     || page.window.publishedTo !== first.window.publishedTo)) {
     throw new Error("Disclosure report collection window mismatch");
   }
-  const collectionIncomplete = pages.at(-1)!.page.nextCursor !== null;
+  const collectionIncomplete = validateDisclosurePageChain(pages.map((page) => page.page), pages.map((page) => page.items.length));
+  if (pages.some((page) => page.page.order !== first.page.order || page.page.limit !== first.page.limit)) {
+    throw new Error("Disclosure report page continuity query order or limit mismatch");
+  }
+  const orderedAnnouncements = pages.flatMap((page) => page.items);
+  const uniqueAnnouncements = new Set(orderedAnnouncements.map((item) => item.id));
+  if (uniqueAnnouncements.size !== orderedAnnouncements.length || orderedAnnouncements.some((item, index) => {
+    const previous = orderedAnnouncements[index - 1];
+    if (!previous) return false;
+    const comparison = Date.parse(item.publishedAt) - Date.parse(previous.publishedAt) || item.id.localeCompare(previous.id);
+    return comparison * (first.page.order === "asc" ? 1 : -1) <= 0;
+  })) throw new Error("Disclosure report announcement page continuity contains repeated or unordered records");
+  const artifactGroups = new Map<string, DisclosureArtifactOutput[]>();
+  for (const page of artifacts) {
+    const key = page.artifact?.id ?? page.page.continuity.queryHash;
+    artifactGroups.set(key, [...(artifactGroups.get(key) ?? []), page]);
+  }
+  for (const group of artifactGroups.values()) {
+    validateDisclosurePageChain(group.map((page) => page.page), group.map((page) => page.page.returnedPages.length));
+    const firstArtifact = group[0]!;
+    const total = firstArtifact.artifact?.state === "available" ? firstArtifact.page.totalPages : 0;
+    const ascending = firstArtifact.page.returnedPages[0] !== total || total <= 1;
+    for (const page of group) {
+      if (page.page.totalPages !== firstArtifact.page.totalPages || page.page.continuity.totalCount !== total
+        || page.artifact?.contentHash !== firstArtifact.artifact?.contentHash
+        || page.artifact?.extractionVersion !== firstArtifact.artifact?.extractionVersion
+        || page.page.returnedPages.some((number, index) => number !== (ascending
+          ? page.page.continuity.offset + index + 1 : total - page.page.continuity.offset - index))) {
+        throw new Error("Disclosure report artifact page continuity does not match retained page numbers");
+      }
+    }
+  }
   const requiredStart = subtractUtcCalendarMonths(new Date(identity.context.effectiveAt), input.extension?.months ?? 12);
   const exhaustive = mode === "standard" && !collectionIncomplete && pages.every((page) => page.window.exhaustive)
     && Date.parse(first.window.publishedFrom) <= requiredStart.getTime()
