@@ -1,6 +1,6 @@
 import { isMopsAccessDenial } from "./providers/mopsAccessDenial.js";
 import { enrichOfficialAnnouncement, announcementCitationSelectors } from "./providers/mopsAnnouncementDetails.js";
-import { extractDisclosureContent } from "./providers/disclosureExtraction.js";
+import { extractDisclosureContent, resolveDisclosureMediaType } from "./providers/disclosureExtraction.js";
 import { createHash } from "node:crypto";
 import type { Persistence } from "../../persistence/types.js";
 import type { ResearchDisclosureScan, ResearchDisclosureArtifact } from "./disclosureContracts.js";
@@ -109,9 +109,10 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
           try {
             const retained = await officialResponse(fetchImpl, attachment.sourceUrl, options.signal);
             fetched = true;
-            const extracted = await extractDisclosureContent(retained.bytes, retained.mediaType, record.issuerId, attachment.artifactId!);
+            const mediaType = resolveDisclosureMediaType(retained.bytes, retained.mediaType, attachment.mediaType);
+            const extracted = await extractDisclosureContent(retained.bytes, mediaType, record.issuerId, attachment.artifactId!);
             artifact = { ...explanation, ...extracted, id: attachment.artifactId!, sourceUrl: attachment.sourceUrl,
-              contentHash: createHash("sha256").update(retained.bytes).digest("hex"), retainedBytesBase64: Buffer.from(retained.bytes).toString("base64"), mediaType: retained.mediaType, state: "available", verifiedClaims: [],
+              contentHash: createHash("sha256").update(retained.bytes).digest("hex"), retainedBytesBase64: Buffer.from(retained.bytes).toString("base64"), mediaType, sourceMediaType: retained.mediaType, state: "available", verifiedClaims: [],
               parentProvenance: record.provenance,
               provenance: { ...record.provenance, id: disclosureId("pr", attachment.artifactId!, createHash("sha256").update(retained.bytes).digest("hex")), sourceUrl: attachment.sourceUrl, contentHash: createHash("sha256").update(retained.bytes).digest("hex"), parserVersion: extracted.extractionVersion, retrievedAt: options.retrievedAt ?? new Date().toISOString(), processedAt: options.retrievedAt ?? new Date().toISOString(), acquisitionRunId } };
             attemptStatus = "retained";

@@ -37,7 +37,7 @@ export const disclosureClaimSchema = z.object({
 }).strict();
 export const researchDisclosureArtifactBaseSchema = z.object({
   id, issuerId: id, contentHash: z.string().regex(/^[a-f0-9]{64}$/), extractionVersion: z.string().min(1),
-  publishedAt: time, sourceUrl: safeUrl, mediaType: z.string(),
+  publishedAt: time, sourceUrl: safeUrl, mediaType: z.string(), sourceMediaType: z.string().optional(),
   reference: z.object({ kind: z.enum(["announcement_attachment", "investor_material"]), id }).strict(),
   state: z.enum(["available", "restricted", "processing_failed", "indeterminate", "unavailable"]),
   parentProvenance: disclosureProvenanceSchema.optional(),

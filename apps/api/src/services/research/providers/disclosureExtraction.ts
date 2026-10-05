@@ -7,6 +7,24 @@ const MAX_PAGES = 1_000;
 const MAX_CHARACTERS = 5_000_000;
 type Block = ResearchDisclosureArtifact["blocks"][number];
 
+/** Resolve only generic transport MIME; never guess arbitrary binary content is text. */
+export function resolveDisclosureMediaType(bytes: Uint8Array, declared: string, attachmentType?: string): string {
+  const type = declared.split(";", 1)[0]!.trim().toLowerCase();
+  if (type && type !== "application/octet-stream" && type !== "binary/octet-stream") return type;
+  if (Buffer.from(bytes.subarray(0, 5)).equals(Buffer.from("%PDF-"))) return "application/pdf";
+  if (attachmentType === "application/pdf") return "application/pdf"; // PDF.js validates the retained bytes.
+  if (attachmentType === "text/plain" || attachmentType === "text/html" || attachmentType === "application/xhtml+xml") {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    for (const character of text) {
+      const code = character.charCodeAt(0);
+      if (code < 32 && ![9, 10, 12, 13].includes(code)) throw new Error("disclosure_extraction_binary_text_mismatch");
+    }
+    if (attachmentType !== "text/plain" && !/^\s*(?:<\?xml\b[\s\S]*?\?>\s*)?(?:<!doctype\s+html\b|<(?:html|head|body|p|div|table|section|article|h[1-6])(?:\s|>))/i.test(text)) throw new Error("disclosure_extraction_html_signature_missing");
+    return attachmentType;
+  }
+  return type || "application/octet-stream";
+}
+
 /** Acquisition-only extraction: no URLs, network access, or verified-claim promotion. */
 export async function extractDisclosureContent(
   bytes: Uint8Array,
@@ -15,7 +33,7 @@ export async function extractDisclosureContent(
   artifactId: string,
 ): Promise<{ blocks: Block[]; totalPages: number; extractionVersion: string; confirmedEmptyPages?: number[] }> {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_BYTES) throw new Error("disclosure_extraction_size_limit");
-  const type = mediaType.split(";", 1)[0]!.trim().toLowerCase();
+  const type = resolveDisclosureMediaType(bytes, mediaType);
   const blocks: Block[] = [];
   let characters = 0;
   function append(text: string, page: number, table: string | null = null, preserveWhitespace = false) {

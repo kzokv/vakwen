@@ -105,6 +105,22 @@ function subtractUtcCalendarMonths(date: Date, months: number): Date {
   return result;
 }
 
+/** Normalize only explicit Gregorian/ROC calendar dates, without Date.parse rollover. */
+function normalizePublisherCalendarDate(literal: string | undefined): string | null {
+  if (!literal) return null;
+  const patterns = [/^(\d{3,4})-(\d{1,2})-(\d{1,2})$/, /^(\d{3,4})\/(\d{1,2})\/(\d{1,2})$/, /^(\d{3,4})年(\d{1,2})月(\d{1,2})日?$/];
+  const match = patterns.map((pattern) => pattern.exec(literal)).find((result) => result !== null);
+  if (!match) return null;
+  const sourceYear = Number(match[1]);
+  const year = sourceYear + (match[1]!.length === 3 ? 1911 : 0);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const monthLengths = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (sourceYear < 1 || month < 1 || month > 12 || day < 1 || day > monthLengths[month - 1]!) return null;
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 function sameContext(left: MaterialAnnouncementsOutput["context"], right: MaterialAnnouncementsOutput["context"]): boolean {
   return left.knowledgeAt === right.knowledgeAt && left.effectiveAt === right.effectiveAt
     && left.assessmentMode === right.assessmentMode && left.policySetVersion === right.policySetVersion;
@@ -288,9 +304,7 @@ export function composeFocusedDisclosureResearchReport(input: {
     const excerptMatches = sourceText(anchor.reference)?.includes(anchor.excerpt) === true;
     const date = anchor.eventDate ? Date.parse(`${anchor.eventDate}T00:00:00+08:00`) : Number.NaN;
     const literalDate = anchor.eventDateText?.trim();
-    let normalizedDate = literalDate;
-    const rocDate = literalDate?.match(/^(\d{3})[年/-](\d{1,2})[月/-](\d{1,2})日?$/);
-    if (rocDate) normalizedDate = `${Number(rocDate[1]) + 1911}-${rocDate[2]!.padStart(2, "0")}-${rocDate[3]!.padStart(2, "0")}`;
+    const normalizedDate = normalizePublisherCalendarDate(literalDate);
     const datedStatus = candidate.status === "observed" || candidate.status === "scheduled";
     const dateVerified = !datedStatus || (Number.isFinite(date) && !!literalDate && anchor.excerpt.includes(literalDate)
       && normalizedDate === anchor.eventDate

@@ -39,6 +39,11 @@ export interface AnnouncementEnrichmentOptions {
   resolvePreviousRecords?: (record: ResearchAnnouncementRecord) => Promise<readonly ResearchAnnouncementMetadata[]>;
   retrievedAt?: string;
 }
+function attachmentMediaType(url: string, fileName: string): string {
+  const filenameExtension = /\.(pdf|txt|html?|xhtml)$/i.exec(fileName.trim())?.[1]?.toLowerCase();
+  const extension = filenameExtension ?? /\.(pdf|txt|html?|xhtml)$/i.exec(new URL(url).pathname)?.[1]?.toLowerCase();
+  return extension === "pdf" ? "application/pdf" : extension === "txt" ? "text/plain" : extension === "xhtml" ? "application/xhtml+xml" : extension === "html" || extension === "htm" ? "text/html" : "application/octet-stream";
+}
 function compactTitle(value: string): string { return value.replace(/\s+/g, "").trim(); }
 function localStamp(record: Pick<ResearchAnnouncementRecord, "publishedAt">) {
   const taiwan = new Date(Date.parse(record.publishedAt) + 8 * 3_600_000).toISOString();
@@ -116,7 +121,7 @@ export function parseOfficialAnnouncementDetail(
     if (!safeDisclosureUrl(url)) throw new Error("detail_attachment_source_not_permitted");
     if (attachments.some((attachment) => attachment.sourceUrl === url)) continue;
     attachments.push({ id: disclosureId("att", record.id, String(index), url), artifactId: disclosureId("art", record.id, url),
-      title: cell.fileName, sourceUrl: url, mediaType: /\.pdf(?:$|[?#])/i.test(url) ? "application/pdf" : "application/octet-stream" });
+      title: cell.fileName, sourceUrl: url, mediaType: attachmentMediaType(url, cell.fileName) });
   }
   const enriched = { ...record, subject: field("主旨"), ruleClause: field("符合條款"), eventDate: parseTaiwanOfficialDate(field("事實發生日").replaceAll("/", "")) ?? null,
     explanation: field("說明"), attachments };

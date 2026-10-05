@@ -397,6 +397,55 @@ describe("focused disclosure report", () => {
     expect(renderFocusedDisclosureResearchReportMarkdown(report)).not.toContain("Invented bullish");
     expect(disclosureCandidateSchema.safeParse({ ...candidate, materialMechanism: "bullish sentiment guarantees price rise" }).success).toBe(false);
   });
+  it.each([
+    ["observed", "2026/10/03", "2026-10-03"], ["observed", "2026年10月3日", "2026-10-03"],
+    ["observed", "2026-10-3", "2026-10-03"], ["observed", "115/10/03", "2026-10-03"], ["observed", "115年10月3日", "2026-10-03"],
+    ["scheduled", "2027/01/01", "2027-01-01"], ["scheduled", "2027年1月1日", "2027-01-01"],
+    ["scheduled", "2027-1-1", "2027-01-01"], ["scheduled", "116/01/01", "2027-01-01"], ["scheduled", "116年1月1日", "2027-01-01"],
+    ["observed", "2024/2/29", "2024-02-29"], ["scheduled", "2028年2月29日", "2028-02-29"],
+  ] as const)("%s publisher date %s: strict calendar normalization → preserve source assertion in both locales", async (status, literal, eventDate) => {
+    for (const cue of status === "observed" ? ["completed", "已完成"] : ["scheduled", "預定"]) {
+      const f = await fixture();
+      const statement = `${literal}: ${cue}`;
+      await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: statement, eventDate }]);
+      await f.persistence.appendResearchDisclosureScans([f.scan]);
+      const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, status, statement,
+        statusEvidence: { ...candidate.statusEvidence, excerpt: statement, eventDate, eventDateText: literal } }], readBudget: 10 });
+      expect(report.assessments[0]!.sourceSupport).toBe("supported");
+      for (const locale of ["en", "zh-TW"] as const) expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, locale))).toContain(statement);
+    }
+  });
+  it.each([
+    ["2027/02/29", "2027-02-29"], ["2027年4月31日", "2027-04-31"],
+    ["2027-02-29", "2027-02-29"], ["2100/02/29", "2100-02-29"],
+    ["116/02/29", "2027-02-29"], ["116年4月31日", "2027-04-31"],
+    ["2027/13/01", "2027-13-01"], ["2027/00/01", "2027-00-01"], ["2027/01/00", "2027-01-00"],
+    ["2027/01-01", "2027-01-01"], ["2027年1/1日", "2027-01-01"],
+  ])("invalid publisher calendar %s: exact source literal → no rollover or mixed-separator classification", async (literal, eventDate) => {
+    const f = await fixture();
+    const statement = `${literal}: scheduled 預定`;
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: statement, eventDate }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, status: "scheduled", statement,
+      statusEvidence: { ...candidate.statusEvidence, excerpt: statement, eventDate, eventDateText: literal } }], readBudget: 10 });
+    expect(report.assessments[0]!.reasonCodes).toContain("classification_date_not_verified");
+    expect(report.assessments[0]!.sourceSupport).toBe("withheld");
+  });
+  it.each(["observed", "scheduled"] as const)("%s normalized date: absent literal or negation → preserve existing evidence gates", async (status) => {
+    const f = await fixture();
+    const eventDate = status === "observed" ? "2026-10-03" : "2027-01-01";
+    const literal = status === "observed" ? "2026/10/03" : "2027/01/01";
+    const statement = `${literal}: ${status === "observed" ? "not completed 尚未完成" : "not scheduled 尚未預定"}`;
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: statement, eventDate }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    for (const dateText of [literal, eventDate]) {
+      const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, status, statement,
+        statusEvidence: { ...candidate.statusEvidence, excerpt: statement, eventDate, eventDateText: dateText } }], readBudget: 10 });
+      expect(report.assessments[0]!.sourceSupport).toBe("withheld");
+      expect(report.assessments[0]!.reasonCodes).toContain("classification_status_not_verified");
+      if (dateText !== literal) expect(report.assessments[0]!.reasonCodes).toContain("classification_date_not_verified");
+    }
+  });
   it("planned future event mislabeled observed: authentic excerpt → status withheld", async () => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, status: "observed", statusEvidence: { ...candidate.statusEvidence, eventDate: "2027-01-01", eventDateText: "2027-01-01" } }], readBudget: 10 });

@@ -200,6 +200,7 @@ it("detail retry: accepted whitespace-normalized title → same collection super
 it.each([
   ["text/html", "<html><head><title>FOR SECURITY REASONS, THIS PAGE CAN NOT BE ACCESSED.</title></head><body>Please try again.</body></html>", "restricted"],
   ["text/html", "<html><head><title>Security policy update</title></head><body>因安全性考量，公司將更新存取權限。</body></html>", "retained"],
+  ["application/octet-stream", "<html><body>FOR SECURITY REASONS, THIS PAGE CAN NOT BE ACCESSED.</body></html>", "restricted"],
   ["text/html", "<html><body>FOR SECURITY REASONS, THIS PAGE CAN NOT BE ACCESSED.</body></html>", "restricted"],
   ["text/html", "<html><body>因為安全性考量，您所執行的頁面無法呈現。</body></html>", "restricted"],
   ["application/pdf", "<html><body>安全性考量，無法存取本網頁。</body></html>", "restricted"],
@@ -291,4 +292,41 @@ it.each(["collection", "detail", "attachment"] as const)("lease abort during %s 
   }) as unknown as typeof fetch;
   await expect(runOfficialDisclosureAcquisition(persistence, { fetchImpl, signal: controller.signal, retrievedAt: at })).rejects.toThrow("lease_expired");
   expect(await persistence.listResearchDisclosureScans({ issuerId: identity.issuer.id, knowledgeAt: at, effectiveAt: at })).toEqual([]);
+});
+
+it.each([
+  ["download.bin", Buffer.from(twoPagePdf()), "application/pdf"],
+  ["download-no-header.bin", Buffer.from(twoPagePdf()), "application/pdf"],
+  ["fake.pdf", Buffer.from("not a PDF"), null],
+  ["official.txt", Buffer.from("官方說明\nconfirmed text"), "text/plain"],
+  ["official.html", Buffer.from("<html><body>Official statement</body></html>"), "text/html"],
+  ["official.xhtml", Buffer.from('<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><body>Official statement</body></html>'), "application/xhtml+xml"],
+  ["unknown.bin", Buffer.from("untyped bytes"), null],
+  ["binary.txt", Buffer.from([0, 1, 2, 3]), null],
+] as const)("generic MIME: official attachment %s → evidence-specific extraction or explicit failure", async (fileName, bytes, expectedType) => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  const persistence = new MemoryPersistence(); const { rows, identity } = fixture("TWSE");
+  await persistence.appendResearchIdentityRecords([identity]);
+  const history = JSON.parse(readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8"));
+  const detail = JSON.parse(readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8"));
+  detail.result.titles.push({ main: "附件", sub: [] }); detail.result.data[0].push({ url: "https://mops.twse.com.tw/download", fileName });
+  const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+    const source = String(url);
+    if (source.endsWith("/download")) return new Response(bytes, { headers: fileName.includes("no-header") ? {} : { "content-type": "application/octet-stream" } });
+    return new Response(JSON.stringify(source.endsWith("t05st01_detail") ? detail : source.endsWith("t05st01") ? history : rows));
+  }) as unknown as typeof fetch;
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at });
+  const query = { issuerId: identity.issuer.id, knowledgeAt: at, effectiveAt: at };
+  const attempt = (await persistence.listResearchDisclosureScans(query))[0]!.artifactAttempts![0]!;
+  expect(attempt.status).toBe(expectedType ? "retained" : "processing_failed");
+  const artifacts = await persistence.listResearchDisclosureArtifacts(query);
+  expect(artifacts).toHaveLength(expectedType ? 2 : 1);
+  if (expectedType) {
+    const artifact = artifacts.find((item) => item.id === attempt.artifactId)!;
+    expect(artifact.mediaType).toBe(expectedType);
+    expect(artifact.sourceMediaType).toBe("application/octet-stream");
+    expect(artifact.retainedBytesBase64).toBe(bytes.toString("base64"));
+    expect(artifact.blocks.length).toBeGreaterThan(0);
+    expect(artifact.verifiedClaims).toEqual([]);
+  }
 });
