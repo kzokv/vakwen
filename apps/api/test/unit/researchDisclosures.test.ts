@@ -1,3 +1,4 @@
+import { disclosureMetadata } from "../../src/services/research/disclosureContracts.js";
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
@@ -221,7 +222,7 @@ it("announcement continuity: complete cursor chain → stable query/content bind
   expect(last.page.nextCursor).toBeNull();
   const differentOrder = await listMaterialAnnouncements(f.persistence, { ...initial, order: "asc" });
   expect(differentOrder.page.continuity.queryHash).not.toBe(first.page.continuity.queryHash);
-  const changedRows = vi.spyOn(f.persistence, "listResearchAnnouncements").mockResolvedValue([{ ...f.announcement, explanation: "changed retained content" }, { ...f.announcement, id: "ann2" }]);
+  const changedRows = vi.spyOn(f.persistence, "listResearchAnnouncementSelectionMetadata").mockResolvedValue([disclosureMetadata({ ...f.announcement, provenance: { ...f.announcement.provenance, contentHash: "b".repeat(64) } }), disclosureMetadata({ ...f.announcement, id: "ann2" })]);
   expect((await listMaterialAnnouncements(f.persistence, initial)).page.continuity.queryHash).not.toBe(first.page.continuity.queryHash);
   changedRows.mockRestore();
   for (const page of [{ ...first.page, nextCursor: null }, { ...first.page, continuity: { ...first.page.continuity, returnedCount: 0 } }]) {
@@ -313,4 +314,40 @@ it("artifact ID bound: requested or unknown ID → persistence never bulk-loads 
   expect(await f.persistence.listResearchDisclosureArtifacts(query)).toEqual([f.artifact]);
   expect(await f.persistence.listResearchDisclosureArtifacts({ ...query, issuerId: "other" })).toEqual([]);
   expect(await f.persistence.listResearchDisclosureArtifacts({ ...query, knowledgeAt: "2026-09-01T01:00:00.000Z", effectiveAt: "2026-09-01T01:00:00.000Z" })).toEqual([]);
+});
+
+it("bounded scan selection: failed refresh and older artifact failure → independent listing/cutoff-safe lookups", async () => {
+  const f = await disclosureFixture();
+  const lookup = { issuerId: f.identity.issuer.id, listingId: f.identity.listing.id, venue: f.identity.listing.venue, effectiveAt: f.context.knowledgeAt, knowledgeAt: f.context.knowledgeAt };
+  const attempt = { artifactId: "missing_artifact", sourceUrl: f.announcement.sourceUrl, attemptedAt: "2026-09-01T01:30:00.000Z", status: "processing_failed" as const, reasonCode: "disclosure_source_too_large" as const };
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "missing_parent", attachments: [{ ...f.announcement.attachments[0]!, artifactId: attempt.artifactId }] }]);
+  await f.persistence.appendResearchDisclosureScans([
+    { ...f.scan, id: "older_artifact_failure", checkedAt: "2026-09-01T01:30:00.000Z", status: "failed", artifactAttempts: [attempt] },
+    { ...f.scan, id: "latest_failed", checkedAt: f.context.knowledgeAt, status: "failed" },
+    { ...f.scan, id: "wrong_listing", listingId: "different_listing", checkedAt: f.context.knowledgeAt },
+    { ...f.scan, id: "wrong_venue", venue: "TPEX", checkedAt: f.context.knowledgeAt },
+    { ...f.scan, id: "future_knowledge", checkedAt: f.context.knowledgeAt, knowledgeAt: "2026-09-02T00:00:00.000Z" },
+  ]);
+  expect((await f.persistence.listLatestResearchDisclosureScans(lookup)).map((scan) => scan.id)).toEqual(["latest_failed", f.scan.id]);
+  expect(await f.persistence.getLatestResearchDisclosureArtifactAttempt({ ...lookup, artifactId: attempt.artifactId })).toEqual(attempt);
+  expect(await f.persistence.getLatestResearchDisclosureArtifactAttempt({ ...lookup, artifactId: "unknown" })).toBeNull();
+  const bulk = vi.spyOn(f.persistence, "listResearchDisclosureScans").mockRejectedValue(new Error("bulk scan read forbidden"));
+  const announcements = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context });
+  expect(announcements.scan).toMatchObject({ status: "current", record: { id: f.scan.id }, latestAttempt: { id: "latest_failed" } });
+  const artifact = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: attempt.artifactId });
+  expect(artifact.quality.reasonCodes).toContain("disclosure_source_too_large");
+  expect(bulk).not.toHaveBeenCalled();
+});
+
+it("bounded query validation: invalid method-specific selectors → rejected before memory filtering", async () => {
+  const f = await disclosureFixture();
+  const scope = { issuerId: f.identity.issuer.id, listingId: f.identity.listing.id, venue: f.identity.listing.venue, effectiveAt: f.context.knowledgeAt, knowledgeAt: f.context.knowledgeAt };
+  await expect(f.persistence.getResearchAnnouncementsByIds({ ...scope, ids: ["invalid/id"] })).rejects.toThrow();
+  await expect(f.persistence.hasResearchDisclosureArtifactReference({ ...scope, artifactId: "invalid/id" })).rejects.toThrow();
+  await expect(f.persistence.hasResearchDisclosureArtifactReference({ ...scope, artifactId: f.artifact.id, reference: { kind: "announcement_attachment", id: "invalid/id" } })).rejects.toThrow();
+  await expect(f.persistence.listResearchAnnouncementSelectionMetadata({ ...scope, publishedFrom: scope.effectiveAt, publishedTo: "2026-08-01T00:00:00.000Z" })).rejects.toThrow();
+  await expect(f.persistence.listResearchAnnouncementSelectionMetadata({ ...scope, publishedFrom: "2026-08-01T00:00:00.000Z", publishedTo: scope.effectiveAt, eventFrom: "2026-02-31" })).rejects.toThrow();
+  await expect(f.persistence.findResearchAnnouncementCandidates({ ...scope, kind: "citation", before: scope.effectiveAt, titles: [""], days: ["2026-09-01"] })).rejects.toThrow();
+  await expect(f.persistence.findResearchAnnouncementCandidates({ ...scope, kind: "revision", collectionRecordId: "invalid/id", publishedAt: scope.effectiveAt, subject: "title" })).rejects.toThrow();
+  await expect(f.persistence.getLatestSuccessfulDisclosureDetail({ ...scope, collectionRecordId: "invalid/id" })).rejects.toThrow();
 });

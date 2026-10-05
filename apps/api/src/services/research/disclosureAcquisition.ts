@@ -1,5 +1,5 @@
 import { isMopsAccessDenial } from "./providers/mopsAccessDenial.js";
-import { enrichOfficialAnnouncement } from "./providers/mopsAnnouncementDetails.js";
+import { enrichOfficialAnnouncement, announcementCitationSelectors } from "./providers/mopsAnnouncementDetails.js";
 import { extractDisclosureContent } from "./providers/disclosureExtraction.js";
 import { createHash } from "node:crypto";
 import type { Persistence } from "../../persistence/types.js";
@@ -61,21 +61,19 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
       const response = await officialResponse(fetchImpl, sourceUrl); contentHash = disclosureHash(response.body);
       const observedAt = options.retrievedAt ?? new Date().toISOString();
       const records = parseOfficialAnnouncementSnapshot(JSON.parse(response.body), { retrievedAt: observedAt, contentHash, sourceUrl, acquisitionRunId }, venue, identities);
-      const existingByListing = new Map<string, Awaited<ReturnType<Persistence["listResearchAnnouncements"]>>>();
       for (const sourceRecord of records) {
         let record = sourceRecord;
         const listingKey = JSON.stringify([record.issuerId, record.listingId, record.venue]);
-        if (!existingByListing.has(listingKey)) {
-          const issuerRecords = await persistence.listResearchAnnouncements({ issuerId: record.issuerId, effectiveAt: at, knowledgeAt: at });
-          existingByListing.set(listingKey, issuerRecords.filter((prior) => prior.listingId === record.listingId && prior.venue === record.venue));
-        }
-        const existing = existingByListing.get(listingKey)!;
-        const enriched = await enrichOfficialAnnouncement(record, { fetchImpl, previousRecords: existing, retrievedAt: options.retrievedAt ?? new Date().toISOString() });
+        const readAt = options.retrievedAt ?? new Date().toISOString();
+        const scope = { issuerId: record.issuerId, listingId: record.listingId, venue: record.venue, effectiveAt: readAt, knowledgeAt: readAt };
+        const enriched = await enrichOfficialAnnouncement(record, { fetchImpl, retrievedAt: readAt, resolvePreviousRecords: async (detailRecord) => {
+          const selectors = announcementCitationSelectors(detailRecord);
+          return selectors.titles.length && selectors.days.length ? persistence.findResearchAnnouncementCandidates({ ...scope, kind: "citation", before: detailRecord.publishedAt, ...selectors }) : [];
+        } });
         const detailAttempts = detailAttemptsByListing.get(listingKey) ?? [];
         detailAttempts.push({ announcementId: sourceRecord.id, attemptedAt: options.retrievedAt ?? new Date().toISOString(), status: enriched.detailStatus, reasonCodes: enriched.reasonCodes });
         detailAttemptsByListing.set(listingKey, detailAttempts);
-        const priorSuccessfulDetail = enriched.detailStatus !== "available" ? existing.filter((prior) => prior.collectionRecordId === sourceRecord.id && prior.detailQuality?.status === "available")
-          .sort((a, b) => Date.parse(b.provenance.processedAt) - Date.parse(a.provenance.processedAt))[0] : undefined;
+        const priorSuccessfulDetail = enriched.detailStatus !== "available" ? await persistence.getLatestSuccessfulDisclosureDetail({ ...scope, collectionRecordId: sourceRecord.id }) : null;
         record = priorSuccessfulDetail ? structuredClone(priorSuccessfulDetail) : enriched.record;
         const collectionRecordId = sourceRecord.id;
         if (!priorSuccessfulDetail) {
@@ -86,15 +84,15 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
             : { ...attachment, id: disclosureId("att", record.id, attachment.sourceUrl), artifactId: attachment.artifactId ? disclosureId("art", record.id, attachment.sourceUrl) : null });
         }
         detailAttempts[detailAttempts.length - 1]!.announcementId = record.id;
-        const retainedRecord = existing.find((prior) => prior.id === record.id);
+        const retainedRecord = (await persistence.getResearchAnnouncementsByIds({ ...scope, ids: [record.id] }))[0];
         // Content-changing observations retain both records and their explicit
         // revision relation; the previous evidence is never updated in place.
-        const previous = existing.filter((prior) => prior.id !== record.id && prior.publishedAt === record.publishedAt && (prior.collectionRecordId === collectionRecordId || prior.subject === record.subject));
+        const previous = (await persistence.findResearchAnnouncementCandidates({ ...scope, kind: "revision", collectionRecordId, publishedAt: record.publishedAt, subject: record.subject })).filter((prior) => prior.id !== record.id);
         if (!retainedRecord) for (const prior of previous) record.relations.push({ kind: "supersedes", targetAnnouncementId: prior.id });
         if (!retainedRecord) await persistence.appendResearchAnnouncements([record]);
         const stableRecord = retainedRecord ?? record;
         const explanation = retainAnnouncementExplanation(stableRecord);
-        const artifactQuery = { issuerId: record.issuerId, effectiveAt: at, knowledgeAt: at };
+        const artifactQuery = { issuerId: record.issuerId, effectiveAt: readAt, knowledgeAt: readAt };
         if ((await persistence.listResearchDisclosureArtifacts({ ...artifactQuery, artifactId: explanation.id })).length === 0) await persistence.appendResearchDisclosureArtifacts([explanation]);
         for (const attachment of record.attachments.filter((item) => item.artifactId !== explanation.id && item.artifactId !== null)) {
           artifactOwners.set(attachment.artifactId!, listingKey);
@@ -121,7 +119,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
           // artifact. Subsequent scheduled runs retry unresolved references.
           artifactAttempts.push({ artifactId: attachment.artifactId!, sourceUrl: attachment.sourceUrl, attemptedAt: at, status: attemptStatus, ...(reasonCode ? { reasonCode } : {}) });
         }
-        if (!retainedRecord) { existing.push(record); count++; }
+        if (!retainedRecord) count++;
       }
       publicationStart = records.reduce((start, record) => record.publishedAt < start ? record.publishedAt : start, at);
     } catch (error) {

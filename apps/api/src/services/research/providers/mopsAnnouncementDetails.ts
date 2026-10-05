@@ -1,3 +1,4 @@
+import type { ResearchAnnouncementMetadata } from "../disclosureContracts.js";
 import { isMopsAccessDenial } from "./mopsAccessDenial.js";
 import { z } from "zod";
 import type { ResearchAnnouncementRecord } from "../disclosureContracts.js";
@@ -33,11 +34,12 @@ export interface AnnouncementEnrichmentResult {
 }
 export interface AnnouncementEnrichmentOptions {
   fetchImpl?: typeof fetch;
-  previousRecords?: readonly ResearchAnnouncementRecord[];
+  previousRecords?: readonly ResearchAnnouncementMetadata[];
+  resolvePreviousRecords?: (record: ResearchAnnouncementRecord) => Promise<readonly ResearchAnnouncementMetadata[]>;
   retrievedAt?: string;
 }
 function compactTitle(value: string): string { return value.replace(/\s+/g, "").trim(); }
-function localStamp(record: ResearchAnnouncementRecord) {
+function localStamp(record: Pick<ResearchAnnouncementRecord, "publishedAt">) {
   const taiwan = new Date(Date.parse(record.publishedAt) + 8 * 3_600_000).toISOString();
   return { day: taiwan.slice(0, 10), clock: taiwan.slice(11, 19) };
 }
@@ -61,7 +63,7 @@ export function selectOfficialAnnouncementDetailParameters(payload: unknown, rec
   return parameters;
 }
 
-function relationFromPublisherText(record: ResearchAnnouncementRecord, previousRecords: readonly ResearchAnnouncementRecord[]) {
+function relationFromPublisherText(record: ResearchAnnouncementRecord, previousRecords: readonly ResearchAnnouncementMetadata[]) {
   // Require an explicit correction/retraction notice plus both a complete cited title
   // and its publication date. Shared keywords or coincident event dates never link facts.
   const kind = /^(?:公告)?(?:撤回|撤銷)/.test(record.subject.trim()) ? "retracts" as const
@@ -87,7 +89,7 @@ export function parseOfficialAnnouncementDetail(
   payload: unknown,
   record: ResearchAnnouncementRecord,
   metadata: { contentHash: string; retrievedAt: string },
-  previousRecords: readonly ResearchAnnouncementRecord[] = [],
+  previousRecords: readonly ResearchAnnouncementMetadata[] = [],
 ): AnnouncementEnrichmentResult {
   const response = detailSchema.parse(payload);
   assertMarket(response.result.marketName, record);
@@ -176,10 +178,26 @@ export async function enrichOfficialAnnouncement(record: ResearchAnnouncementRec
     });
     const parameters = selectOfficialAnnouncementDetailParameters(history.payload, record);
     const detail = await readOfficialJson(fetchImpl, MOPS_ANNOUNCEMENT_DETAIL_URL, parameters);
-    return parseOfficialAnnouncementDetail(detail.payload, record, { contentHash: detail.hash, retrievedAt }, options.previousRecords);
+    const metadata = { contentHash: detail.hash, retrievedAt };
+    const result = parseOfficialAnnouncementDetail(detail.payload, record, metadata, options.previousRecords);
+    if (!options.resolvePreviousRecords) return result;
+    const previousRecords = await options.resolvePreviousRecords(result.record);
+    return previousRecords.length ? parseOfficialAnnouncementDetail(detail.payload, record, metadata, previousRecords) : result;
   } catch (error) {
     const status = error instanceof DetailAcquisitionError ? error.status : "processing_failed";
     const reason = error instanceof DetailAcquisitionError ? error.safeCode : "detail_evidence_unresolved";
     return { record: { ...record, detailQuality: { status, reasonCodes: [reason] } }, detailStatus: status, reasonCodes: [reason] };
   }
+}
+
+/** Exact publisher citation selectors; final relation verification remains in the parser. */
+export function announcementCitationSelectors(record: ResearchAnnouncementRecord): { titles: string[]; days: string[] } {
+  if (!/^(?:公告)?(?:更正|撤回|撤銷)/.test(record.subject.trim())) return { titles: [], days: [] };
+  const explanation = compactTitle(record.explanation);
+  const titles = [...explanation.matchAll(/「([^」]+)」|"([^"]+)"/g)].map((match) => compactTitle(match[1] ?? match[2]!));
+  const days = [...explanation.matchAll(/(\d{3,4})[年/-](\d{1,2})[月/-](\d{1,2})日?/g)].map((match) => {
+    const year = Number(match[1]) + (match[1]!.length === 3 ? 1911 : 0);
+    return `${year}-${match[2]!.padStart(2, "0")}-${match[3]!.padStart(2, "0")}`;
+  });
+  return { titles: [...new Set(titles.filter(Boolean))], days: [...new Set(days.filter((day) => Number.isFinite(Date.parse(day)) && new Date(day).toISOString().slice(0, 10) === day))] };
 }

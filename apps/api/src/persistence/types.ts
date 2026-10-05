@@ -1,3 +1,5 @@
+import type { ResearchAnnouncementMetadata, ResearchAnnouncementWindowQuery, ResearchAnnouncementCandidateQuery, ResearchDisclosureReferenceQuery } from "../services/research/disclosureContracts.js";
+import type { ResearchDisclosureScanLookup, ResearchDisclosureArtifactAttempt } from "../services/research/disclosureContracts.js";
 import type { ResearchDisclosureMaterialReference } from "../services/research/disclosureContracts.js";
 import type { ResearchAnnouncementRecord, ResearchDisclosureArtifact, ResearchDisclosureScan, ResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
 import type { BackfillStatus, CurrencyCode, InstrumentRef, InstrumentType, Lot, VerificationStatus } from "@vakwen/domain";
@@ -2879,6 +2881,13 @@ export interface Persistence {
   listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery & { artifactId?: string }): Promise<ResearchDisclosureArtifact[]>;
   appendResearchDisclosureScans(records: readonly ResearchDisclosureScan[]): Promise<void>;
   listResearchDisclosureScans(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureScan[]>;
+  hasResearchDisclosureArtifactReference(query: ResearchDisclosureReferenceQuery): Promise<boolean>;
+  listResearchAnnouncementSelectionMetadata(query: ResearchAnnouncementWindowQuery): Promise<ResearchAnnouncementMetadata[]>;
+  getResearchAnnouncementsByIds(query: ResearchDisclosureScanLookup & { ids: string[] }): Promise<ResearchAnnouncementRecord[]>;
+  findResearchAnnouncementCandidates(query: ResearchAnnouncementCandidateQuery): Promise<ResearchAnnouncementMetadata[]>;
+  getLatestSuccessfulDisclosureDetail(query: ResearchDisclosureScanLookup & { collectionRecordId: string }): Promise<ResearchAnnouncementRecord | null>;
+  listLatestResearchDisclosureScans(query: ResearchDisclosureScanLookup): Promise<ResearchDisclosureScan[]>;
+  getLatestResearchDisclosureArtifactAttempt(query: ResearchDisclosureScanLookup & { artifactId: string }): Promise<ResearchDisclosureArtifactAttempt | null>;
   appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void>;
   listResearchMonthlyRevenueRecords(query: ResearchMonthlyRevenueRecordQuery): Promise<ResearchMonthlyRevenueRecord[]>;
   listLatestResearchMonthlyRevenueRecords(query: ResearchMonthlyRevenueRecordQuery): Promise<ResearchMonthlyRevenueRecord[]>;

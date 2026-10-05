@@ -75,3 +75,53 @@ export function validateResearchDisclosureArtifactStoreQuery(query: ResearchDisc
   z.object({ issuerId: id, effectiveAt: time, knowledgeAt: time, artifactId: id.optional() }).strict()
     .refine((value) => Date.parse(value.effectiveAt) <= Date.parse(value.knowledgeAt), "effectiveAt must not exceed knowledgeAt").parse(query);
 }
+
+export type ResearchDisclosureScanLookup = ResearchDisclosureStoreQuery & { listingId: string; venue: "TWSE" | "TPEX" };
+export type ResearchDisclosureArtifactAttempt = NonNullable<ResearchDisclosureScan["artifactAttempts"]>[number];
+export function validateResearchDisclosureScanLookup(query: ResearchDisclosureScanLookup, artifact = false): void {
+  z.object({ issuerId: id, listingId: id, venue: z.enum(["TWSE", "TPEX"]), effectiveAt: time, knowledgeAt: time, ...(artifact ? { artifactId: id } : {}) }).strict()
+    .refine((value) => Date.parse(value.effectiveAt) <= Date.parse(value.knowledgeAt), "effectiveAt must not exceed knowledgeAt").parse(query);
+}
+
+export const researchAnnouncementMetadataSchema = researchAnnouncementRecordSchema.omit({ explanation: true, attachments: true });
+export type ResearchAnnouncementMetadata = z.infer<typeof researchAnnouncementMetadataSchema>;
+export type ResearchAnnouncementWindowQuery = ResearchDisclosureScanLookup & { publishedFrom: string; publishedTo: string; eventFrom?: string; eventTo?: string };
+export type ResearchAnnouncementCandidateQuery = ResearchDisclosureScanLookup & ({ kind: "revision"; collectionRecordId: string; publishedAt: string; subject: string } | { kind: "citation"; before: string; titles: string[]; days: string[] });
+export type ResearchDisclosureReferenceQuery = ResearchDisclosureScanLookup & { artifactId: string; reference?: { kind: "announcement_attachment" | "investor_material"; id: string } };
+export function disclosureMetadata(record: ResearchAnnouncementRecord): ResearchAnnouncementMetadata {
+  return researchAnnouncementMetadataSchema.parse(Object.fromEntries(Object.entries(record).filter(([key]) => key !== "explanation" && key !== "attachments")));
+}
+
+// ECMAScript \s, explicitly shared with PostgreSQL instead of locale-dependent [:space:].
+export const disclosureWhitespacePattern = "[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]";
+export function validateDisclosureReadScope(query: ResearchDisclosureScanLookup): void {
+  validateResearchDisclosureScanLookup({ issuerId: query.issuerId, listingId: query.listingId, venue: query.venue, effectiveAt: query.effectiveAt, knowledgeAt: query.knowledgeAt });
+}
+
+const disclosureLookupFields = { issuerId: id, listingId: id, venue: z.enum(["TWSE", "TPEX"]), effectiveAt: time, knowledgeAt: time };
+const disclosureDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value, "Invalid calendar date");
+export function validateResearchAnnouncementWindowQuery(query: ResearchAnnouncementWindowQuery): void {
+  validateDisclosureReadScope(query);
+  z.object({ ...disclosureLookupFields, publishedFrom: time, publishedTo: time, eventFrom: disclosureDay.optional(), eventTo: disclosureDay.optional() }).strict()
+    .refine((value) => Date.parse(value.publishedFrom) <= Date.parse(value.publishedTo) && Date.parse(value.publishedTo) <= Date.parse(value.effectiveAt), "Invalid publication window")
+    .refine((value) => !value.eventFrom || !value.eventTo || value.eventFrom <= value.eventTo, "Invalid event window").parse(query);
+}
+export function validateResearchAnnouncementIdsQuery(query: ResearchDisclosureScanLookup & { ids: string[] }): void {
+  validateDisclosureReadScope(query);
+  z.object({ ...disclosureLookupFields, ids: z.array(id).max(100) }).strict().parse(query);
+}
+export function validateResearchDisclosureReferenceQuery(query: ResearchDisclosureReferenceQuery): void {
+  validateDisclosureReadScope(query);
+  z.object({ ...disclosureLookupFields, artifactId: id, reference: z.object({ kind: z.enum(["announcement_attachment", "investor_material"]), id }).strict().optional() }).strict().parse(query);
+}
+export function validateResearchAnnouncementCandidateQuery(query: ResearchAnnouncementCandidateQuery): void {
+  validateDisclosureReadScope(query);
+  z.discriminatedUnion("kind", [
+    z.object({ ...disclosureLookupFields, kind: z.literal("revision"), collectionRecordId: id, publishedAt: time, subject: z.string() }).strict(),
+    z.object({ ...disclosureLookupFields, kind: z.literal("citation"), before: time, titles: z.array(z.string().min(1)), days: z.array(disclosureDay) }).strict(),
+  ]).refine((value) => Date.parse(value.kind === "revision" ? value.publishedAt : value.before) <= Date.parse(value.effectiveAt), "Candidate time exceeds effectiveAt").parse(query);
+}
+export function validateResearchSuccessfulDetailQuery(query: ResearchDisclosureScanLookup & { collectionRecordId: string }): void {
+  validateDisclosureReadScope(query);
+  z.object({ ...disclosureLookupFields, collectionRecordId: id }).strict().parse(query);
+}

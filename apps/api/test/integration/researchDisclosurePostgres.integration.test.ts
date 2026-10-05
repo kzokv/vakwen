@@ -109,4 +109,78 @@ describePostgres("disclosure memory/Postgres conformance", () => {
     } finally { sql.mockRestore(); }
   });
 
+  it("bounded scan SQL: latest failure plus cached success and older artifact attempt → memory parity", async () => {
+    const results = [];
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const f = await disclosureFixture(persistence);
+      const query = { issuerId: f.identity.issuer.id, listingId: f.identity.listing.id, venue: f.identity.listing.venue, effectiveAt: f.context.knowledgeAt, knowledgeAt: f.context.knowledgeAt };
+      const attempt = { artifactId: "missing", sourceUrl: f.announcement.sourceUrl, attemptedAt: "2026-09-01T01:30:00.000Z", status: "processing_failed" as const, reasonCode: "disclosure_source_too_large" as const };
+      await persistence.appendResearchDisclosureScans([
+        { ...f.scan, id: "older_attempt", checkedAt: "2026-09-01T01:30:00.000Z", status: "failed", artifactAttempts: [attempt] },
+        { ...f.scan, id: "latest_failed", checkedAt: f.context.knowledgeAt, status: "failed" },
+        { ...f.scan, id: "wrong_listing", listingId: "different_listing", checkedAt: f.context.knowledgeAt },
+        { ...f.scan, id: "wrong_venue", venue: "TPEX", checkedAt: f.context.knowledgeAt },
+        { ...f.scan, id: "future_knowledge", checkedAt: f.context.knowledgeAt, knowledgeAt: "2026-09-02T00:00:00.000Z" },
+      ]);
+      const sql = vi.spyOn(Pool.prototype, "query");
+      try {
+        const scans = await persistence.listLatestResearchDisclosureScans(query);
+        const artifactAttempt = await persistence.getLatestResearchDisclosureArtifactAttempt({ ...query, artifactId: attempt.artifactId });
+        expect(scans.map((scan) => scan.id)).toEqual(["latest_failed", f.scan.id]);
+        expect(artifactAttempt).toEqual(attempt);
+        expect(await persistence.getLatestResearchDisclosureArtifactAttempt({ ...query, artifactId: "unknown" })).toBeNull();
+        expect(await persistence.listLatestResearchDisclosureScans({ ...query, effectiveAt: "2026-09-01T01:00:00.000Z" })).toEqual([]);
+        if (persistence === postgres) {
+          const statements = sql.mock.calls.map(([statement]) => String(statement));
+          expect(statements.every((statement) => statement.includes("LIMIT 1"))).toBe(true);
+          expect(statements.some((statement) => statement.startsWith("SELECT attempt.value AS attempt"))).toBe(true);
+        }
+        results.push({ scans, artifactAttempt });
+      } finally { sql.mockRestore(); }
+    }
+    expect(results[1]).toEqual(results[0]);
+  });
+
+  it("bounded announcement SQL: window companions, exact references, page IDs and Unicode candidates → memory parity", async () => {
+    const results = [];
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const f = await disclosureFixture(persistence);
+      const scope = { issuerId: f.identity.issuer.id, listingId: f.identity.listing.id, venue: f.identity.listing.venue, effectiveAt: f.context.knowledgeAt, knowledgeAt: f.context.knowledgeAt };
+      const correction = { ...f.announcement, id: "outside_correction", publishedAt: "2026-09-01T01:30:00.000Z", relations: [{ kind: "corrects" as const, targetAnnouncementId: f.announcement.id }] };
+      const unicode = { ...f.announcement, id: "unicode_candidate", collectionRecordId: "collection", subject: "公司\u3000資本\ufeff支出", detailQuality: { status: "available" as const, reasonCodes: [] } };
+      await persistence.appendResearchAnnouncements([correction, unicode, { ...f.announcement, id: "large_unrelated_history", publishedAt: "2026-08-01T00:00:00.000Z", explanation: "x".repeat(1_000_000) }]);
+      const sql = vi.spyOn(Pool.prototype, "query");
+      try {
+        const metadata = await persistence.listResearchAnnouncementSelectionMetadata({ ...scope, publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt });
+        expect(metadata.map((record) => record.id).sort()).toEqual([f.announcement.id, correction.id, unicode.id].sort());
+        expect(metadata.every((record) => !("explanation" in record) && !("attachments" in record))).toBe(true);
+        expect(await persistence.getResearchAnnouncementsByIds({ ...scope, ids: [f.announcement.id] })).toEqual([f.announcement]);
+        expect(await persistence.hasResearchDisclosureArtifactReference({ ...scope, artifactId: f.artifact.id, reference: f.artifact.reference })).toBe(true);
+        expect(await persistence.hasResearchDisclosureArtifactReference({ ...scope, listingId: "wrong_listing", artifactId: f.artifact.id })).toBe(false);
+        const candidates = await persistence.findResearchAnnouncementCandidates({ ...scope, kind: "citation", before: scope.effectiveAt, titles: ["公司資本支出"], days: ["2026-09-01"] });
+        expect(candidates.map((record) => record.id)).toEqual([unicode.id]);
+        expect((await persistence.getLatestSuccessfulDisclosureDetail({ ...scope, collectionRecordId: "collection" }))?.id).toBe(unicode.id);
+        if (persistence === postgres) {
+          const statements = sql.mock.calls.map(([statement]) => String(statement));
+          expect(statements.some((statement) => statement.includes("record - 'explanation' - 'attachments'"))).toBe(true);
+          expect(statements.some((statement) => statement.includes("AND id=ANY($6::text[])"))).toBe(true);
+          expect(statements.some((statement) => statement.startsWith("SELECT EXISTS"))).toBe(true);
+        }
+        results.push({ metadata: metadata.sort((a, b) => a.id.localeCompare(b.id)), candidates });
+        const invalid = { ...scope, knowledgeAt: "2026-09-01T00:00:00.000Z" };
+        await expect(persistence.getResearchAnnouncementsByIds({ ...invalid, ids: [] })).rejects.toThrow("effectiveAt");
+        await expect(persistence.hasResearchDisclosureArtifactReference({ ...invalid, artifactId: f.artifact.id })).rejects.toThrow("effectiveAt");
+        await expect(persistence.listResearchAnnouncementSelectionMetadata({ ...invalid, publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt })).rejects.toThrow("effectiveAt");
+        await expect(persistence.findResearchAnnouncementCandidates({ ...invalid, kind: "citation", before: scope.effectiveAt, titles: [], days: [] })).rejects.toThrow("effectiveAt");
+        await expect(persistence.getLatestSuccessfulDisclosureDetail({ ...invalid, collectionRecordId: "collection" })).rejects.toThrow("effectiveAt");
+        await expect(persistence.getResearchAnnouncementsByIds({ ...scope, ids: ["invalid/id"] })).rejects.toThrow();
+        await expect(persistence.hasResearchDisclosureArtifactReference({ ...scope, artifactId: "invalid/id" })).rejects.toThrow();
+        await expect(persistence.listResearchAnnouncementSelectionMetadata({ ...scope, publishedFrom: scope.effectiveAt, publishedTo: "2026-08-01T00:00:00.000Z" })).rejects.toThrow();
+        await expect(persistence.findResearchAnnouncementCandidates({ ...scope, kind: "citation", before: scope.effectiveAt, titles: [""], days: ["2026-02-31"] })).rejects.toThrow();
+        await expect(persistence.getLatestSuccessfulDisclosureDetail({ ...scope, collectionRecordId: "invalid/id" })).rejects.toThrow();
+      } finally { sql.mockRestore(); }
+    }
+    expect(results[1]).toEqual(results[0]);
+  });
+
 });

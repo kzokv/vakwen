@@ -1,3 +1,9 @@
+import { validateResearchDisclosureReferenceQuery, validateResearchAnnouncementWindowQuery, validateResearchAnnouncementIdsQuery, validateResearchAnnouncementCandidateQuery, validateResearchSuccessfulDetailQuery } from "../services/research/disclosureContracts.js";
+import { validateDisclosureReadScope, disclosureWhitespacePattern } from "../services/research/disclosureContracts.js";
+import { researchAnnouncementMetadataSchema } from "../services/research/disclosureContracts.js";
+import type { ResearchAnnouncementMetadata, ResearchAnnouncementWindowQuery, ResearchAnnouncementCandidateQuery, ResearchDisclosureReferenceQuery } from "../services/research/disclosureContracts.js";
+import { validateResearchDisclosureScanLookup } from "../services/research/disclosureContracts.js";
+import type { ResearchDisclosureScanLookup, ResearchDisclosureArtifactAttempt } from "../services/research/disclosureContracts.js";
 import { validateResearchDisclosureStoreQuery, validateResearchDisclosureArtifactStoreQuery } from "../services/research/disclosureContracts.js";
 import { researchDisclosureMaterialReferenceSchema, type ResearchDisclosureMaterialReference } from "../services/research/disclosureContracts.js";
 import { researchAnnouncementRecordSchema, researchDisclosureArtifactSchema, researchDisclosureScanSchema, type ResearchAnnouncementRecord, type ResearchDisclosureArtifact, type ResearchDisclosureScan, type ResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
@@ -1586,6 +1592,75 @@ export class PostgresPersistence implements Persistence {
       `SELECT record FROM research.disclosure_scans WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz AND (record->>'knowledgeAt')::timestamptz <= $3::timestamptz`,
       [query.issuerId, query.effectiveAt, query.knowledgeAt]);
     return result.rows.map((row) => researchDisclosureScanSchema.parse(row.record));
+  }
+  private disclosureAnnouncementScope() {
+    return `issuer_id=$1 AND record->>'listingId'=$4 AND record->>'venue'=$5 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz`;
+  }
+  private disclosureScopeParameters(query: ResearchDisclosureScanLookup): unknown[] { validateDisclosureReadScope(query); return [query.issuerId, query.effectiveAt, query.knowledgeAt, query.listingId, query.venue]; }
+  async hasResearchDisclosureArtifactReference(query: ResearchDisclosureReferenceQuery): Promise<boolean> {
+    validateResearchDisclosureReferenceQuery(query);
+    const material = query.reference?.kind === "investor_material";
+    const result = await this.pool.query<{ found: boolean }>(`SELECT EXISTS (SELECT 1 FROM research.${material ? "disclosure_material_references" : "announcements"}
+      WHERE ${this.disclosureAnnouncementScope()} ${query.reference ? "AND id=$7" : ""}
+      AND ${material ? "record->'artifactIds' @> jsonb_build_array($6::text)" : "record->'attachments' @> jsonb_build_array(jsonb_build_object('artifactId', $6::text))"}) AS found`,
+      [...this.disclosureScopeParameters(query), query.artifactId, ...(query.reference ? [query.reference.id] : [])]);
+    return result.rows[0]?.found === true;
+  }
+  async listResearchAnnouncementSelectionMetadata(query: ResearchAnnouncementWindowQuery): Promise<ResearchAnnouncementMetadata[]> {
+    validateResearchAnnouncementWindowQuery(query);
+    const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`WITH scoped AS NOT MATERIALIZED (SELECT id, record, published_at FROM research.announcements WHERE ${this.disclosureAnnouncementScope()}),
+      window_rows AS (SELECT id, record->>'collectionRecordId' AS collection FROM scoped WHERE published_at >= $6::timestamptz AND published_at <= $7::timestamptz
+        AND ($8::text IS NULL OR record->>'eventDate' >= $8) AND ($9::text IS NULL OR record->>'eventDate' <= $9)),
+      candidates AS (SELECT id FROM window_rows UNION SELECT id FROM scoped WHERE record->>'collectionRecordId' IN (SELECT collection FROM window_rows WHERE collection IS NOT NULL)),
+      wanted AS (SELECT id FROM candidates UNION SELECT scoped.id FROM candidates JOIN scoped ON scoped.record->'relations' @> jsonb_build_array(jsonb_build_object('targetAnnouncementId', candidates.id)))
+      SELECT record - 'explanation' - 'attachments' AS record FROM scoped WHERE id IN (SELECT id FROM wanted)`,
+      [...this.disclosureScopeParameters(query), query.publishedFrom, query.publishedTo, query.eventFrom ?? null, query.eventTo ?? null]);
+    return result.rows.map((row) => researchAnnouncementMetadataSchema.parse(row.record));
+  }
+  async getResearchAnnouncementsByIds(query: ResearchDisclosureScanLookup & { ids: string[] }): Promise<ResearchAnnouncementRecord[]> {
+    validateResearchAnnouncementIdsQuery(query);
+    validateDisclosureReadScope(query);
+    if (query.ids.length > 100) throw new Error("research_announcement_page_limit");
+    if (query.ids.length === 0) return [];
+    const result = await this.pool.query<{ record: ResearchAnnouncementRecord }>(`SELECT record FROM research.announcements WHERE ${this.disclosureAnnouncementScope()} AND id=ANY($6::text[])`, [...this.disclosureScopeParameters(query), query.ids]);
+    return result.rows.map((row) => researchAnnouncementRecordSchema.parse(row.record));
+  }
+  async findResearchAnnouncementCandidates(query: ResearchAnnouncementCandidateQuery): Promise<ResearchAnnouncementMetadata[]> {
+    validateResearchAnnouncementCandidateQuery(query);
+    const revision = query.kind === "revision";
+    const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`SELECT record - 'explanation' - 'attachments' AS record FROM research.announcements WHERE ${this.disclosureAnnouncementScope()}
+      AND ${revision ? "published_at=$6::timestamptz AND (record->>'collectionRecordId'=$7 OR record->>'subject'=$8)" : "published_at < $6::timestamptz AND regexp_replace(record->>'subject', $9, '', 'g')=ANY($7::text[]) AND to_char(published_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD')=ANY($8::text[])"}`,
+      [...this.disclosureScopeParameters(query), ...(revision ? [query.publishedAt, query.collectionRecordId, query.subject] : [query.before, query.titles, query.days, disclosureWhitespacePattern])]);
+    return result.rows.map((row) => researchAnnouncementMetadataSchema.parse(row.record));
+  }
+  async getLatestSuccessfulDisclosureDetail(query: ResearchDisclosureScanLookup & { collectionRecordId: string }): Promise<ResearchAnnouncementRecord | null> {
+    validateResearchSuccessfulDetailQuery(query);
+    const result = await this.pool.query<{ record: ResearchAnnouncementRecord }>(`SELECT record FROM research.announcements WHERE ${this.disclosureAnnouncementScope()} AND record->>'collectionRecordId'=$6 AND record->'detailQuality'->>'status'='available' ORDER BY processed_at DESC, id DESC LIMIT 1`, [...this.disclosureScopeParameters(query), query.collectionRecordId]);
+    return result.rows[0] ? researchAnnouncementRecordSchema.parse(result.rows[0].record) : null;
+  }
+  async listLatestResearchDisclosureScans(query: ResearchDisclosureScanLookup): Promise<ResearchDisclosureScan[]> {
+    validateResearchDisclosureScanLookup(query);
+    const where = `issuer_id=$1 AND record->>'listingId'=$4 AND record->>'venue'=$5 AND published_at <= $2::timestamptz
+      AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz AND (record->>'knowledgeAt')::timestamptz <= $3::timestamptz`;
+    const result = await this.pool.query<{ record: ResearchDisclosureScan }>(
+      `(SELECT record FROM research.disclosure_scans WHERE ${where} ORDER BY published_at DESC, id DESC LIMIT 1)
+       UNION
+       (SELECT record FROM research.disclosure_scans WHERE ${where} AND record->>'status'='success' ORDER BY published_at DESC, id DESC LIMIT 1)`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt, query.listingId, query.venue]);
+    return result.rows.map((row) => researchDisclosureScanSchema.parse(row.record)).sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt) || b.id.localeCompare(a.id));
+  }
+  async getLatestResearchDisclosureArtifactAttempt(query: ResearchDisclosureScanLookup & { artifactId: string }): Promise<ResearchDisclosureArtifactAttempt | null> {
+    validateResearchDisclosureScanLookup(query, true);
+    const result = await this.pool.query<{ attempt: ResearchDisclosureArtifactAttempt }>(
+      `SELECT attempt.value AS attempt FROM research.disclosure_scans AS scan
+       CROSS JOIN LATERAL jsonb_array_elements(COALESCE(scan.record->'artifactAttempts', '[]'::jsonb)) WITH ORDINALITY AS attempt(value, position)
+       WHERE issuer_id=$1 AND scan.record->>'listingId'=$4 AND scan.record->>'venue'=$5 AND published_at <= $2::timestamptz
+       AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz AND (scan.record->>'knowledgeAt')::timestamptz <= $3::timestamptz
+       AND scan.record->'artifactAttempts' @> jsonb_build_array(jsonb_build_object('artifactId', $6::text))
+       AND attempt.value->>'artifactId'=$6 AND (attempt.value->>'attemptedAt')::timestamptz <= $3::timestamptz
+       ORDER BY (attempt.value->>'attemptedAt')::timestamptz DESC, published_at DESC, scan.id DESC, attempt.position DESC LIMIT 1`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt, query.listingId, query.venue, query.artifactId]);
+    return result.rows[0] ? researchDisclosureScanSchema.shape.artifactAttempts.unwrap().element.parse(result.rows[0].attempt) : null;
   }
   async appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void> {
     if (records.length === 0) return;

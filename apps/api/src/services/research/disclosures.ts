@@ -85,7 +85,8 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
   }
   const storeQuery = { issuerId: summary.issuer.id, knowledgeAt: query.context.knowledgeAt, effectiveAt: query.context.effectiveAt };
   const applicable = eligible(summary);
-  const [issuerAnnouncements, scans] = applicable ? await Promise.all([persistence.listResearchAnnouncements(storeQuery), persistence.listResearchDisclosureScans(storeQuery)]) : [[], []];
+  const scope = { ...storeQuery, listingId: summary.listing.id, venue: summary.listing.venue };
+  const [issuerAnnouncements, scans] = applicable ? await Promise.all([persistence.listResearchAnnouncementSelectionMetadata({ ...scope, publishedFrom: start, publishedTo: end, eventFrom: query.range?.eventFrom, eventTo: query.range?.eventTo }), persistence.listLatestResearchDisclosureScans(scope)]) : [[], []];
   const all = issuerAnnouncements.filter((record) => record.listingId === summary.listing.id && record.venue === summary.listing.venue);
   const orderedScans = scans.filter((scan) => scan.listingId === summary.listing.id && scan.venue === summary.listing.venue)
     .sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt) || b.id.localeCompare(a.id));
@@ -106,13 +107,17 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
   const scopedSelected = selectedRecords.filter(inRange);
   const rows = (query.evidenceView === "all_observations" ? scopedAll : scopedSelected)
     .sort((a, b) => (Date.parse(a.publishedAt) - Date.parse(b.publishedAt) || a.id.localeCompare(b.id)) * (query.order === "asc" ? 1 : -1));
-  const queryHash = continuityHash({ purpose: "announcements", version: VERSION, query: { ...query, subject: identity.selector, context: identity.context }, range: { start, end }, rows });
+  const queryHash = continuityHash({ purpose: "announcements", version: VERSION, query: { ...query, subject: identity.selector, context: identity.context }, range: { start, end }, rows, lineage: [...all].sort((a, b) => a.id.localeCompare(b.id)) });
   const offset = cursor ? rows.findIndex((row) => row.id === cursor.after) + 1 : 0;
   if (cursor && offset === 0) throw new DisclosureServiceError("research_cursor_invalid", "Announcement cursor boundary no longer matches retained evidence.");
   const items: MaterialAnnouncementsOutput["items"] = [];
   let bytes = 0;
   let budgetTruncated = false;
-  for (const record of rows.slice(offset, offset + query.limit)) {
+  const pageIds = rows.slice(offset, offset + query.limit).map((record) => record.id);
+  const payloads = new Map((await persistence.getResearchAnnouncementsByIds({ ...scope, ids: pageIds })).map((record) => [record.id, record]));
+  for (const id of pageIds) {
+    const record = payloads.get(id);
+    if (!record) throw new DisclosureServiceError("research_cursor_invalid", "Selected immutable announcement is no longer available.");
     const characters = Array.from(record.explanation);
     const text = record.quality === "available" ? characters.slice(0, 20_000).join("") : "";
     const item = { ...record, explanation: { text, originalCharacters: characters.length, retainedCharacters: Array.from(text).length,
@@ -165,17 +170,14 @@ export async function getDisclosureArtifact(persistence: Persistence, input: Res
   const identity = await getResearchIdentity(persistence, { subject: query.subject, context: query.context, history: { limit: 1 } });
   const summary = identitySummary(identity);
   const storeQuery = { issuerId: summary.issuer.id, knowledgeAt: query.context.knowledgeAt, effectiveAt: query.context.effectiveAt };
-  const [artifacts, issuerAnnouncements] = eligible(summary) ? await Promise.all([persistence.listResearchDisclosureArtifacts({ ...storeQuery, artifactId: query.artifactId }), persistence.listResearchAnnouncements(storeQuery)]) : [[], []];
-  const announcements = issuerAnnouncements.filter((record) => record.listingId === summary.listing.id && record.venue === summary.listing.venue);
+  const artifacts = eligible(summary) ? await persistence.listResearchDisclosureArtifacts({ ...storeQuery, artifactId: query.artifactId }) : [];
   const artifact = artifacts.find((record) => record.id === query.artifactId);
-  const materialReferences = artifact?.reference.kind === "investor_material" ? await persistence.listResearchDisclosureMaterialReferences(storeQuery) : [];
-  const announcementReferenced = announcements.some((record) => record.attachments.some((attachment) => attachment.artifactId === query.artifactId));
-  const materialReferenced = artifact?.reference.kind !== "investor_material" || materialReferences.some((reference) => reference.id === artifact.reference.id && reference.listingId === summary.listing.id && reference.venue === summary.listing.venue && reference.artifactIds.includes(artifact.id));
-  if (eligible(summary) && ((!artifact && !announcementReferenced) || !materialReferenced || (artifact !== undefined && /xbrl/i.test(artifact.mediaType)) || (artifact?.reference.kind === "announcement_attachment" && !announcements.some((record) => record.id === artifact.reference.id && record.attachments.some((attachment) => attachment.artifactId === artifact.id))))) {
+  const announcementReferenced = eligible(summary) ? await persistence.hasResearchDisclosureArtifactReference({ ...storeQuery, listingId: summary.listing.id, venue: summary.listing.venue, artifactId: query.artifactId, ...(artifact ? { reference: artifact.reference } : {}) }) : false;
+  if (eligible(summary) && (!announcementReferenced || (artifact !== undefined && /xbrl/i.test(artifact.mediaType)))) {
     throw new DisclosureServiceError("research_artifact_not_referenced", "Artifact must be retained evidence referenced by this subject's announcement or material.");
   }
-  const attempts = !artifact && announcementReferenced ? (await persistence.listResearchDisclosureScans(storeQuery)).filter((scan) => scan.listingId === summary.listing.id && scan.venue === summary.listing.venue).flatMap((scan) => scan.artifactAttempts ?? [])
-    .filter((attempt) => attempt.artifactId === query.artifactId && Date.parse(attempt.attemptedAt) <= Date.parse(query.context.knowledgeAt)).sort((a, b) => Date.parse(b.attemptedAt) - Date.parse(a.attemptedAt)) : [];
+  const latestArtifactAttempt = !artifact && announcementReferenced ? await persistence.getLatestResearchDisclosureArtifactAttempt({ ...storeQuery, listingId: summary.listing.id, venue: summary.listing.venue, artifactId: query.artifactId }) : null;
+  const attempts = latestArtifactAttempt ? [latestArtifactAttempt] : [];
   const unavailableState = attempts[0]?.status === "restricted" ? "restricted" : attempts[0]?.status === "processing_failed" ? "processing_failed" : "not_acquired";
   const binding = artifact ? `${artifact.id}:${artifact.contentHash}:${artifact.extractionVersion}` : "";
   if (cursor && cursor.artifactBinding !== binding) throw new DisclosureServiceError("research_cursor_invalid", "Artifact hash or extraction version does not match cursor.");

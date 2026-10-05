@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
 import { parseOfficialAnnouncementSnapshot } from "../../src/services/research/providers/mopsAnnouncements.js";
 import {
-  enrichOfficialAnnouncement, parseOfficialAnnouncementDetail, selectOfficialAnnouncementDetailParameters,
+  announcementCitationSelectors, enrichOfficialAnnouncement, parseOfficialAnnouncementDetail, selectOfficialAnnouncementDetailParameters,
   MOPS_ANNOUNCEMENT_HISTORY_URL, MOPS_ANNOUNCEMENT_DETAIL_URL,
 } from "../../src/services/research/providers/mopsAnnouncementDetails.js";
 
@@ -118,4 +118,10 @@ describe("official MOPS detail enrichment", () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+});
+
+it("citation selectors: whitespace-normalized publisher date/title → same exact parser candidates", () => {
+  const { record } = fixture("TWSE");
+  expect(announcementCitationSelectors({ ...record, subject: "更正本公司公告", explanation: "原115 年 10 月 02 日公告「公司　資本\ufeff支出公告」金額更正。" })).toEqual({ titles: ["公司資本支出公告"], days: ["2026-10-02"] });
+  expect(announcementCitationSelectors({ ...record, subject: "更正本公司公告", explanation: "原115 / 10 / 02公告「公司資本支出公告」金額更正。" }).days).toEqual(["2026-10-02"]);
 });
