@@ -38,6 +38,9 @@ describe("disclosure specialist candidate contract", () => {
   });
   it.each(analyticalFields)("analytical %s: action or sentiment in either language → reject the specific field", (field) => {
     for (const text of ["Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲",
+      "Buy TSMC", "Sell AAPL now", "Hold 2330", "I recommend buying TSMC", "We advise selling AAPL", "I recommend that you buy TSMC",
+      "You should buy NVDA", "Hold shipments. Buy TSMC now.", "Investors should buy equipment.", "My advice is to buy 2330", "買進台積電", "賣出2330", "請持有聯發科", "確認：買進台積電", "條件成立。賣出2330",
+      "- Buy TSMC", '"Sell AAPL now"', "推薦買入台積電",
       "Buy the stock now", "Sell these shares immediately.", "Hold this company's stock.", "Buy TSMC's shares.", "Buy TSMC shares now", "Buy 2330 stock",
       "- Buy the stock now", '"Buy the stock now"', "1. Sell TSMC shares.", "- 請買進股票",
       "I recommend buying shares", "I advise you to purchase shares.", "My advice is to buy stock.",
@@ -177,6 +180,10 @@ describe("focused disclosure report", () => {
       "The company may sell treasury shares to finance capacity.",
       "The issuer plans to purchase shares in its subsidiary to consolidate control.",
       "Holding shares reduces public float.", "The issuer is acquiring a business to expand capacity.",
+      "The issuer plans to buy TSMC to integrate production.", "The company should buy machinery to expand output.",
+      "Hold shipments until commissioning completes.", "Sell inventory to reduce storage costs.",
+      "Buy equipment to expand capacity.", "Purchase the machinery after approval.", "買入設備以擴大產能。", "賣出庫存以降低儲存成本。",
+      "公司計畫買進台積電以整合產能。",
       "公司買回股份以執行庫藏股計畫。", "公司收購企業以擴充產能。"]) {
       const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, [field]: text }], readBudget: 10 });
       expect(report.assessments[0]!.sourceSupport).toBe("supported");
@@ -221,7 +228,7 @@ describe("focused disclosure report", () => {
   it.each(analyticalFields)("rendered analytical %s: injected trading advice → reject revalidation", async (field) => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [candidate], readBudget: 10 });
-    for (const advice of ["Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票"]) {
+    for (const advice of ["Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票", "Buy TSMC", "Sell AAPL now", "I recommend buying TSMC", "買進台積電", "賣出2330"]) {
       const mutated = structuredClone(report);
       mutated.assessments[0]!.candidate[field] = advice;
       for (const locale of ["en", "zh-TW"] as const) expect(() => renderFocusedDisclosureResearchReportMarkdown(mutated, locale)).toThrow();
