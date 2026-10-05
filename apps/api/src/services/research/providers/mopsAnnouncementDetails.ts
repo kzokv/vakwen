@@ -3,13 +3,13 @@ import { isMopsAccessDenial } from "./mopsAccessDenial.js";
 import { z } from "zod";
 import type { ResearchAnnouncementRecord } from "../disclosureContracts.js";
 import { researchAnnouncementRecordSchema } from "../disclosureContracts.js";
-import { disclosureHash, disclosureId, safeDisclosureUrl } from "./mopsAnnouncements.js";
+import { disclosureHash, disclosureId, safeDisclosureUrl, parseOptionalAnnouncementEventDate } from "./mopsAnnouncements.js";
 import { parseTaiwanOfficialDate } from "./twseIdentity.js";
 
 /** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
 export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
 export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
-export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.0";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.1";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const parametersSchema = z.object({
   marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
@@ -126,7 +126,8 @@ export function parseOfficialAnnouncementDetail(
     attachments.push({ id: disclosureId("att", record.id, String(index), url), artifactId: disclosureId("art", record.id, url),
       title: cell.fileName, sourceUrl: url, mediaType: attachmentMediaType(url, cell.fileName) });
   }
-  const enriched = { ...record, subject: field("主旨"), ruleClause: field("符合條款"), eventDate: parseTaiwanOfficialDate(field("事實發生日").replaceAll("/", "")) ?? null,
+  const rawEventDate = typeof values.get("事實發生日") === "string" ? values.get("事實發生日") as string : undefined;
+  const enriched = { ...record, rawEventDate, subject: field("主旨"), ruleClause: field("符合條款"), eventDate: parseOptionalAnnouncementEventDate(rawEventDate?.replaceAll("/", "")),
     explanation: field("說明"), attachments };
   const relation = relationFromPublisherText(enriched, previousRecords);
   const reasons = relation.unresolved ? ["unresolved_correction_reference"] : [];

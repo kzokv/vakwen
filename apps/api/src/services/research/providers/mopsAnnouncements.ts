@@ -9,15 +9,19 @@ export const OFFICIAL_ANNOUNCEMENT_SOURCES = {
   TWSE: "https://openapi.twse.com.tw/v1/opendata/t187ap04_L",
   TPEX: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O",
 } as const;
-export const DISCLOSURE_PARSER_VERSION = "mops-announcements/1.0.0";
+export const DISCLOSURE_PARSER_VERSION = "mops-announcements/1.0.1";
 export function disclosureId(prefix: string, ...parts: string[]) { return `${prefix}_${createHash("sha256").update(parts.join("\u001f")).digest("hex").slice(0, 32)}`; }
 export function disclosureHash(value: string) { return createHash("sha256").update(value).digest("hex"); }
 export function safeDisclosureUrl(value: string): boolean {
   try { const url = new URL(value); return isCredentialFreeDisclosureUrl(value)
     && ["mops.twse.com.tw", "mopsov.twse.com.tw", "mopsws.twse.com.tw", "openapi.twse.com.tw", "www.twse.com.tw", "www.tpex.org.tw"].includes(url.hostname); } catch { return false; }
 }
-const rowSchema = z.object({ 公司代號: z.string(), 發言日期: z.string(), 發言時間: z.string(), 主旨: z.string(), 符合條款: z.string(), 事實發生日: z.string(), 說明: z.string() }).passthrough();
+const rowSchema = z.object({ 公司代號: z.string(), 發言日期: z.string(), 發言時間: z.string(), 主旨: z.string(), 符合條款: z.string(), 事實發生日: z.string().nullish(), 說明: z.string() }).passthrough();
 export interface AnnouncementSnapshotMetadata { retrievedAt: string; contentHash: string; sourceUrl: string; acquisitionRunId: string }
+export function parseOptionalAnnouncementEventDate(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  try { return parseTaiwanOfficialDate(value); } catch { return null; }
+}
 function publication(dateValue: string, timeValue: string) {
   const date = parseTaiwanOfficialDate(dateValue);
   if (!date) throw new Error("announcement_publication_date_invalid");
@@ -55,9 +59,9 @@ export function parseOfficialAnnouncementSnapshot(payload: unknown, metadata: An
     // truncation never prevents inspection of its original contents.
     attachments.push({ id: disclosureId("att", id, "explanation"), artifactId: disclosureId("art", id, "explanation"), title: "發行人說明原文", sourceUrl: officialUrl, mediaType: "text/plain" });
     return [researchAnnouncementRecordSchema.parse({ id, issuerId: identity.issuer.id, listingId: identity.listing.id, ticker: identity.listing.ticker, venue,
-      rawPublication: { date: row.發言日期, time: row.發言時間 }, rawEventDate: row.事實發生日, publishedAt: stamp.publishedAt, publicationPrecision: stamp.precision, subject: row.主旨, ruleClause: row.符合條款, eventDate: parseTaiwanOfficialDate(row.事實發生日) ?? null,
+      rawPublication: { date: row.發言日期, time: row.發言時間 }, rawEventDate: row.事實發生日 ?? undefined, publishedAt: stamp.publishedAt, publicationPrecision: stamp.precision, subject: row.主旨, ruleClause: row.符合條款, eventDate: parseOptionalAnnouncementEventDate(row.事實發生日),
       explanation: row.說明, sourceUrl: officialUrl, attachments, relations: [], quality: "available",
-      provenance: { id: disclosureId("pr", id, metadata.contentHash), publisher: "MOPS", accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI", authorityRole: "authoritative", sourceUrl: metadata.sourceUrl, contentHash: metadata.contentHash,
+      provenance: { id: disclosureId("pr", id, metadata.contentHash, DISCLOSURE_PARSER_VERSION), publisher: "MOPS", accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI", authorityRole: "authoritative", sourceUrl: metadata.sourceUrl, contentHash: metadata.contentHash,
         retrievedAt: metadata.retrievedAt, processedAt: metadata.retrievedAt, acquisitionRunId: metadata.acquisitionRunId, parserVersion: DISCLOSURE_PARSER_VERSION, usagePolicyVersion: "taiwan-open-data/1.0.0" },
     })];
   });

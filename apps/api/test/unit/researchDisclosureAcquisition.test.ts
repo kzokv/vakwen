@@ -374,3 +374,25 @@ it("delayed failed refresh: no response snapshot → failure completion timestam
     expect(result.scan).toMatchObject({ status: "current", checkedAt: at, latestAttempt: { checkedAt: failedAt, knowledgeAt: failedAt, status: "failed", provenance: { contentHash: null, processedAt: failedAt } } });
   } finally { vi.useRealTimers(); }
 });
+
+it.each(["TWSE", "TPEX"] as const)("%s optional event dates: mixed missing/invalid dates → all records retained and current scan", async (venue) => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+  const { rows, identity } = fixture(venue);
+  const values = [rows[0].事實發生日, "", "不適用", "1150230", "2026/10/03", undefined, null];
+  const mixed = values.map((value, index) => ({ ...rows[0], 主旨: `事件日期案例${index}`, 事實發生日: value, 說明: `事件日期案例${index}` }));
+  const parsed = parseOfficialAnnouncementSnapshot(mixed, { retrievedAt: at, contentHash: "a".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "event_dates" }, venue, [identity]);
+  expect(parsed).toHaveLength(values.length);
+  expect(parsed[0]?.eventDate).not.toBeNull();
+  expect(parsed.slice(1).every((record) => record.eventDate === null)).toBe(true);
+  expect(parsed.map((record) => record.rawEventDate)).toEqual(values.map((value) => value ?? undefined));
+  expect(() => parseOfficialAnnouncementSnapshot([{ ...mixed[0], 發言日期: "" }], { retrievedAt: at, contentHash: "a".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "invalid_publication" }, venue, [identity])).toThrow();
+  const persistence = new MemoryPersistence(); await persistence.appendResearchIdentityRecords([identity]);
+  const fetchImpl = vi.fn(async (url: string | URL | Request) => String(url) === OFFICIAL_ANNOUNCEMENT_SOURCES[venue] ? new Response(JSON.stringify(mixed)) : new Response("unavailable", { status: 503 })) as unknown as typeof fetch;
+  const result = await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "mixed_event_dates" });
+  expect(result.outcomes).toEqual([{ venue, status: "success", announcementCount: values.length }]);
+  const input = { subject: { kind: "listing_id" as const, listingId: identity.listing.id }, context: { knowledgeAt: at } };
+  const page = await listMaterialAnnouncements(persistence, input);
+  expect(page.scan.status).toBe("current"); expect(page.items).toHaveLength(values.length);
+  const filtered = await listMaterialAnnouncements(persistence, { ...input, range: { publishedFrom: "2026-10-01T00:00:00.000Z", publishedTo: at, eventFrom: "2000-01-01", eventTo: "2026-10-04" } });
+  expect(filtered.items).toHaveLength(1); expect(filtered.items[0]?.eventDate).not.toBeNull();
+});

@@ -161,3 +161,17 @@ it.each(["corrects", "retracts"] as const)("snapshot %s with unavailable detail:
     expect(result.record.detailQuality?.reasonCodes).toEqual(result.reasonCodes);
   }
 });
+
+it.each(["TWSE", "TPEX"] as const)("%s optional detailed event date: unavailable value → preserve raw value and valid detail", (venue) => {
+  const { record, detail } = fixture(venue);
+  const index = detail.result.titles.findIndex((title: { main: string }) => title.main.trim() === "事實發生日");
+  for (const rawEventDate of ["", "  不適用  ", "115/02/30", null]) {
+    const payload = structuredClone(detail); payload.result.data[0][index] = rawEventDate;
+    const result = parseOfficialAnnouncementDetail(payload, record, metadata);
+    expect(result.detailStatus).toBe("available");
+    expect(result.record.eventDate).toBeNull();
+    expect(result.record.rawEventDate).toBe(rawEventDate ?? undefined);
+  }
+  const missing = structuredClone(detail); missing.result.titles.splice(index, 1); missing.result.data[0].splice(index, 1);
+  expect(parseOfficialAnnouncementDetail(missing, record, metadata).record.eventDate).toBeNull();
+});

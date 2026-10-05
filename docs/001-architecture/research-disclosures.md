@@ -15,7 +15,7 @@ The Listing selector is `listing_id` or `ticker_venue` with a lossless ticker an
 
 Initial requests must include `context.knowledgeAt`. Omitted `effectiveAt` defaults to `knowledgeAt`, and omitted `assessmentMode` defaults to `effective`; `re_evaluate` requires `policySetVersion`. The service returns the normalized fixed context. Continuations use only the repeated subject and cursor.
 
-Publication bounds determine when an announcement became knowable. Event dates may narrow that range but do not replace it. The service preserves publication precision, original publication fields, title, rule clause, event date, issuer explanation, attachment references, and correction/retraction relations.
+Publication bounds determine when an announcement became knowable. Event dates may narrow that range but do not replace it. Missing, blank or invalid optional event dates become `null` without failing an otherwise valid snapshot or detail record; original event-date strings remain in `rawEventDate`. Event-range filters exclude records with unknown event dates. Required publication dates and times remain strict. The service preserves publication precision, original publication fields, title, rule clause, event date, issuer explanation, attachment references, and correction/retraction relations.
 
 Explanation text is limited to 20,000 Unicode characters per announcement. The response states original and retained counts, exact truncation, source location, hash and source URL. An explanation artifact permits inspection beyond the inline limit. Dataset tools do not translate, summarize, assign sentiment, or classify catalysts.
 
