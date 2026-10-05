@@ -67,7 +67,7 @@ describePostgres("disclosure memory/Postgres conformance", () => {
       await persistence.appendResearchAnnouncements([notice, { ...notice, id: "wrong_listing_unknown", listingId: "different_listing" }, { ...notice, id: "future_unknown", provenance: { ...notice.provenance, processedAt: "2026-09-02T00:00:00.000Z" } }]);
       const input = { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } };
       const before = await listMaterialAnnouncements(persistence, input);
-      expect(before.unknownRelationIndex).toEqual([{ sourceAnnouncementId: notice.id, kind: "corrects", publishedAt: notice.publishedAt, publicationPrecision: "date" }]);
+      expect(before.unknownRelationIndex).toEqual([{ provenanceId: expect.any(String), sourceAnnouncementId: notice.id, kind: "corrects", publishedAt: notice.publishedAt, publicationPrecision: "date" }]);
       expect(before.relationIndex).toEqual([]);
       await persistence.appendResearchAnnouncements([{ ...notice, id: "resolution", unknownRelationTargets: [], relations: [{ kind: "supersedes", targetAnnouncementId: notice.id }] }]);
       const after = await listMaterialAnnouncements(persistence, input);
@@ -86,7 +86,7 @@ describePostgres("disclosure memory/Postgres conformance", () => {
       const early = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context });
       expect(early.items.map(item => item.id)).toEqual(["ann1"]);
       const late = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: { knowledgeAt: "2026-09-02T02:00:00.000Z" } });
-      expect(late.relationIndex).toContainEqual({ announcementId: "correction", kind: "corrects", targetAnnouncementId: "ann1" });
+      expect(late.relationIndex).toContainEqual({ provenanceId: expect.any(String), announcementId: "correction", kind: "corrects", targetAnnouncementId: "ann1" });
       const artifact = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: f.artifact.id, limit: 10 });
       expect(artifact.artifact?.contentHash).toBe(f.artifact.contentHash);
       expect(artifact.page.returnedPages).toEqual([1, 2, 3, 4]);
@@ -235,7 +235,7 @@ describePostgres("disclosure memory/Postgres conformance", () => {
         { ...notice, id: "future_notice", provenance: { ...notice.provenance, processedAt: "2026-09-02T00:00:00.000Z" } }]);
       const input = { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } };
       const before = await listMaterialAnnouncements(persistence, input);
-      expect(before.unresolvedRelationIndex).toEqual([{ sourceAnnouncementId: notice.id, kind: "corrects", candidateAnnouncementIds: ["ann1", "ann2"] }]);
+      expect(before.unresolvedRelationIndex).toEqual([{ provenanceId: expect.any(String), sourceAnnouncementId: notice.id, kind: "corrects", candidateAnnouncementIds: ["ann1", "ann2"] }]);
       await persistence.appendResearchAnnouncements([{ ...notice, id: "resolved_notice", unresolvedRelations: [], relations: [{ kind: "corrects", targetAnnouncementId: "outside_target" }, { kind: "supersedes", targetAnnouncementId: notice.id }] }]);
       const after = await listMaterialAnnouncements(persistence, input);
       expect(after.unresolvedRelationIndex).toEqual([]);

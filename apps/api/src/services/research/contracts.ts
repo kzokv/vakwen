@@ -1258,12 +1258,20 @@ export const materialAnnouncementsOutputSchema = z.object({
   items: z.array(researchAnnouncementRecordSchema.omit({ explanation: true }).extend({
     explanation: z.object({ text: z.string(), originalCharacters: z.number().int().nonnegative(), retainedCharacters: z.number().int().nonnegative(), truncated: z.boolean(), contentHash: z.string(), sourceUrl: z.string().url(), location: z.literal("issuer_explanation") }).strict(),
   }).strict()),
-  relationIndex: z.array(z.object({ announcementId: canonicalIdSchema, kind: z.enum(["corrects", "retracts", "supersedes"]), targetAnnouncementId: canonicalIdSchema }).strict()),
-  unknownRelationIndex: z.array(z.object({ sourceAnnouncementId: canonicalIdSchema, kind: z.enum(["corrects", "retracts"]), publishedAt: z.string().datetime({ offset: true }), publicationPrecision: z.enum(["second", "minute", "date"]) }).strict()),
-  unresolvedRelationIndex: z.array(z.object({ sourceAnnouncementId: canonicalIdSchema, kind: z.enum(["corrects", "retracts"]), candidateAnnouncementIds: z.array(canonicalIdSchema).min(1) }).strict()),
+  relationIndex: z.array(z.object({ announcementId: canonicalIdSchema, provenanceId: canonicalIdSchema, kind: z.enum(["corrects", "retracts", "supersedes"]), targetAnnouncementId: canonicalIdSchema }).strict()),
+  unknownRelationIndex: z.array(z.object({ sourceAnnouncementId: canonicalIdSchema, provenanceId: canonicalIdSchema, kind: z.enum(["corrects", "retracts"]), publishedAt: z.string().datetime({ offset: true }), publicationPrecision: z.enum(["second", "minute", "date"]) }).strict()),
+  unresolvedRelationIndex: z.array(z.object({ sourceAnnouncementId: canonicalIdSchema, provenanceId: canonicalIdSchema, kind: z.enum(["corrects", "retracts"]), candidateAnnouncementIds: z.array(canonicalIdSchema).min(1) }).strict()),
   page: z.object({ continuity: disclosurePageContinuitySchema, nextCursor: z.string().nullable(), order: z.enum(["asc", "desc"]), limit: z.number().int(), truncatedBy: z.enum(["page_limit", "response_budget"]).nullable() }).strict(),
   provenance: z.array(disclosureProvenanceSchema),
-}).strict().superRefine((output, ctx) => validateDisclosurePageContinuity(output.page, output.items.length, ctx));
+}).strict().superRefine((output, ctx) => {
+  validateDisclosurePageContinuity(output.page, output.items.length, ctx);
+  const provenanceIds = new Set(output.provenance.map((entry) => entry.id));
+  for (const index of ["relationIndex", "unresolvedRelationIndex", "unknownRelationIndex"] as const) {
+    output[index].forEach((entry, position) => {
+      if (!provenanceIds.has(entry.provenanceId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index, position, "provenanceId"], message: "Effective notice provenance must be included in the page." });
+    });
+  }
+});
 const disclosureQualifierStateSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("present"), value: z.string() }).strict(),
   z.object({ state: z.literal("missing"), reason: z.literal("unknown") }).strict(),

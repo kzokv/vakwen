@@ -148,7 +148,7 @@ describe("bounded disclosure reads", () => {
     expect(selected.page.continuity.totalCount).toBe(2);
     expect(selected.selection.excludedObservationCount).toBe(1);
     expect(selected.selection.conflictObservationIds).toEqual(["conflict_target"]);
-    expect(selected.relationIndex).toContainEqual({ announcementId: "outside_correction", kind: "corrects", targetAnnouncementId: "corrected_target" });
+    expect(selected.relationIndex).toContainEqual({ provenanceId: expect.any(String), announcementId: "outside_correction", kind: "corrects", targetAnnouncementId: "corrected_target" });
     const identity = await getResearchIdentity(f.persistence, { subject: f.subject, context: f.context, history: { limit: 1 } });
     const candidates = ["corrected_target", "conflict_target"].map((id) => ({ id, kind: "risk" as const, status: "conditional" as const,
       statement: f.announcement.explanation, statusEvidence: { reference: { kind: "announcement" as const, announcementId: id }, excerpt: f.announcement.explanation },
@@ -163,7 +163,7 @@ describe("bounded disclosure reads", () => {
     expect(audit.items.map((item) => item.id).sort()).toEqual(["conflict_target", "corrected_target", "superseded_target"]);
     expect(audit.page.continuity.totalCount).toBe(3);
     expect(audit.selection.excludedObservationCount).toBe(0);
-    expect(audit.relationIndex).toContainEqual({ announcementId: "outside_successor", kind: "supersedes", targetAnnouncementId: "superseded_target" });
+    expect(audit.relationIndex).toContainEqual({ provenanceId: expect.any(String), announcementId: "outside_successor", kind: "supersedes", targetAnnouncementId: "superseded_target" });
     expect(payloads.mock.calls.flatMap(([query]) => query.ids).some((id) => id.startsWith("outside_") || id.startsWith("irrelevant_"))).toBe(false);
     for (const spy of broadReads) expect(spy).not.toHaveBeenCalled();
   });

@@ -38,7 +38,7 @@ describe("retained disclosure reads", () => {
   it("temporal read: later retraction → absent before knowledge cutoff, cross-page relation afterward", async () => {
     const f = await disclosureFixture(); await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "retraction", publishedAt: "2026-09-01T01:30:00.000Z", relations: [{ kind: "retracts", targetAnnouncementId: "ann1" }] }]);
     const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, limit: 1 });
-    expect(result.relationIndex).toContainEqual({ announcementId: "retraction", kind: "retracts", targetAnnouncementId: "ann1" });
+    expect(result.relationIndex).toContainEqual({ provenanceId: expect.any(String), announcementId: "retraction", kind: "retracts", targetAnnouncementId: "ann1" });
     const earlier = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: { knowledgeAt: "2026-09-01T01:00:00.000Z" } }); expect(earlier.items).toEqual([]);
   });
   it("artifact: retained reference → complete pages, rejected generic lookup and immutable conflict", async () => {
@@ -114,7 +114,7 @@ it("evidence views: authoritative supersession → policy-selected current recor
   const selected = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, purposes: ["factual_use"] });
   expect(selected.items.map((item) => item.id)).toEqual(["successor"]);
   expect(selected.selection).toMatchObject({ evidenceView: "selected_with_conflicts", purposes: ["factual_use"], excludedObservationCount: 1, selectedObservationIds: ["successor"] });
-  expect(selected.relationIndex).toContainEqual({ announcementId: "successor", kind: "supersedes", targetAnnouncementId: f.announcement.id });
+  expect(selected.relationIndex).toContainEqual({ provenanceId: expect.any(String), announcementId: "successor", kind: "supersedes", targetAnnouncementId: f.announcement.id });
   const audit = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, evidenceView: "all_observations", limit: 1, purposes: ["factual_use"] });
   const next = await listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor: audit.page.nextCursor! });
   expect(next.selection.evidenceView).toBe("all_observations"); expect(next.selection.purposes).toEqual(["factual_use"]);
@@ -300,7 +300,7 @@ it("range-local metadata: out-of-window revision → in-window predecessor stays
   const audit = await listMaterialAnnouncements(f.persistence, { ...initial, evidenceView: "all_observations" });
   expect(audit.items.map((record) => record.id)).toEqual([f.announcement.id]);
   expect(audit.selection.excludedObservationCount).toBe(0);
-  expect(audit.relationIndex).toContainEqual({ announcementId: "outside_revision", kind: "supersedes", targetAnnouncementId: f.announcement.id });
+  expect(audit.relationIndex).toContainEqual({ provenanceId: expect.any(String), announcementId: "outside_revision", kind: "supersedes", targetAnnouncementId: f.announcement.id });
 });
 
 it("artifact ID bound: requested or unknown ID → persistence never bulk-loads issuer payloads", async () => {
@@ -369,7 +369,7 @@ it.each(["corrects", "retracts"] as const)("outside-window ambiguous %s: target 
   const ambiguous = await listMaterialAnnouncements(f.persistence, input);
   expect(ambiguous.items.map((item) => item.id).sort()).toEqual(["ann1", "ann2"]);
   expect(ambiguous.relationIndex).toEqual([]);
-  expect(ambiguous.unresolvedRelationIndex).toEqual([{ sourceAnnouncementId: notice.id, kind, candidateAnnouncementIds: ["ann1", "ann2"] }]);
+  expect(ambiguous.unresolvedRelationIndex).toEqual([{ provenanceId: expect.any(String), sourceAnnouncementId: notice.id, kind, candidateAnnouncementIds: ["ann1", "ann2"] }]);
   const first = await listMaterialAnnouncements(f.persistence, { ...input, limit: 1 });
   expect(first.unresolvedRelationIndex[0]?.candidateAnnouncementIds).toEqual(first.items.map((item) => item.id));
   // This revision targets an outside-window original, so only the second-hop
@@ -381,7 +381,7 @@ it.each(["corrects", "retracts"] as const)("outside-window ambiguous %s: target 
   expect(resolved.page.continuity.queryHash).not.toBe(ambiguous.page.continuity.queryHash);
   // A separate unresolved observation has not been superseded and remains active.
   await f.persistence.appendResearchAnnouncements([{ ...notice, id: "independent_notice", collectionRecordId: "independent_collection" }]);
-  expect((await listMaterialAnnouncements(f.persistence, input)).unresolvedRelationIndex).toEqual([{ sourceAnnouncementId: "independent_notice", kind, candidateAnnouncementIds: ["ann1", "ann2"] }]);
+  expect((await listMaterialAnnouncements(f.persistence, input)).unresolvedRelationIndex).toEqual([{ provenanceId: expect.any(String), sourceAnnouncementId: "independent_notice", kind, candidateAnnouncementIds: ["ann1", "ann2"] }]);
 });
 
 it("missing material artifact: retained scoped membership → typed unavailable, explicit wrong parent still rejected", async () => {
@@ -404,15 +404,15 @@ it.each(["corrects", "retracts"] as const)("superseded %s notice: effective inde
       const latest: ResearchAnnouncementRecord = { ...middle, id: "latest_notice", relations: [{ kind: "supersedes", targetAnnouncementId: middle.id }, ...(repoint ? [{ kind, targetAnnouncementId: target.id }] : [])] };
       await f.persistence.appendResearchAnnouncements([target, old, middle, latest]);
       const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, evidenceView });
-      expect(result.relationIndex.filter((relation) => relation.kind === kind)).toEqual(repoint ? [{ announcementId: latest.id, kind, targetAnnouncementId: target.id }] : []);
+      expect(result.relationIndex.filter((relation) => relation.kind === kind)).toEqual(repoint ? [{ provenanceId: expect.any(String), announcementId: latest.id, kind, targetAnnouncementId: target.id }] : []);
       expect(result.selection.selectedObservationIds).not.toContain(old.id);
       expect(result.selection.selectedObservationIds).not.toContain(middle.id);
       if (evidenceView === "all_observations") {
         expect(result.items.find((item) => item.id === old.id)?.relations).toEqual(old.relations);
-        expect(result.relationIndex).toContainEqual({ announcementId: middle.id, kind: "supersedes", targetAnnouncementId: old.id });
+        expect(result.relationIndex).toContainEqual({ provenanceId: expect.any(String), announcementId: middle.id, kind: "supersedes", targetAnnouncementId: old.id });
       }
       const windowed = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, evidenceView, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } });
-      expect(windowed.relationIndex.filter((relation) => relation.kind === kind)).toEqual(repoint ? [{ announcementId: latest.id, kind, targetAnnouncementId: target.id }] : []);
+      expect(windowed.relationIndex.filter((relation) => relation.kind === kind)).toEqual(repoint ? [{ provenanceId: expect.any(String), announcementId: latest.id, kind, targetAnnouncementId: target.id }] : []);
     }
   }
 });
@@ -424,7 +424,7 @@ it.each(["corrects", "retracts"] as const)("unknown %s target: scoped outside-wi
   const input = { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } };
   const before = await listMaterialAnnouncements(f.persistence, input);
   expect(before.relationIndex).toEqual([]); expect(before.unresolvedRelationIndex).toEqual([]);
-  expect(before.unknownRelationIndex).toEqual([{ sourceAnnouncementId: notice.id, kind, publishedAt: notice.publishedAt, publicationPrecision: "second" }]);
+  expect(before.unknownRelationIndex).toEqual([{ provenanceId: expect.any(String), sourceAnnouncementId: notice.id, kind, publishedAt: notice.publishedAt, publicationPrecision: "second" }]);
   await f.persistence.appendResearchAnnouncements([{ ...notice, id: "resolved_notice", unknownRelationTargets: [], relations: [{ kind: "supersedes", targetAnnouncementId: notice.id }] }]);
   const after = await listMaterialAnnouncements(f.persistence, input);
   expect(after.unknownRelationIndex).toEqual([]);
@@ -443,4 +443,45 @@ it.each([
   await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "coarse_notice", publishedAt, publicationPrecision, unknownRelationTargets: [{ kind: "corrects" }] }]);
   const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } });
   expect(result.unknownRelationIndex).toHaveLength(affected ? 1 : 0);
+});
+
+it("outside-window lineage provenance: effective notices → self-contained source audit without unrelated history", async () => {
+  const f = await disclosureFixture();
+  const notice = (id: string, extra: Partial<ResearchAnnouncementRecord>): ResearchAnnouncementRecord => ({ ...f.announcement, id, publishedAt: "2026-09-01T01:30:00.000Z", provenance: { ...f.announcement.provenance, id: `pr_${id}`, contentHash: id.padEnd(64, "a").slice(0, 64).replace(/[^a-f]/g, "a") }, ...extra });
+  await f.persistence.appendResearchAnnouncements([
+    notice("correction", { relations: [{ kind: "corrects", targetAnnouncementId: f.announcement.id }] }),
+    notice("ambiguity", { unresolvedRelations: [{ kind: "retracts", candidateAnnouncementIds: ["ann1", "ann2"] }] }),
+    notice("unknown", { unknownRelationTargets: [{ kind: "corrects" }] }),
+    notice("irrelevant", {}),
+  ]);
+  const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } });
+  expect(result.items.map((item) => item.id)).toEqual([f.announcement.id]);
+  expect(result.provenance.map((entry) => entry.id).sort()).toEqual([f.announcement.provenance.id, "pr_correction", "pr_ambiguity", "pr_unknown"].sort());
+  expect(materialAnnouncementsOutputSchema.safeParse({ ...result, provenance: result.provenance.filter((entry) => entry.id !== "pr_correction") }).success).toBe(false);
+  for (const entry of [...result.relationIndex, ...result.unresolvedRelationIndex, ...result.unknownRelationIndex]) {
+    const sourceId = "announcementId" in entry ? entry.announcementId : entry.sourceAnnouncementId;
+    expect(entry.provenanceId).toBe(`pr_${sourceId}`);
+    expect(result.provenance.find((provenance) => provenance.id === entry.provenanceId)).toMatchObject({ publisher: "MOPS", authorityRole: "authoritative", sourceUrl: f.announcement.sourceUrl });
+  }
+});
+
+it("lineage provenance byte budget: page trimming → prune dropped target sources and keep complete audit", async () => {
+  const f = await disclosureFixture();
+  const ids = [f.announcement.id, "budget_target1", "budget_target2"];
+  await f.persistence.appendResearchAnnouncements(ids.slice(1).map((id) => ({ ...f.announcement, id })));
+  await f.persistence.appendResearchAnnouncements(ids.map((target, index) => ({ ...f.announcement, id: `budget_notice${index}`, publishedAt: "2026-09-01T01:30:00.000Z", relations: [{ kind: "corrects" as const, targetAnnouncementId: target }], provenance: { ...f.announcement.provenance, id: `pr_budget${index}`, parserVersion: "v".repeat(100_000) } })));
+  const input = { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt }, limit: 100 };
+  let result = await listMaterialAnnouncements(f.persistence, input);
+  const seen: string[] = [];
+  for (;;) {
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(255 * 1024);
+    expect(result.items).toHaveLength(1);
+    expect(result.relationIndex).toHaveLength(1);
+    expect(result.relationIndex[0]?.targetAnnouncementId).toBe(result.items[0]?.id);
+    expect(result.provenance.map((entry) => entry.id).sort()).toEqual([f.announcement.provenance.id, result.relationIndex[0]!.provenanceId].sort());
+    seen.push(result.items[0]!.id);
+    if (!result.page.nextCursor) break;
+    result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, cursor: result.page.nextCursor });
+  }
+  expect(seen.sort()).toEqual(ids.sort());
 });

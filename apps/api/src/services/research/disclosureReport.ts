@@ -225,6 +225,22 @@ export function composeFocusedDisclosureResearchReport(input: {
     || page.window.publishedTo !== first.window.publishedTo)) {
     throw new Error("Disclosure report collection window mismatch");
   }
+  const lineageSources = new Map<string, string>();
+  const provenanceRecords = new Map<string, string>();
+  for (const page of pages) {
+    for (const provenance of page.provenance) {
+      const retained = JSON.stringify(provenance);
+      if (provenanceRecords.has(provenance.id) && provenanceRecords.get(provenance.id) !== retained) throw new Error("Disclosure lineage provenance content mismatch");
+      provenanceRecords.set(provenance.id, retained);
+    }
+    for (const entry of [...page.relationIndex, ...page.unresolvedRelationIndex, ...page.unknownRelationIndex]) {
+      const sourceId = "announcementId" in entry ? entry.announcementId : entry.sourceAnnouncementId;
+      const source = pages.flatMap((result) => result.items).find((item) => item.id === sourceId);
+      if ((source && source.provenance.id !== entry.provenanceId)
+        || (lineageSources.has(sourceId) && lineageSources.get(sourceId) !== entry.provenanceId)) throw new Error("Disclosure lineage source provenance mapping mismatch");
+      lineageSources.set(sourceId, entry.provenanceId);
+    }
+  }
   const collectionIncomplete = validateDisclosurePageChain(pages.map((page) => page.page), pages.map((page) => page.items.length));
   if (pages.some((page) => page.page.order !== first.page.order || page.page.limit !== first.page.limit)) {
     throw new Error("Disclosure report page continuity query order or limit mismatch");
@@ -555,6 +571,16 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     || verified.reportStatus !== report.reportStatus) {
     throw new Error("Disclosure report claims or readiness do not match retained evidence");
   }
+  const displayedItems = new Set(report.announcementPages.flatMap((page) => page.items.map((item) => item.id)));
+  const lineageAudit = new Map<string, string>();
+  for (const page of report.announcementPages) {
+    for (const entry of [...page.relationIndex, ...page.unresolvedRelationIndex, ...page.unknownRelationIndex]) {
+      const sourceId = "announcementId" in entry ? entry.announcementId : entry.sourceAnnouncementId;
+      if (displayedItems.has(sourceId)) continue;
+      const provenance = page.provenance.find((record) => record.id === entry.provenanceId)!;
+      lineageAudit.set(sourceId, `- ${markdown(sourceId)} [${markdown(provenance.id)}]; ${t("source")}: ${markdown(provenance.sourceUrl)}; ${t("hash")}: ${markdown(provenance.contentHash ?? t("unknown"))}; ${t("extraction")}: ${markdown(provenance.parserVersion)}`);
+    }
+  }
   return [
     `# ${t("Taiwan Disclosure Research")}: ${report.identity.listing.venue}:${markdown(report.identity.listing.ticker)}`,
     "", `- ${t("Listing ID")}: ${markdown(report.selector.listingId)}`, `- ${t("Knowledge at")}: ${markdown(report.context.knowledgeAt)}`, `- ${t("Effective at")}: ${markdown(report.context.effectiveAt)}`,
@@ -595,6 +621,6 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     ]),
     "", `## ${t("Limitations and recovery")}`, "", ...report.limitations.map((item) => `- ${markdown(t(item))}`),
     ...report.recoveryRequirements.map((item) => `- ${markdown(t(item))}`),
-    "", `## ${t("Provenance")}`, "", ...report.evidence.provenanceIds.map((id) => `- ${markdown(id)}`),
+    "", `## ${t("Provenance")}`, "", ...report.evidence.provenanceIds.map((id) => `- ${markdown(id)}`), ...lineageAudit.values(),
   ].join("\n");
 }

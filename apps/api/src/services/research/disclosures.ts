@@ -141,15 +141,23 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
     reasonCodes: [...(latestAttempt && latestAttempt.status !== "success" ? ["latest_refresh_failed"] : []), ...(!exhaustive ? ["non_exhaustive_window"] : []), ...(status !== "current" ? [`official_scan_${status}`] : [])],
     recovery: applicable && (status !== "current" || latestAttempt?.status !== "success") ? ["Wait for a successful scheduled official announcement scan."] : [],
   };
+  const provenanceById = new Map(all.map((record) => [record.provenance.id, record.provenance]));
+  const pageProvenance = (page: Pick<MaterialAnnouncementsOutput, "items" | "relationIndex" | "unresolvedRelationIndex" | "unknownRelationIndex">) => {
+    const ids = new Set([...page.items.map((item) => item.provenance.id), ...page.relationIndex.map((entry) => entry.provenanceId), ...page.unresolvedRelationIndex.map((entry) => entry.provenanceId), ...page.unknownRelationIndex.map((entry) => entry.provenanceId)]);
+    return [...ids].sort().map((id) => provenanceById.get(id)!);
+  };
+  const relationIndex = all.filter((row) => row.quality === "available").flatMap((row) => row.relations.filter((relation) => (relation.kind === "supersedes" || !superseded.has(row.id)) && items.some((item) => item.id === row.id || item.id === relation.targetAnnouncementId)).map((relation) => ({ announcementId: row.id, provenanceId: row.provenance.id, ...relation })));
+  const unknownRelationIndex = all.filter((row) => row.quality === "available" && !superseded.has(row.id) && items.some((item) => disclosureNoticeMayAffectPublication(row, item.publishedAt))).flatMap((row) => (row.unknownRelationTargets ?? []).map((relation) => ({ sourceAnnouncementId: row.id, provenanceId: row.provenance.id, kind: relation.kind, publishedAt: row.publishedAt, publicationPrecision: row.publicationPrecision }))).sort((a, b) => a.sourceAnnouncementId.localeCompare(b.sourceAnnouncementId) || a.kind.localeCompare(b.kind));
+  const unresolvedRelationIndex = all.filter((row) => row.quality === "available" && !superseded.has(row.id)).flatMap((row) => (row.unresolvedRelations ?? []).map((relation) => ({ sourceAnnouncementId: row.id, provenanceId: row.provenance.id, kind: relation.kind, candidateAnnouncementIds: relation.candidateAnnouncementIds.filter((id) => items.some((item) => item.id === id)) })).filter((relation) => relation.candidateAnnouncementIds.length > 0)).sort((a, b) => a.sourceAnnouncementId.localeCompare(b.sourceAnnouncementId) || a.kind.localeCompare(b.kind));
   const output = materialAnnouncementsOutputSchema.parse({ contractVersion: "material-announcements/1.0.0", selector: identity.selector, context: identity.context, identity: summary,
     selection: evidenceSelection(query, quality.readiness, items.filter((item) => !superseded.has(item.id)).map((item) => item.id), items.filter((item) => conflictIds.has(item.id)).map((item) => item.id), query.evidenceView === "all_observations" ? 0 : scopedAll.length - scopedSelected.length, [query.evidenceView === "all_observations" ? "audit_all_retained_observations" : "authoritative_supersession_selected", ...(rows.some((row) => conflictIds.has(row.id)) ? ["open_equal_authority_conflict_retained"] : [])]),
     window: { publishedFrom: start, publishedTo: end, ...(query.range?.eventFrom ? { eventFrom: query.range.eventFrom } : {}), ...(query.range?.eventTo ? { eventTo: query.range.eventTo } : {}), exhaustive }, quality,
     scan: { status, checkedAt: selectedScan?.checkedAt ?? null, record: selectedScan ?? null, latestAttempt: latestAttempt ?? null, eventFactFreshness: "not_applicable" }, items,
-    relationIndex: all.filter((row) => row.quality === "available").flatMap((row) => row.relations.filter((relation) => (relation.kind === "supersedes" || !superseded.has(row.id)) && items.some((item) => item.id === row.id || item.id === relation.targetAnnouncementId)).map((relation) => ({ announcementId: row.id, ...relation }))),
-    unknownRelationIndex: all.filter((row) => row.quality === "available" && !superseded.has(row.id) && items.some((item) => disclosureNoticeMayAffectPublication(row, item.publishedAt))).flatMap((row) => (row.unknownRelationTargets ?? []).map((relation) => ({ sourceAnnouncementId: row.id, kind: relation.kind, publishedAt: row.publishedAt, publicationPrecision: row.publicationPrecision }))).sort((a, b) => a.sourceAnnouncementId.localeCompare(b.sourceAnnouncementId) || a.kind.localeCompare(b.kind)),
-    unresolvedRelationIndex: all.filter((row) => row.quality === "available" && !superseded.has(row.id)).flatMap((row) => (row.unresolvedRelations ?? []).map((relation) => ({ sourceAnnouncementId: row.id, kind: relation.kind, candidateAnnouncementIds: relation.candidateAnnouncementIds.filter((id) => items.some((item) => item.id === id)) })).filter((relation) => relation.candidateAnnouncementIds.length > 0)).sort((a, b) => a.sourceAnnouncementId.localeCompare(b.sourceAnnouncementId) || a.kind.localeCompare(b.kind)),
+    relationIndex,
+    unknownRelationIndex,
+    unresolvedRelationIndex,
     page: { continuity: { queryHash, offset, returnedCount: items.length, totalCount: rows.length, requestCursor: "cursor" in parsed ? parsed.cursor : null }, nextCursor, order: query.order, limit: query.limit, truncatedBy: more ? budgetTruncated ? "response_budget" : "page_limit" : null },
-    provenance: [...new Map(items.map((item) => [item.provenance.id, item.provenance])).values()],
+    provenance: pageProvenance({ items, relationIndex, unknownRelationIndex, unresolvedRelationIndex }),
   });
   while (Buffer.byteLength(JSON.stringify(output)) > RESPONSE_BYTES && output.items.length > 1) {
     output.items.pop();
@@ -158,7 +166,7 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
     output.unknownRelationIndex = output.unknownRelationIndex.filter((notice) => output.items.some((item) => disclosureNoticeMayAffectPublication(notice, item.publishedAt)));
     output.unresolvedRelationIndex = output.unresolvedRelationIndex.map((relation) => ({ ...relation, candidateAnnouncementIds: relation.candidateAnnouncementIds.filter((id) => retainedIds.has(id)) })).filter((relation) => relation.candidateAnnouncementIds.length > 0);
     output.relationIndex = output.relationIndex.filter((relation) => retainedIds.has(relation.announcementId) || retainedIds.has(relation.targetAnnouncementId));
-    output.provenance = [...new Map(output.items.map((item) => [item.provenance.id, item.provenance])).values()];
+    output.provenance = pageProvenance(output);
     output.page.nextCursor = encode({ version: VERSION, purpose: "announcements", auth: options.authorizationBinding ?? "internal", issuedAt: cursor?.issuedAt ?? Date.now(), query: { ...query, subject: identity.selector }, requestedSubject: cursor?.requestedSubject ?? parsed.subject, after: output.items.at(-1)!.id }, options);
     output.page.truncatedBy = "response_budget";
     output.quality.completeness = "partial";

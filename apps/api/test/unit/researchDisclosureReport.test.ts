@@ -263,6 +263,75 @@ describe("focused disclosure report", () => {
       expect(report.officialScanGate.status).toBe("passed");
       expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).not.toThrow();
     });
+  it.each(["corrects", "retracts", "supersedes", "unresolved", "unknown"] as const)("outside-window %s notice: one-item audit pages → retain exact lineage source provenance in report", async (kind) => {
+    const f = await seeded();
+    const second = { ...f.announcement, id: "second_target", subject: "Second target", attachments: [] };
+    const notice: ResearchAnnouncementRecord = { ...f.announcement, id: "lineage_notice", subject: "更正公告", publishedAt: "2026-10-04T03:00:00.000Z", attachments: [],
+      provenance: { ...f.announcement.provenance, id: "lineage_provenance", contentHash: "b".repeat(64), parserVersion: "lineage-parser/2" },
+      relations: kind === "unresolved" || kind === "unknown" ? [] : [{ kind, targetAnnouncementId: f.announcement.id }],
+      ...(kind === "unresolved" ? { unresolvedRelations: [{ kind: "corrects" as const, candidateAnnouncementIds: [f.announcement.id, second.id].sort() }] } : {}),
+      ...(kind === "unknown" ? { unknownRelationTargets: [{ kind: "retracts" as const }] } : {}) };
+    const unrelated = { ...notice, id: "unrelated_notice", relations: [], unresolvedRelations: [], unknownRelationTargets: [],
+      provenance: { ...notice.provenance, id: "unrelated_provenance" } };
+    await f.persistence.appendResearchAnnouncements([second, notice, unrelated]);
+    const page = await listMaterialAnnouncements(f.persistence, { ...f.query, evidenceView: "all_observations", limit: 1,
+      range: { publishedFrom: "2026-10-04T00:00:00.000Z", publishedTo: "2026-10-04T02:30:00.000Z" } });
+    const announcementPages = [page];
+    while (announcementPages.at(-1)!.page.nextCursor) announcementPages.push(await listMaterialAnnouncements(f.persistence,
+      { subject: f.query.subject, cursor: announcementPages.at(-1)!.page.nextCursor! }));
+    expect(announcementPages).toHaveLength(2);
+    expect(announcementPages.flatMap((entry) => entry.items).some((item) => item.id === notice.id)).toBe(false);
+    const indices = announcementPages.flatMap((entry) => [...entry.relationIndex, ...entry.unresolvedRelationIndex, ...entry.unknownRelationIndex]);
+    expect(indices.length).toBeGreaterThan(0);
+    for (const entry of announcementPages) {
+      const references = [...entry.relationIndex, ...entry.unresolvedRelationIndex, ...entry.unknownRelationIndex];
+      for (const reference of references) {
+        expect(reference.provenanceId).toBe(notice.provenance.id);
+        expect(entry.provenance.find((provenance) => provenance.id === reference.provenanceId)).toEqual(notice.provenance);
+      }
+      expect(entry.provenance.some((provenance) => provenance.id === unrelated.provenance.id)).toBe(false);
+    }
+    const report = composeFocusedDisclosureResearchReport({ identity: await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } }),
+      announcementPages, candidates: [candidate] });
+    expect(report.evidence.provenanceIds).toContain(notice.provenance.id);
+    expect(report.evidence.provenanceIds).not.toContain(unrelated.provenance.id);
+    for (const locale of ["en", "zh-TW"] as const) {
+      const rendered = literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, locale));
+      for (const retained of [notice.id, notice.provenance.id, notice.provenance.sourceUrl, notice.provenance.contentHash!, notice.provenance.parserVersion]) expect(rendered).toContain(retained);
+      expect(rendered.split(`- ${notice.id} [`)).toHaveLength(2);
+    }
+    if (kind === "unresolved" || kind === "unknown") {
+      const contradictory = structuredClone(report);
+      const secondPage = contradictory.announcementPages[1]!;
+      [...secondPage.unresolvedRelationIndex, ...secondPage.unknownRelationIndex][0]!.provenanceId = f.announcement.provenance.id;
+      expect(() => renderFocusedDisclosureResearchReportMarkdown(contradictory)).toThrow("source provenance mapping mismatch");
+    }
+    for (const mutation of ["missing_record", "missing_mapping", "forged_mapping", "contradictory_record"] as const) {
+      const altered = structuredClone(report);
+      const pageWithSource = altered.announcementPages.find((entry) => entry.provenance.some((record) => record.id === notice.provenance.id))!;
+      const entry = [...pageWithSource.relationIndex, ...pageWithSource.unresolvedRelationIndex, ...pageWithSource.unknownRelationIndex][0]!;
+      if (mutation === "missing_record") pageWithSource.provenance = pageWithSource.provenance.filter((record) => record.id !== notice.provenance.id);
+      if (mutation === "missing_mapping") Reflect.deleteProperty(entry, "provenanceId");
+      if (mutation === "forged_mapping") entry.provenanceId = "invented_provenance";
+      if (mutation === "contradictory_record") altered.announcementPages[1]!.provenance.find((record) => record.id === f.announcement.provenance.id)!.contentHash = "c".repeat(64);
+      expect(() => renderFocusedDisclosureResearchReportMarkdown(altered)).toThrow();
+    }
+  });
+  it.each([false, true])("superseded correction with raw notice returned=%s: effective provenance → exclude stale source unless its audit item is present", async (returnRawNotice) => {
+    const f = await seeded();
+    const obsolete: ResearchAnnouncementRecord = { ...f.announcement, id: "obsolete_notice", publishedAt: "2026-10-04T03:00:00.000Z", subject: "Old correction", attachments: [],
+      relations: [{ kind: "corrects", targetAnnouncementId: f.announcement.id }], provenance: { ...f.announcement.provenance, id: "obsolete_provenance" } };
+    const replacement: ResearchAnnouncementRecord = { ...obsolete, id: "replacement_notice", publishedAt: "2026-10-04T03:30:00.000Z", subject: "Replacement notice",
+      relations: [{ kind: "supersedes", targetAnnouncementId: obsolete.id }], provenance: { ...obsolete.provenance, id: "replacement_provenance" } };
+    await f.persistence.appendResearchAnnouncements([obsolete, replacement]);
+    const page = await listMaterialAnnouncements(f.persistence, { ...f.query, evidenceView: "all_observations",
+      range: { publishedFrom: "2026-10-04T00:00:00.000Z", publishedTo: returnRawNotice ? context.effectiveAt : "2026-10-04T02:30:00.000Z" } });
+    expect(page.relationIndex.some((entry) => entry.announcementId === obsolete.id)).toBe(false);
+    expect(page.provenance.some((entry) => entry.id === obsolete.provenance.id)).toBe(returnRawNotice);
+    const report = composeFocusedDisclosureResearchReport({ identity: await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } }), announcementPages: [page], candidates: [candidate] });
+    expect(report.assessments[0]!.support).toBe("provisional");
+    expect(report.evidence.provenanceIds.includes(obsolete.provenance.id)).toBe(returnRawNotice);
+  });
   it.each(["restricted", "processing_failed", "unavailable"] as const)("artifact %s: dependent evidence unavailable → independent facts and scan remain usable", async (state) => {
     const f = await fixture();
     await f.persistence.appendResearchAnnouncements([f.announcement]);
