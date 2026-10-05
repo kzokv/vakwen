@@ -1220,7 +1220,7 @@ export type ResearchAnnouncementsQueryInput = z.input<typeof researchAnnouncemen
 export type ResearchDisclosureArtifactQueryInput = z.input<typeof researchDisclosureArtifactQuerySchema>;
 export * from "./disclosureContracts.js";
 
-import { researchAnnouncementRecordSchema, researchDisclosureArtifactSchema, researchDisclosureScanSchema, disclosureProvenanceSchema, disclosureBlockSchema, disclosureClaimSchema } from "./disclosureContracts.js";
+import { researchAnnouncementRecordSchema, researchDisclosureArtifactBaseSchema, validateDisclosureEmptyPages, researchDisclosureScanSchema, disclosureProvenanceSchema, disclosureBlockSchema, disclosureClaimSchema } from "./disclosureContracts.js";
 const disclosureIdentitySummarySchema = z.object({ issuer: issuerSchema, security: securitySchema, listing: listingSchema, eligibility: eligibilitySchema }).strict();
 const disclosureQualitySchema = z.object({
   freshness: z.enum(["current", "indeterminate", "stale", "not_applicable"]),
@@ -1268,10 +1268,10 @@ const disclosureQualifierStateSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("not_applicable") }).strict(),
 ]);
 const disclosureLocationQualifiersSchema = z.object({ period: disclosureQualifierStateSchema, unit: disclosureQualifierStateSchema }).strict();
-const retainedArtifactOutputSchema = researchDisclosureArtifactSchema.omit({ retainedBytesBase64: true }).extend({
+const retainedArtifactOutputSchema = researchDisclosureArtifactBaseSchema.omit({ retainedBytesBase64: true }).extend({
   blocks: z.array(disclosureBlockSchema.extend({ qualifiers: disclosureLocationQualifiersSchema }).strict()),
   verifiedClaims: z.array(disclosureClaimSchema.extend({ qualifiers: disclosureLocationQualifiersSchema }).strict()),
-}).strict();
+}).strict().superRefine(validateDisclosureEmptyPages);
 export const disclosureArtifactOutputSchema = z.object({
   contractVersion: z.literal("disclosure-artifact/1.0.0"), selector: immutableListingSelectorSchema, context: fixedResearchContextSchema,
   identity: disclosureIdentitySummarySchema, quality: disclosureQualitySchema, selection: disclosureSelectionOutputSchema,

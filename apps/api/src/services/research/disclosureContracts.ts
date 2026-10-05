@@ -35,16 +35,24 @@ export const disclosureClaimSchema = z.object({
   period: z.string().nullable(), unit: z.string().nullable(), verification: z.literal("verified"),
   publisher: z.literal("MOPS"), verifiedAt: time,
 }).strict();
-export const researchDisclosureArtifactSchema = z.object({
+export const researchDisclosureArtifactBaseSchema = z.object({
   id, issuerId: id, contentHash: z.string().regex(/^[a-f0-9]{64}$/), extractionVersion: z.string().min(1),
   publishedAt: time, sourceUrl: safeUrl, mediaType: z.string(),
   reference: z.object({ kind: z.enum(["announcement_attachment", "investor_material"]), id }).strict(),
   state: z.enum(["available", "restricted", "processing_failed", "indeterminate", "unavailable"]),
   parentProvenance: disclosureProvenanceSchema.optional(),
   retainedBytesBase64: z.string().optional(),
+  confirmedEmptyPages: z.array(z.number().int().positive()).max(1000).optional(),
   totalPages: z.number().int().nonnegative(), blocks: z.array(disclosureBlockSchema), verifiedClaims: z.array(disclosureClaimSchema),
   provenance: disclosureProvenanceSchema,
 }).strict();
+export function validateDisclosureEmptyPages(artifact: { totalPages: number; confirmedEmptyPages?: number[]; blocks: { page: number }[] }, ctx: z.RefinementCtx): void {
+  const pages = artifact.confirmedEmptyPages ?? [];
+  if (new Set(pages).size !== pages.length || pages.some((page) => page > artifact.totalPages || artifact.blocks.some((block) => block.page === page))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["confirmedEmptyPages"], message: "Confirmed empty pages must be unique physical pages without retained or provisional blocks." });
+  }
+}
+export const researchDisclosureArtifactSchema = researchDisclosureArtifactBaseSchema.superRefine(validateDisclosureEmptyPages);
 export const researchDisclosureScanSchema = z.object({
   id, listingId: id, issuerId: id, venue: z.enum(["TWSE", "TPEX"]), checkedAt: time,
   publicationStart: time, publicationEnd: time, knowledgeAt: time,

@@ -274,3 +274,21 @@ it.each(["declared", "streamed"] as const)("oversized %s attachment: body limit 
   expect(preserved.quality.status).toBe("available");
   expect(preserved.quality.reasonCodes).toEqual([]);
 });
+
+it.each(["collection", "detail", "attachment"] as const)("lease abort during %s request → stop acquisition without a completed scan", async (stage) => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  const persistence = new MemoryPersistence(); const { rows, identity } = fixture("TWSE");
+  await persistence.appendResearchIdentityRecords([identity]);
+  const controller = new AbortController();
+  const history = JSON.parse(readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8"));
+  const detail = JSON.parse(readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8"));
+  detail.result.titles.push({ main: "附件", sub: [] }); detail.result.data[0].push({ url: "https://mops.twse.com.tw/lease.txt", fileName: "lease.txt" });
+  const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const source = String(url);
+    const abortHere = stage === "collection" ? source.includes("t187ap04") : stage === "detail" ? source.endsWith("t05st01") : source.endsWith("lease.txt");
+    if (abortHere) { controller.abort(new Error("lease_expired")); expect(init?.signal?.aborted).toBe(true); throw controller.signal.reason; }
+    return new Response(JSON.stringify(source.endsWith("t05st01_detail") ? detail : source.endsWith("t05st01") ? history : rows));
+  }) as unknown as typeof fetch;
+  await expect(runOfficialDisclosureAcquisition(persistence, { fetchImpl, signal: controller.signal, retrievedAt: at })).rejects.toThrow("lease_expired");
+  expect(await persistence.listResearchDisclosureScans({ issuerId: identity.issuer.id, knowledgeAt: at, effectiveAt: at })).toEqual([]);
+});

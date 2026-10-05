@@ -351,3 +351,11 @@ it("bounded query validation: invalid method-specific selectors → rejected bef
   await expect(f.persistence.findResearchAnnouncementCandidates({ ...scope, kind: "revision", collectionRecordId: "invalid/id", publishedAt: scope.effectiveAt, subject: "title" })).rejects.toThrow();
   await expect(f.persistence.getLatestSuccessfulDisclosureDetail({ ...scope, collectionRecordId: "invalid/id" })).rejects.toThrow();
 });
+
+it("confirmed PDF empty pages: inconsistent stored coverage → rejected without masking blocks", async () => {
+  const f = await disclosureFixture();
+  for (const confirmedEmptyPages of [[2, 2], [5], [1]]) {
+    await expect(f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "invalid_empty", blocks: [f.artifact.blocks[0]!], confirmedEmptyPages }])).rejects.toThrow("Confirmed empty pages");
+  }
+  await expect(f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "invalid_provisional_empty", blocks: [{ ...f.artifact.blocks[0]!, extractionState: "provisional_ocr" }], confirmedEmptyPages: [1] }])).rejects.toThrow("Confirmed empty pages");
+});

@@ -1,13 +1,12 @@
 // Synthetic PDF: two genuine page objects and streams, with a valid xref table.
-export function twoPagePdf() {
+export function twoPagePdf(pageStreams?: [string, string]) {
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>",
     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    ...["Revenue 100 TWD", "Scheduled board meeting"].map((text) => {
-      const stream = `BT /F1 12 Tf 40 700 Td (${text}) Tj ET`;
+    ...(pageStreams ?? ["Revenue 100 TWD", "Scheduled board meeting"].map((text) => `BT /F1 12 Tf 40 700 Td (${text}) Tj ET`)).map((stream) => {
       return `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`;
     }),
   ];

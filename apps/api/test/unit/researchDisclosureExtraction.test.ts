@@ -34,3 +34,25 @@ describe("retained disclosure extraction", () => {
     await expect(extractDisclosureContent(new Uint8Array([1, 2]), "application/zip", "issuer_1", "artifact_1")).rejects.toThrow("unsupported");
   });
 });
+
+it("large HTML: Unicode paragraphs and oversized table row → bounded exact logical continuation", async () => {
+  const paragraph = "😀".repeat(60_001);
+  const cell = "證據".repeat(30_001) + " ".repeat(20_000) + "end";
+  const extracted = await extractDisclosureContent(new TextEncoder().encode(`<html><body><p>${paragraph}</p><table><tr><td>${cell}</td></tr><tr><td>next row</td></tr></table></body></html>`), "text/html", "issuer", "large_html");
+  expect(extracted.totalPages).toBeGreaterThan(3);
+  expect(extracted.blocks.filter((block) => block.table === null).map((block) => block.text).join("")).toBe(paragraph);
+  expect(extracted.blocks.filter((block) => block.table === "table:1").map((block) => block.text).join("")).toBe(cell + "\nnext row");
+  for (let page = 1; page <= extracted.totalPages; page++) {
+    expect(extracted.blocks.filter((block) => block.page === page).reduce((sum, block) => sum + Array.from(block.text).length, 0)).toBeLessThanOrEqual(50_000);
+  }
+  expect(extracted.extractionVersion).toBe("disclosure-html-cheerio/2.0.0");
+});
+it("PDF blank versus vector page: successful parsing → only proven blank gets explicit coverage", async () => {
+  const text = "BT /F1 12 Tf 40 700 Td (Evidence) Tj ET";
+  const blank = await extractDisclosureContent(twoPagePdf([text, "q Q"]), "application/pdf", "issuer", "blank");
+  expect(blank.totalPages).toBe(2); expect(blank.confirmedEmptyPages).toEqual([2]);
+  expect(blank.blocks.map((block) => block.page)).toEqual([1]);
+  const vector = await extractDisclosureContent(twoPagePdf([text, "0 0 100 100 re f"]), "application/pdf", "issuer", "vector");
+  expect(vector.totalPages).toBe(2); expect(vector.confirmedEmptyPages).toEqual([]);
+  expect(vector.blocks.map((block) => block.page)).toEqual([1]);
+});

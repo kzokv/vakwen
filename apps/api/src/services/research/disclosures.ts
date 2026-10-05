@@ -199,7 +199,7 @@ export async function getDisclosureArtifact(persistence: Persistence, input: Res
   const blocks = available ? artifact!.blocks.filter((block) => selectedPages.includes(block.page) && block.subject === summary.issuer.id) : [];
   const blockIds = new Set(blocks.filter((block) => block.extractionState === "retained_text").map((block) => block.id));
   const verifiedClaims = available ? artifact!.verifiedClaims.filter((claim) => claim.subject === summary.issuer.id && Date.parse(claim.verifiedAt) <= Date.parse(query.context.knowledgeAt) && claim.blockIds.every((id) => blockIds.has(id) && blocks.some((block) => block.id === id && block.page === claim.page && block.table === claim.table && block.period === claim.period && block.unit === claim.unit))) : [];
-  const missingPages = selectedPages.some((page) => !blocks.some((block) => block.page === page));
+  const missingPages = selectedPages.some((page) => !blocks.some((block) => block.page === page) && !artifact?.confirmedEmptyPages?.includes(page));
   const provisional = blocks.some((block) => block.extractionState === "provisional_ocr");
   const retainedCharacters = blocks.reduce((total, block) => total + Array.from(block.text).length, 0) + verifiedClaims.reduce((total, claim) => total + Array.from(claim.text).length, 0);
   const more = offset + selectedPages.length < pages.length;

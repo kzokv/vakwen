@@ -8,12 +8,13 @@ import { ResearchAcquisitionDisabledError } from "./acquisition.js";
 import { researchAcquisitionEnabled, researchDisclosureAcquisitionEnabled } from "./rollout.js";
 import { DISCLOSURE_PARSER_VERSION, OFFICIAL_ANNOUNCEMENT_SOURCES, disclosureHash, disclosureId, parseOfficialAnnouncementSnapshot, retainAnnouncementExplanation, safeDisclosureUrl } from "./providers/mopsAnnouncements.js";
 
-interface AcquisitionOptions { fetchImpl?: typeof fetch; retrievedAt?: string; acquisitionRunId?: string }
+interface AcquisitionOptions { signal?: AbortSignal; fetchImpl?: typeof fetch; retrievedAt?: string; acquisitionRunId?: string }
 // Source requests are bounded and redirects are rejected so attachment locations
 // cannot turn internal ingestion into a generic URL fetcher.
-async function officialResponse(fetchImpl: typeof fetch, url: string) {
+async function officialResponse(fetchImpl: typeof fetch, url: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   if (!safeDisclosureUrl(url)) throw new Error("disclosure_source_url_rejected");
-  const response = await fetchImpl(url, { headers: { accept: "application/json,text/plain,text/html,application/pdf" }, redirect: "error", signal: AbortSignal.timeout(30_000) });
+  const response = await fetchImpl(url, { headers: { accept: "application/json,text/plain,text/html,application/pdf" }, redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error(response.status === 401 || response.status === 403 || response.status === 429 ? "disclosure_access_restricted" : "disclosure_source_unavailable");
   const length = Number(response.headers.get("content-length") ?? 0);
   if (length > 8 * 1024 * 1024) throw new Error("disclosure_source_too_large");
@@ -39,6 +40,7 @@ async function officialResponse(fetchImpl: typeof fetch, url: string) {
   return { body, bytes, mediaType: response.headers.get("content-type") ?? "application/octet-stream" };
 }
 export async function runOfficialDisclosureAcquisition(persistence: Persistence, options: AcquisitionOptions = {}) {
+  options.signal?.throwIfAborted();
   if (!researchAcquisitionEnabled()) throw new ResearchAcquisitionDisabledError();
   const at = options.retrievedAt ?? new Date().toISOString();
   const acquisitionRunId = options.acquisitionRunId ?? disclosureId("run", at);
@@ -58,18 +60,20 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
     const artifactOwners = new Map<string, string>();
     const detailAttemptsByListing = new Map<string, NonNullable<ResearchDisclosureScan["detailAttempts"]>>();
     try {
-      const response = await officialResponse(fetchImpl, sourceUrl); contentHash = disclosureHash(response.body);
+      const response = await officialResponse(fetchImpl, sourceUrl, options.signal); contentHash = disclosureHash(response.body);
       const observedAt = options.retrievedAt ?? new Date().toISOString();
       const records = parseOfficialAnnouncementSnapshot(JSON.parse(response.body), { retrievedAt: observedAt, contentHash, sourceUrl, acquisitionRunId }, venue, identities);
       for (const sourceRecord of records) {
+        options.signal?.throwIfAborted();
         let record = sourceRecord;
         const listingKey = JSON.stringify([record.issuerId, record.listingId, record.venue]);
         const readAt = options.retrievedAt ?? new Date().toISOString();
         const scope = { issuerId: record.issuerId, listingId: record.listingId, venue: record.venue, effectiveAt: readAt, knowledgeAt: readAt };
-        const enriched = await enrichOfficialAnnouncement(record, { fetchImpl, retrievedAt: readAt, resolvePreviousRecords: async (detailRecord) => {
+        const enriched = await enrichOfficialAnnouncement(record, { fetchImpl, signal: options.signal, retrievedAt: readAt, resolvePreviousRecords: async (detailRecord) => {
           const selectors = announcementCitationSelectors(detailRecord);
           return selectors.titles.length && selectors.days.length ? persistence.findResearchAnnouncementCandidates({ ...scope, kind: "citation", before: detailRecord.publishedAt, ...selectors }) : [];
         } });
+        options.signal?.throwIfAborted();
         const detailAttempts = detailAttemptsByListing.get(listingKey) ?? [];
         detailAttempts.push({ announcementId: sourceRecord.id, attemptedAt: options.retrievedAt ?? new Date().toISOString(), status: enriched.detailStatus, reasonCodes: enriched.reasonCodes });
         detailAttemptsByListing.set(listingKey, detailAttempts);
@@ -89,6 +93,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         // revision relation; the previous evidence is never updated in place.
         const previous = (await persistence.findResearchAnnouncementCandidates({ ...scope, kind: "revision", collectionRecordId, publishedAt: record.publishedAt, subject: record.subject })).filter((prior) => prior.id !== record.id);
         if (!retainedRecord) for (const prior of previous) record.relations.push({ kind: "supersedes", targetAnnouncementId: prior.id });
+        options.signal?.throwIfAborted();
         if (!retainedRecord) await persistence.appendResearchAnnouncements([record]);
         const stableRecord = retainedRecord ?? record;
         const explanation = retainAnnouncementExplanation(stableRecord);
@@ -102,7 +107,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
           let reasonCode: "disclosure_source_too_large" | undefined;
           let artifact: ResearchDisclosureArtifact | undefined;
           try {
-            const retained = await officialResponse(fetchImpl, attachment.sourceUrl);
+            const retained = await officialResponse(fetchImpl, attachment.sourceUrl, options.signal);
             fetched = true;
             const extracted = await extractDisclosureContent(retained.bytes, retained.mediaType, record.issuerId, attachment.artifactId!);
             artifact = { ...explanation, ...extracted, id: attachment.artifactId!, sourceUrl: attachment.sourceUrl,
@@ -111,9 +116,11 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
               provenance: { ...record.provenance, id: disclosureId("pr", attachment.artifactId!, createHash("sha256").update(retained.bytes).digest("hex")), sourceUrl: attachment.sourceUrl, contentHash: createHash("sha256").update(retained.bytes).digest("hex"), parserVersion: extracted.extractionVersion, retrievedAt: options.retrievedAt ?? new Date().toISOString(), processedAt: options.retrievedAt ?? new Date().toISOString(), acquisitionRunId } };
             attemptStatus = "retained";
           } catch (error) {
+            options.signal?.throwIfAborted();
             reasonCode = error instanceof Error && error.message === "disclosure_source_too_large" ? "disclosure_source_too_large" : undefined;
             attemptStatus = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : fetched || reasonCode ? "processing_failed" : "unavailable";
           }
+          options.signal?.throwIfAborted();
           if (artifact) await persistence.appendResearchDisclosureArtifacts([artifact]);
           // A failed request is an acquisition attempt, never a retained empty
           // artifact. Subsequent scheduled runs retry unresolved references.
@@ -123,6 +130,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
       }
       publicationStart = records.reduce((start, record) => record.publishedAt < start ? record.publishedAt : start, at);
     } catch (error) {
+      options.signal?.throwIfAborted();
       status = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : (error instanceof SyntaxError || (error instanceof Error && error.message === "disclosure_source_too_large")) ? "processing_failed" : "failed";
     }
     const checkedAt = options.retrievedAt ?? new Date().toISOString();
@@ -132,6 +140,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
       // that attachment discovery is exhaustive.
       exhaustive: false, detailAttempts: detailAttemptsByListing.get(JSON.stringify([identity.issuer.id, identity.listing.id, venue])) ?? [], artifactAttempts: artifactAttempts.filter((attempt) => artifactOwners.get(attempt.artifactId) === JSON.stringify([identity.issuer.id, identity.listing.id, venue])), provenance: { id: disclosureId("pr", acquisitionRunId, checkedAt, venue, contentHash ?? "no_retained_response"), publisher: "MOPS", accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI", authorityRole: "authoritative", sourceUrl, contentHash, retrievedAt: checkedAt, processedAt: checkedAt, acquisitionRunId, parserVersion: DISCLOSURE_PARSER_VERSION, usagePolicyVersion: "taiwan-open-data/1.0.0" },
     }));
+    options.signal?.throwIfAborted();
     await persistence.appendResearchDisclosureScans(scans);
     outcomes.push({ venue, status, announcementCount: count });
   }

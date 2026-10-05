@@ -33,6 +33,7 @@ export interface AnnouncementEnrichmentResult {
   reasonCodes: string[];
 }
 export interface AnnouncementEnrichmentOptions {
+  signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   previousRecords?: readonly ResearchAnnouncementMetadata[];
   resolvePreviousRecords?: (record: ResearchAnnouncementRecord) => Promise<readonly ResearchAnnouncementMetadata[]>;
@@ -134,11 +135,11 @@ export function parseOfficialAnnouncementDetail(
 class DetailAcquisitionError extends Error {
   constructor(readonly status: AnnouncementDetailStatus, readonly safeCode: string) { super(safeCode); }
 }
-async function readOfficialJson(fetchImpl: typeof fetch, url: string, body: object): Promise<{ payload: unknown; hash: string }> {
+async function readOfficialJson(fetchImpl: typeof fetch, url: string, body: object, signal?: AbortSignal): Promise<{ payload: unknown; hash: string }> {
   let response: Response;
   try {
     response = await fetchImpl(url, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", Origin: "https://mops.twse.com.tw" },
-      body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(20_000) });
+      body: JSON.stringify(body), redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000) });
   } catch { throw new DetailAcquisitionError("unavailable", "detail_source_unavailable"); }
   if (response.status === 401 || response.status === 403 || response.status === 429) throw new DetailAcquisitionError("restricted", "detail_access_restricted");
   if (!response.ok) throw new DetailAcquisitionError("unavailable", "detail_source_unavailable");
@@ -172,18 +173,22 @@ export async function enrichOfficialAnnouncement(record: ResearchAnnouncementRec
   const stamp = localStamp(record);
   const retrievedAt = options.retrievedAt ?? new Date().toISOString();
   try {
+    options.signal?.throwIfAborted();
     const history = await readOfficialJson(fetchImpl, MOPS_ANNOUNCEMENT_HISTORY_URL, {
       companyId: record.ticker, year: String(Number(stamp.day.slice(0, 4)) - 1911), month: String(Number(stamp.day.slice(5, 7))),
       firstDay: String(Number(stamp.day.slice(8, 10))), lastDay: String(Number(stamp.day.slice(8, 10))),
-    });
+    }, options.signal);
+    options.signal?.throwIfAborted();
     const parameters = selectOfficialAnnouncementDetailParameters(history.payload, record);
-    const detail = await readOfficialJson(fetchImpl, MOPS_ANNOUNCEMENT_DETAIL_URL, parameters);
+    const detail = await readOfficialJson(fetchImpl, MOPS_ANNOUNCEMENT_DETAIL_URL, parameters, options.signal);
+    options.signal?.throwIfAborted();
     const metadata = { contentHash: detail.hash, retrievedAt };
     const result = parseOfficialAnnouncementDetail(detail.payload, record, metadata, options.previousRecords);
     if (!options.resolvePreviousRecords) return result;
     const previousRecords = await options.resolvePreviousRecords(result.record);
     return previousRecords.length ? parseOfficialAnnouncementDetail(detail.payload, record, metadata, previousRecords) : result;
   } catch (error) {
+    options.signal?.throwIfAborted();
     const status = error instanceof DetailAcquisitionError ? error.status : "processing_failed";
     const reason = error instanceof DetailAcquisitionError ? error.safeCode : "detail_evidence_unresolved";
     return { record: { ...record, detailQuality: { status, reasonCodes: [reason] } }, detailStatus: status, reasonCodes: [reason] };
