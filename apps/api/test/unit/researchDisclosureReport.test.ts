@@ -773,6 +773,64 @@ describe("focused disclosure report", () => {
     expect(report.assessments[0]!.interpretationType).toBe("analytical_judgment");
   });
 
+  it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"] as const).flatMap((kind) =>
+    ([403, 500, "invalid"] as const).map((failure) => ({ venue, kind, failure })))))("$venue raw $kind citation with $failure detail failure: public report → withhold exact dependencies and preserve unrelated facts", async ({ venue, kind, failure }) => {
+    const f = await seeded(venue);
+    const independent = { ...f.announcement, id: "unrelated_fact", subject: "Unrelated disclosure", attachments: [] };
+    await f.persistence.appendResearchAnnouncements([independent]);
+    const rows = JSON.parse(readFileSync(new URL(`../fixtures/research/${venue.toLowerCase()}-announcements.json`, import.meta.url), "utf8"));
+    const row = rows[0];
+    row[venue === "TWSE" ? "公司代號" : "SecuritiesCompanyCode"] = f.record.listing.ticker;
+    row[venue === "TWSE" ? "主旨 " : "主旨"] = `${kind === "corrects" ? "更正" : "撤回"}本公司公告`;
+    row.發言日期 = "1151004"; row.發言時間 = "110000";
+    row.說明 = `原115/10/04公告「${f.announcement.subject}」內容變更。`;
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => String(url).includes("t187ap04")
+      ? new Response(JSON.stringify(rows), { headers: { "content-type": "application/json" } })
+      : failure === "invalid" ? new Response("invalid JSON") : new Response("detail unavailable", { status: failure })) as unknown as typeof fetch;
+    await runOfficialDisclosureAcquisition(f.persistence, { fetchImpl, retrievedAt: "2026-10-04T03:55:00.000Z", acquisitionRunId: "raw_citation_failure" });
+    const first = await listMaterialAnnouncements(f.persistence, { ...f.query, limit: 1,
+      range: { publishedFrom: "2026-10-04T00:00:00.000Z", publishedTo: "2026-10-04T02:30:00.000Z" } });
+    const announcementPages = [first];
+    while (announcementPages.at(-1)!.page.nextCursor) announcementPages.push(await listMaterialAnnouncements(f.persistence,
+      { subject: f.query.subject, cursor: announcementPages.at(-1)!.page.nextCursor! }));
+    expect(announcementPages.flatMap((page) => page.relationIndex)).toEqual(expect.arrayContaining([expect.objectContaining({ kind, targetAnnouncementId: f.announcement.id })]));
+    const independentReference = { kind: "announcement" as const, announcementId: independent.id };
+    const report = composeFocusedDisclosureResearchReport({ identity: await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } }), announcementPages,
+      artifactPages: [await getDisclosureArtifact(f.persistence, { ...f.query, artifactId: f.artifact.id })],
+      candidates: [candidate, artifactCandidate, { ...candidate, id: independent.id, triggeringEvidence: [independentReference], statusEvidence: { ...candidate.statusEvidence, reference: independentReference } }] });
+    expect(report.assessments.map((assessment) => assessment.support)).toEqual(["withheld", "withheld", "provisional"]);
+    expect(report.assessments[0]!.reasonCodes).toContain("announcement_corrected_or_retracted");
+    expect(report.assessments[1]!.reasonCodes).toContain("artifact_parent_corrected_or_retracted");
+    expect(report.officialScanGate.status).toBe("passed");
+  });
+  it.each([
+    ["second", "2026-10-04T02:00:00.000Z", true], ["second", "2026-10-04T01:59:59.000Z", false],
+    ["minute", "2026-10-04T02:00:00.000Z", true], ["minute", "2026-10-04T01:59:00.000Z", false],
+    ["date", "2026-10-03T16:00:00.000Z", true], ["date", "2026-10-02T16:00:00.000Z", false],
+  ] as const)("unknown target %s at %s: publication uncertainty → withhold interpretation only when potentially earlier", async (publicationPrecision, publishedAt, affected) => {
+    const f = await seeded();
+    const notice: ResearchAnnouncementRecord = { ...f.announcement, id: "unknown_notice", subject: "更正先前公告", explanation: "更正先前公告，指向尚待查證。",
+      publishedAt, publicationPrecision, attachments: [], unknownRelationTargets: [{ kind: "corrects" }],
+      detailQuality: { status: "restricted", reasonCodes: ["unresolved_correction_reference"] } };
+    const later = { ...f.announcement, id: "later_fact", subject: "Later independent disclosure", publishedAt: "2026-10-04T03:00:00.000Z", attachments: [] };
+    await f.persistence.appendResearchAnnouncements([notice, later]);
+    const laterReference = { kind: "announcement" as const, announcementId: later.id };
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { readBudget: 10,
+      candidates: [candidate, artifactCandidate, { ...candidate, id: later.id, triggeringEvidence: [laterReference], statusEvidence: { ...candidate.statusEvidence, reference: laterReference } }] });
+    expect(report.assessments.slice(0, 2).map((assessment) => assessment.sourceSupport)).toEqual(["supported", "supported"]);
+    expect(report.assessments.slice(0, 2).map((assessment) => assessment.support)).toEqual([affected ? "withheld" : "provisional", affected ? "withheld" : "provisional"]);
+    for (const assessment of report.assessments.slice(0, 2)) expect(assessment.reasonCodes.includes("unknown_correction_scope")).toBe(affected);
+    expect(report.assessments[2]!.support).toBe(publicationPrecision === "date" && affected ? "withheld" : "provisional");
+    expect(report.officialScanGate.status).toBe("passed");
+    if (affected) expect(renderFocusedDisclosureResearchReportMarkdown(report, "zh-TW")).toContain("原始留存事實仍予保留");
+    await f.persistence.appendResearchAnnouncements([{ ...notice, id: "resolved_notice", unknownRelationTargets: [],
+      publishedAt: "2026-10-04T03:30:00.000Z", publicationPrecision: "second", detailQuality: { status: "available", reasonCodes: [] },
+      relations: [{ kind: "supersedes", targetAnnouncementId: notice.id }] }]);
+    const recovered = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { readBudget: 10, candidates: [candidate, artifactCandidate] });
+    expect(recovered.assessments.map((assessment) => assessment.support)).toEqual(["provisional", "provisional"]);
+    expect(recovered.announcementPages.flatMap((page) => page.unknownRelationIndex)).toEqual([]);
+  });
   it("slow enrichment: completed detail after stale snapshot → preserve original scan age and prior successful evidence", async () => {
     const f = await fixture();
     const snapshotAt = "2026-10-04T03:10:00.000Z";

@@ -59,6 +59,23 @@ describePostgres("disclosure memory/Postgres conformance", () => {
     }
     expect(outputs[0]).toEqual(outputs[1]);
   });
+  it("unknown target metadata: coarse notice and superseding resolution → scoped memory/Postgres parity", async () => {
+    const outputs = [];
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const f = await disclosureFixture(persistence);
+      const notice: ResearchAnnouncementRecord = { ...f.announcement, id: "unknown_notice", publishedAt: "2026-08-31T16:00:00.000Z", publicationPrecision: "date", unknownRelationTargets: [{ kind: "corrects" }] };
+      await persistence.appendResearchAnnouncements([notice, { ...notice, id: "wrong_listing_unknown", listingId: "different_listing" }, { ...notice, id: "future_unknown", provenance: { ...notice.provenance, processedAt: "2026-09-02T00:00:00.000Z" } }]);
+      const input = { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } };
+      const before = await listMaterialAnnouncements(persistence, input);
+      expect(before.unknownRelationIndex).toEqual([{ sourceAnnouncementId: notice.id, kind: "corrects", publishedAt: notice.publishedAt, publicationPrecision: "date" }]);
+      expect(before.relationIndex).toEqual([]);
+      await persistence.appendResearchAnnouncements([{ ...notice, id: "resolution", unknownRelationTargets: [], relations: [{ kind: "supersedes", targetAnnouncementId: notice.id }] }]);
+      const after = await listMaterialAnnouncements(persistence, input);
+      expect(after.unknownRelationIndex).toEqual([]);
+      outputs.push({ before, after });
+    }
+    expect(outputs[0]).toEqual(outputs[1]);
+  });
   it.each(["TWSE", "TPEX"] as const)("%s: retained correction and artifact → backend parity and knowledge cutoff", async (venue) => {
     const memory = new MemoryPersistence();
     const fixtures = await Promise.all([disclosureFixture(memory, venue), disclosureFixture(postgres, venue)]);

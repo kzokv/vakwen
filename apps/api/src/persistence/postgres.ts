@@ -1610,9 +1610,13 @@ export class PostgresPersistence implements Persistence {
   async listResearchAnnouncementSelectionMetadata(query: ResearchAnnouncementWindowQuery): Promise<ResearchAnnouncementMetadata[]> {
     validateResearchAnnouncementWindowQuery(query);
     const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`WITH RECURSIVE scoped AS NOT MATERIALIZED (SELECT id, record, published_at FROM research.announcements WHERE ${this.disclosureAnnouncementScope()}),
-      window_rows AS (SELECT id, record->>'collectionRecordId' AS collection FROM scoped WHERE published_at >= $6::timestamptz AND published_at <= $7::timestamptz
+      window_rows AS (SELECT id, published_at, record->>'collectionRecordId' AS collection FROM scoped WHERE published_at >= $6::timestamptz AND published_at <= $7::timestamptz
         AND ($8::text IS NULL OR record->>'eventDate' >= $8) AND ($9::text IS NULL OR record->>'eventDate' <= $9)),
-      candidates AS (SELECT id FROM window_rows UNION SELECT id FROM scoped WHERE record->>'collectionRecordId' IN (SELECT collection FROM window_rows WHERE collection IS NOT NULL)),
+      candidates AS (SELECT id FROM window_rows UNION SELECT id FROM scoped WHERE record->>'collectionRecordId' IN (SELECT collection FROM window_rows WHERE collection IS NOT NULL)
+        UNION SELECT id FROM scoped WHERE jsonb_array_length(COALESCE(record->'unknownRelationTargets', '[]'::jsonb)) > 0 AND CASE record->>'publicationPrecision'
+          WHEN 'date' THEN ((date_trunc('day', published_at AT TIME ZONE 'Asia/Taipei') + interval '1 day') AT TIME ZONE 'Asia/Taipei') > (SELECT min(published_at) FROM window_rows)
+          WHEN 'minute' THEN published_at + interval '1 minute' > (SELECT min(published_at) FROM window_rows)
+          ELSE published_at >= (SELECT min(published_at) FROM window_rows) END),
       wanted AS (SELECT id FROM candidates UNION SELECT scoped.id FROM wanted JOIN scoped ON
         scoped.record->'relations' @> jsonb_build_array(jsonb_build_object('targetAnnouncementId', wanted.id))
         OR scoped.record->'unresolvedRelations' @> jsonb_build_array(jsonb_build_object('candidateAnnouncementIds', jsonb_build_array(wanted.id))))

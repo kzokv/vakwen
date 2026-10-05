@@ -142,3 +142,22 @@ it.each(["corrects", "retracts"] as const)("ambiguous %s: exact same-listing tar
   expect(result.reasonCodes).toEqual(["unresolved_correction_reference"]);
   expect(parseOfficialAnnouncementDetail(detail, { ...record, subject }, metadata, []).record.unresolvedRelations).toEqual([]);
 });
+
+it.each(["corrects", "retracts"] as const)("snapshot %s with unavailable detail: exact citation → retained lineage or explicit unresolved candidates", async (kind) => {
+  const { record } = fixture("TWSE");
+  const prior = { ...record, id: "prior_a", publishedAt: "2026-10-02T01:00:00.000Z", subject: "公司資本支出公告" };
+  const notice = { ...record, subject: `${kind === "corrects" ? "更正" : "撤回"}本公司公告`, explanation: "原115 /10 /02 公告「公司資本支出公告」內容變更。" };
+  for (const count of [0, 1, 2]) {
+    const previous = [prior, { ...prior, id: "prior_b" }].slice(0, count);
+    const resolver = vi.fn(async () => previous);
+    const result = await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockImplementation(async () => new Response("restricted", { status: 403 })), resolvePreviousRecords: resolver });
+    expect(resolver).toHaveBeenCalledWith(notice);
+    expect(result.record.quality).toBe("available"); expect(result.detailStatus).toBe("restricted");
+    expect(result.record.provenance).toEqual(notice.provenance);
+    expect(result.record.relations).toEqual(count === 1 ? [{ kind, targetAnnouncementId: prior.id }] : []);
+    expect(result.record.unresolvedRelations).toEqual(count === 2 ? [{ kind, candidateAnnouncementIds: ["prior_a", "prior_b"] }] : []);
+    expect(result.record.unknownRelationTargets).toEqual(count === 0 ? [{ kind }] : []);
+    expect(result.reasonCodes.includes("unresolved_correction_reference")).toBe(count !== 1);
+    expect(result.record.detailQuality?.reasonCodes).toEqual(result.reasonCodes);
+  }
+});

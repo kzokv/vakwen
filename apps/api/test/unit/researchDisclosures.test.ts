@@ -416,3 +416,31 @@ it.each(["corrects", "retracts"] as const)("superseded %s notice: effective inde
     }
   }
 });
+
+it.each(["corrects", "retracts"] as const)("unknown %s target: scoped outside-window notice → active limitation without fabricated targets", async (kind) => {
+  const f = await disclosureFixture();
+  const notice: ResearchAnnouncementRecord = { ...f.announcement, id: "unknown_notice", publishedAt: "2026-09-01T01:30:00.000Z", unknownRelationTargets: [{ kind }], relations: [] };
+  await f.persistence.appendResearchAnnouncements([notice, { ...notice, id: "foreign_notice", listingId: "other_listing" }, { ...notice, id: "future_notice", provenance: { ...notice.provenance, processedAt: "2026-09-02T00:00:00.000Z" } }]);
+  const input = { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } };
+  const before = await listMaterialAnnouncements(f.persistence, input);
+  expect(before.relationIndex).toEqual([]); expect(before.unresolvedRelationIndex).toEqual([]);
+  expect(before.unknownRelationIndex).toEqual([{ sourceAnnouncementId: notice.id, kind, publishedAt: notice.publishedAt, publicationPrecision: "second" }]);
+  await f.persistence.appendResearchAnnouncements([{ ...notice, id: "resolved_notice", unknownRelationTargets: [], relations: [{ kind: "supersedes", targetAnnouncementId: notice.id }] }]);
+  const after = await listMaterialAnnouncements(f.persistence, input);
+  expect(after.unknownRelationIndex).toEqual([]);
+  expect(after.page.continuity.queryHash).not.toBe(before.page.continuity.queryHash);
+});
+
+it.each([
+  ["second", "2026-09-01T01:00:00.000Z", true],
+  ["second", "2026-09-01T00:59:59.000Z", false],
+  ["minute", "2026-09-01T00:59:30.000Z", true],
+  ["minute", "2026-09-01T00:59:00.000Z", false],
+  ["date", "2026-08-31T16:00:00.000Z", true],
+  ["date", "2026-08-30T16:00:00.000Z", false],
+] as const)("unknown target %s %s: coarse clock → conservative applicability %s", async (publicationPrecision, publishedAt, affected) => {
+  const f = await disclosureFixture();
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "coarse_notice", publishedAt, publicationPrecision, unknownRelationTargets: [{ kind: "corrects" }] }]);
+  const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } });
+  expect(result.unknownRelationIndex).toHaveLength(affected ? 1 : 0);
+});

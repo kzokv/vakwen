@@ -1,3 +1,4 @@
+import { disclosureNoticeMayAffectPublication } from "./disclosureContracts.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Env } from "@vakwen/config";
 import type { Persistence } from "../../persistence/types.js";
@@ -145,6 +146,7 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
     window: { publishedFrom: start, publishedTo: end, ...(query.range?.eventFrom ? { eventFrom: query.range.eventFrom } : {}), ...(query.range?.eventTo ? { eventTo: query.range.eventTo } : {}), exhaustive }, quality,
     scan: { status, checkedAt: selectedScan?.checkedAt ?? null, record: selectedScan ?? null, latestAttempt: latestAttempt ?? null, eventFactFreshness: "not_applicable" }, items,
     relationIndex: all.filter((row) => row.quality === "available").flatMap((row) => row.relations.filter((relation) => (relation.kind === "supersedes" || !superseded.has(row.id)) && items.some((item) => item.id === row.id || item.id === relation.targetAnnouncementId)).map((relation) => ({ announcementId: row.id, ...relation }))),
+    unknownRelationIndex: all.filter((row) => row.quality === "available" && !superseded.has(row.id) && items.some((item) => disclosureNoticeMayAffectPublication(row, item.publishedAt))).flatMap((row) => (row.unknownRelationTargets ?? []).map((relation) => ({ sourceAnnouncementId: row.id, kind: relation.kind, publishedAt: row.publishedAt, publicationPrecision: row.publicationPrecision }))).sort((a, b) => a.sourceAnnouncementId.localeCompare(b.sourceAnnouncementId) || a.kind.localeCompare(b.kind)),
     unresolvedRelationIndex: all.filter((row) => row.quality === "available" && !superseded.has(row.id)).flatMap((row) => (row.unresolvedRelations ?? []).map((relation) => ({ sourceAnnouncementId: row.id, kind: relation.kind, candidateAnnouncementIds: relation.candidateAnnouncementIds.filter((id) => items.some((item) => item.id === id)) })).filter((relation) => relation.candidateAnnouncementIds.length > 0)).sort((a, b) => a.sourceAnnouncementId.localeCompare(b.sourceAnnouncementId) || a.kind.localeCompare(b.kind)),
     page: { continuity: { queryHash, offset, returnedCount: items.length, totalCount: rows.length, requestCursor: "cursor" in parsed ? parsed.cursor : null }, nextCursor, order: query.order, limit: query.limit, truncatedBy: more ? budgetTruncated ? "response_budget" : "page_limit" : null },
     provenance: [...new Map(items.map((item) => [item.provenance.id, item.provenance])).values()],
@@ -153,6 +155,7 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
     output.items.pop();
     output.page.continuity.returnedCount = output.items.length;
     const retainedIds = new Set(output.items.map((item) => item.id));
+    output.unknownRelationIndex = output.unknownRelationIndex.filter((notice) => output.items.some((item) => disclosureNoticeMayAffectPublication(notice, item.publishedAt)));
     output.unresolvedRelationIndex = output.unresolvedRelationIndex.map((relation) => ({ ...relation, candidateAnnouncementIds: relation.candidateAnnouncementIds.filter((id) => retainedIds.has(id)) })).filter((relation) => relation.candidateAnnouncementIds.length > 0);
     output.relationIndex = output.relationIndex.filter((relation) => retainedIds.has(relation.announcementId) || retainedIds.has(relation.targetAnnouncementId));
     output.provenance = [...new Map(output.items.map((item) => [item.provenance.id, item.provenance])).values()];

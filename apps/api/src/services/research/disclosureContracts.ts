@@ -24,7 +24,7 @@ export const researchAnnouncementRecordSchema = z.object({
   rawEventDate: z.string().optional(),
   detailQuality: z.object({ status: z.enum(["available", "restricted", "processing_failed", "unavailable"]), reasonCodes: z.array(z.string()) }).strict().optional(),
   collectionProvenance: disclosureProvenanceSchema.optional(),
-  attachments: z.array(disclosureAttachmentSchema), relations: z.array(disclosureRelationSchema), unresolvedRelations: z.array(disclosureUnresolvedRelationSchema).optional(),
+  attachments: z.array(disclosureAttachmentSchema), relations: z.array(disclosureRelationSchema), unresolvedRelations: z.array(disclosureUnresolvedRelationSchema).optional(), unknownRelationTargets: z.array(z.object({ kind: z.enum(["corrects", "retracts"]) }).strict()).optional(),
   quality: z.enum(["available", "restricted", "processing_failed", "indeterminate"]),
   provenance: disclosureProvenanceSchema,
 }).strict();
@@ -136,4 +136,12 @@ export function validateResearchAnnouncementCandidateQuery(query: ResearchAnnoun
 export function validateResearchSuccessfulDetailQuery(query: ResearchDisclosureScanLookup & { collectionRecordId: string }): void {
   validateDisclosureReadScope(query);
   z.object({ ...disclosureLookupFields, collectionRecordId: id }).strict().parse(query);
+}
+
+/** Conservative ordering for an unknown-target notice; never asserts a resolved relation. */
+export function disclosureNoticeMayAffectPublication(notice: { publishedAt: string; publicationPrecision: "second" | "minute" | "date" }, targetPublishedAt: string): boolean {
+  const timestamp = Date.parse(notice.publishedAt), target = Date.parse(targetPublishedAt);
+  if (notice.publicationPrecision === "second") return timestamp >= target;
+  const end = notice.publicationPrecision === "minute" ? timestamp + 60_000 : (Math.floor((timestamp + 8 * 3_600_000) / 86_400_000) + 1) * 86_400_000 - 8 * 3_600_000;
+  return end > target;
 }

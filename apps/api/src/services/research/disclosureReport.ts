@@ -1,3 +1,4 @@
+import { disclosureNoticeMayAffectPublication } from "./disclosureContracts.js";
 import { z } from "zod";
 import type { Persistence } from "../../persistence/types.js";
 import {
@@ -309,6 +310,15 @@ export function composeFocusedDisclosureResearchReport(input: {
     if (claimResult.page.pageTruncated) return "artifact_claim_page_truncated";
     return null;
   }
+  const unknownNotices = pages.flatMap((page) => page.unknownRelationIndex);
+  function hasUnknownCorrectionScope(reference: DisclosureEvidenceReference): boolean {
+    const parentId = reference.kind === "announcement" ? reference.announcementId
+      : artifacts.find((page) => page.artifact?.id === reference.artifactId)?.artifact?.reference;
+    const announcementId = typeof parentId === "string" ? parentId : parentId?.kind === "announcement_attachment" ? parentId.id : null;
+    const parent = announcements.find((item) => item.id === announcementId);
+    if (!parent) return false;
+    return unknownNotices.some((notice) => disclosureNoticeMayAffectPublication(notice, parent.publishedAt));
+  }
   function sourceText(reference: DisclosureEvidenceReference): string | undefined {
     if (reference.kind === "announcement") return announcements.find((item) => item.id === reference.announcementId)?.explanation.text;
     return artifacts.flatMap((page) => page.artifact?.id === reference.artifactId ? page.artifact.verifiedClaims : []).find((claim) => claim.id === reference.claimId)?.text;
@@ -345,7 +355,7 @@ export function composeFocusedDisclosureResearchReport(input: {
       && assertionContexts.every((assertion) => !hasUncertainStatusAssertion(assertion))
       && /(?:預計|預定|訂於|將於|\b(?:scheduled|planned|expected)\b)/i.test(anchor.excerpt));
     const failures = refs.map((reference) => ({ reference, reason: failedReason(reference) })).filter((failure) => failure.reason !== null);
-    const reasons = [...new Set([
+    const sourceReasons = [...new Set([
       ...(!applicable ? ["disclosures_not_applicable"] : !current ? [scanFailure] : []),
       ...(candidate.requiresExhaustiveCoverage && !exhaustive ? ["non_exhaustive_window"] : []),
       ...(!excerptMatches ? ["publisher_excerpt_not_verified"] : []),
@@ -353,10 +363,11 @@ export function composeFocusedDisclosureResearchReport(input: {
       ...(!occurrenceVerified || !scheduleVerified ? ["classification_status_not_verified"] : []),
       ...failures.map((failure) => failure.reason!),
     ])];
+    const reasons = [...sourceReasons, ...(refs.some(hasUnknownCorrectionScope) ? ["unknown_correction_scope"] : [])];
     return {
       candidate,
       support: reasons.length > 0 ? "withheld" as const : "provisional" as const,
-      sourceSupport: reasons.length > 0 ? "withheld" as const : "supported" as const,
+      sourceSupport: sourceReasons.length > 0 ? "withheld" as const : "supported" as const,
       interpretationType: "analytical_judgment" as const,
       statement: reasons.length > 0 ? "This catalyst/risk judgment is withheld because its required evidence is unavailable or insufficient." : candidate.statement,
       reasonCodes: reasons,
@@ -365,6 +376,7 @@ export function composeFocusedDisclosureResearchReport(input: {
   });
   const latestAttempt = first.scan.latestAttempt;
   const limitations = [
+    ...(unknownNotices.length ? ["An active correction or retraction has an unknown target. Potentially earlier disclosure interpretations remain withheld; retained source facts are preserved."] : []),
     ...(latestAttempt && latestAttempt.status !== "success" ? [
       scan?.status === "success"
         ? "The latest acquisition attempt did not succeed. The selected successful scan retains its own timestamp and freshness boundary."
@@ -500,6 +512,7 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     "freshness": "時效", "completeness": "完整性", "confidence": "證據支持程度", "current assessment": "當前評估", "current": "符合時效", "stale": "已過期", "degraded": "降級", "ready": "可用", "partial": "部分", "complete": "完整", "blocked": "受阻",
     "The latest acquisition attempt did not succeed. The selected successful scan retains its own timestamp and freshness boundary.": "最近一次擷取未成功；仍依採用的成功掃描原有時間戳記與時效界線評估。",
     "The latest acquisition attempt did not succeed. No successful official scan is available at this cutoff.": "最近一次擷取未成功；截至資訊截止時間尚無可用的成功官方掃描。",
+    "An active correction or retraction has an unknown target. Potentially earlier disclosure interpretations remain withheld; retained source facts are preserved.": "目前有更正或撤回公告尚無法確認指向；可能較早公告的分析判斷暫不提出，原始留存事實仍予保留。",
     "Unresolved source conflict": "來源衝突尚未解決",
     "Unresolved correction/retraction target": "更正／撤回公告之指向尚未確定",
     "Quality": "品質", "text truncated": "內文截斷", "rule": "適用條款", "event": "事件日期", "not reported": "未揭露", "hash": "內容雜湊", "extraction": "擷取版本", "source": "來源",

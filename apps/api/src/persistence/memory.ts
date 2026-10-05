@@ -1,3 +1,4 @@
+import { disclosureNoticeMayAffectPublication } from "../services/research/disclosureContracts.js";
 import { validateResearchDisclosureReferenceQuery, validateResearchAnnouncementWindowQuery, validateResearchAnnouncementIdsQuery, validateResearchAnnouncementCandidateQuery, validateResearchSuccessfulDetailQuery } from "../services/research/disclosureContracts.js";
 import { validateDisclosureReadScope } from "../services/research/disclosureContracts.js";
 import { disclosureMetadata } from "../services/research/disclosureContracts.js";
@@ -1176,6 +1177,7 @@ export class MemoryPersistence implements Persistence {
       && (!query.eventFrom || (record.eventDate !== null && record.eventDate >= query.eventFrom)) && (!query.eventTo || (record.eventDate !== null && record.eventDate <= query.eventTo)));
     const collections = new Set(window.map((record) => record.collectionRecordId).filter(Boolean));
     const candidates = new Set([...window.map((record) => record.id), ...all.filter((record) => record.collectionRecordId && collections.has(record.collectionRecordId)).map((record) => record.id)]);
+    for (const record of all) if (record.unknownRelationTargets?.length && window.some((target) => disclosureNoticeMayAffectPublication(record, target.publishedAt))) candidates.add(record.id);
     // Traverse incoming lineage through notices too: a later resolved revision
     // can supersede an out-of-window ambiguous notice rather than its target.
     let changed = true;
