@@ -236,6 +236,67 @@ describe("focused disclosure report", () => {
     expect(report.assessments[0]!.reasonCodes).toContain(`official_scan_${status}`);
     expect(report.announcementPages[0]!.items[0]!.explanation.text).toBe(f.announcement.explanation);
   });
+  it.each([
+    ["corrects", "inside"], ["corrects", "outside"], ["retracts", "inside"], ["retracts", "outside"],
+  ] as const)("ambiguous %s notice %s window: all candidate predecessors → withhold dependent judgments without resolving lineage", async (kind, position) => {
+    const f = await fixture();
+    const second = { ...f.announcement, id: "ambiguous_second", attachments: [{ ...f.announcement.attachments[0]!, id: "second_attachment", artifactId: "second_artifact" }] };
+    const independent = { ...f.announcement, id: "independent", subject: "Unrelated disclosure", attachments: [] };
+    const notice = { ...f.announcement, id: "ambiguous_notice", publishedAt: "2026-10-04T03:00:00.000Z", subject: "更正／撤回公告", attachments: [],
+      detailQuality: { status: "available" as const, reasonCodes: ["unresolved_correction_reference"] },
+      unresolvedRelations: [{ kind, candidateAnnouncementIds: [f.announcement.id, second.id].sort() }] };
+    await f.persistence.appendResearchAnnouncements([f.announcement, second, independent, notice]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    await f.persistence.appendResearchDisclosureArtifacts([f.artifact, { ...f.artifact, id: "second_artifact", reference: { kind: "announcement_attachment", id: second.id } }]);
+    const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+    const range = { publishedFrom: "2026-10-04T00:00:00.000Z", publishedTo: position === "outside" ? "2026-10-04T02:30:00.000Z" : context.effectiveAt };
+    const page = await listMaterialAnnouncements(f.persistence, { ...f.query, range, limit: 1 });
+    const announcementPages = [page];
+    while (announcementPages.at(-1)!.page.nextCursor) {
+      announcementPages.push(await listMaterialAnnouncements(f.persistence, { subject: f.query.subject, cursor: announcementPages.at(-1)!.page.nextCursor! }));
+    }
+    expect(announcementPages.flatMap((entry) => entry.items).some((item) => item.id === notice.id)).toBe(position === "inside");
+    expect(announcementPages.flatMap((entry) => entry.relationIndex)).toEqual([]);
+    const unresolved = announcementPages.flatMap((entry) => entry.unresolvedRelationIndex);
+    expect(unresolved.every((relation) => relation.sourceAnnouncementId === notice.id && relation.kind === kind)).toBe(true);
+    expect([...new Set(unresolved.flatMap((relation) => relation.candidateAnnouncementIds))].sort()).toEqual([f.announcement.id, second.id].sort());
+    const artifactPages = await Promise.all(["artifact_1", "second_artifact"].map((artifactId) => getDisclosureArtifact(f.persistence, { ...f.query, artifactId })));
+    const announcementCandidate = (id: string) => ({ ...candidate, id, triggeringEvidence: [{ kind: "announcement" as const, announcementId: id }],
+      statusEvidence: { ...candidate.statusEvidence, reference: { kind: "announcement" as const, announcementId: id } } });
+    const secondArtifactReference = { kind: "artifact_claim" as const, artifactId: "second_artifact", claimId: "claim_1" };
+    const report = composeFocusedDisclosureResearchReport({ identity, announcementPages, artifactPages,
+      candidates: [candidate, announcementCandidate(second.id), artifactCandidate,
+        { ...artifactCandidate, id: "second_artifact_judgment", triggeringEvidence: [secondArtifactReference], statusEvidence: { ...artifactCandidate.statusEvidence, reference: secondArtifactReference } },
+        announcementCandidate(independent.id)] });
+    expect(report.assessments.map((assessment) => assessment.sourceSupport)).toEqual(["withheld", "withheld", "withheld", "withheld", "supported"]);
+    for (const assessment of report.assessments.slice(0, 2)) expect(assessment.reasonCodes).toContain("announcement_unresolved_relation_target");
+    for (const assessment of report.assessments.slice(2, 4)) expect(assessment.reasonCodes).toContain("artifact_parent_unresolved_relation_target");
+    expect(report.officialScanGate.status).toBe("passed");
+    expect(renderFocusedDisclosureResearchReportMarkdown(report)).toContain("Unresolved correction/retraction target");
+    expect(renderFocusedDisclosureResearchReportMarkdown(report, "zh-TW")).toContain("更正／撤回公告之指向尚未確定");
+  });
+  it.each(["after_knowledge", "foreign_listing", "superseded", "no_candidates"] as const)("unresolved notice %s: irrelevant or replaced ambiguity → preserve unrelated predecessor support", async (state) => {
+    const f = await fixture();
+    const second = { ...f.announcement, id: "ambiguous_second", attachments: [] };
+    const notice: ResearchAnnouncementRecord = { ...f.announcement, id: "ambiguous_notice", publishedAt: "2026-10-04T03:00:00.000Z", attachments: [],
+      detailQuality: { status: "available", reasonCodes: ["unresolved_correction_reference"] },
+      ...(state === "no_candidates" ? {} : { unresolvedRelations: [{ kind: "corrects", candidateAnnouncementIds: [f.announcement.id, second.id].sort() }] }),
+      ...(state === "foreign_listing" ? { listingId: "another_listing" } : {}),
+      ...(state === "after_knowledge" ? { provenance: { ...f.announcement.provenance, retrievedAt: "2026-10-04T04:01:00.000Z", processedAt: "2026-10-04T04:01:00.000Z" } } : {}) };
+    await f.persistence.appendResearchAnnouncements([f.announcement, second, notice]);
+    if (state === "superseded") await f.persistence.appendResearchAnnouncements([{ ...notice, id: "resolved_notice", publishedAt: "2026-10-04T03:30:00.000Z",
+      unresolvedRelations: undefined, detailQuality: { status: "available", reasonCodes: [] },
+      relations: [{ kind: "supersedes", targetAnnouncementId: notice.id }, { kind: "corrects", targetAnnouncementId: f.announcement.id }] }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    const page = await listMaterialAnnouncements(f.persistence, { ...f.query, range: { publishedFrom: "2026-10-04T00:00:00.000Z", publishedTo: "2026-10-04T02:30:00.000Z" } });
+    expect(page.unresolvedRelationIndex).toEqual([]);
+    const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+    const secondReference = { kind: "announcement" as const, announcementId: second.id };
+    const report = composeFocusedDisclosureResearchReport({ identity, announcementPages: [page], candidates: [candidate,
+      { ...candidate, id: second.id, triggeringEvidence: [secondReference], statusEvidence: { ...candidate.statusEvidence, reference: secondReference } }] });
+    expect(report.assessments.map((assessment) => assessment.sourceSupport)).toEqual([state === "superseded" ? "withheld" : "supported", "supported"]);
+    if (state === "superseded") expect(report.assessments[0]!.reasonCodes).toContain("announcement_corrected_or_retracted");
+  });
   it("focused coverage: exhaustive-dependent judgment → withheld without blocking unrelated claim", async () => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [candidate, { ...candidate, id: "exhaustive", requiresExhaustiveCoverage: true }], readBudget: 10 });

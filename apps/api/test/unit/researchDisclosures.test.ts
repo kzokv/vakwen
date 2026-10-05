@@ -359,3 +359,27 @@ it("confirmed PDF empty pages: inconsistent stored coverage → rejected without
   }
   await expect(f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "invalid_provisional_empty", blocks: [{ ...f.artifact.blocks[0]!, extractionState: "provisional_ocr" }], confirmedEmptyPages: [1] }])).rejects.toThrow("Confirmed empty pages");
 });
+
+it.each(["corrects", "retracts"] as const)("outside-window ambiguous %s: target projection → recursive resolved revision retires only old ambiguity", async (kind) => {
+  const f = await disclosureFixture();
+  const other = { ...f.announcement, id: "ann2" };
+  const notice: ResearchAnnouncementRecord = { ...f.announcement, id: "ambiguous_notice", collectionRecordId: "notice_collection", publishedAt: "2026-09-01T01:30:00.000Z", unresolvedRelations: [{ kind, candidateAnnouncementIds: ["ann1", "ann2"] }], detailQuality: { status: "available", reasonCodes: ["unresolved_correction_reference"] } };
+  await f.persistence.appendResearchAnnouncements([other, notice]);
+  const input = { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } };
+  const ambiguous = await listMaterialAnnouncements(f.persistence, input);
+  expect(ambiguous.items.map((item) => item.id).sort()).toEqual(["ann1", "ann2"]);
+  expect(ambiguous.relationIndex).toEqual([]);
+  expect(ambiguous.unresolvedRelationIndex).toEqual([{ sourceAnnouncementId: notice.id, kind, candidateAnnouncementIds: ["ann1", "ann2"] }]);
+  const first = await listMaterialAnnouncements(f.persistence, { ...input, limit: 1 });
+  expect(first.unresolvedRelationIndex[0]?.candidateAnnouncementIds).toEqual(first.items.map((item) => item.id));
+  // This revision targets an outside-window original, so only the second-hop
+  // supersession edge can connect it back to the visible ambiguity candidates.
+  await f.persistence.appendResearchAnnouncements([{ ...notice, id: "resolved_notice", unresolvedRelations: [], relations: [{ kind, targetAnnouncementId: "outside_target" }, { kind: "supersedes", targetAnnouncementId: notice.id }] }]);
+  const resolved = await listMaterialAnnouncements(f.persistence, input);
+  expect(resolved.unresolvedRelationIndex).toEqual([]);
+  expect(resolved.items.map((item) => item.id).sort()).toEqual(["ann1", "ann2"]);
+  expect(resolved.page.continuity.queryHash).not.toBe(ambiguous.page.continuity.queryHash);
+  // A separate unresolved observation has not been superseded and remains active.
+  await f.persistence.appendResearchAnnouncements([{ ...notice, id: "independent_notice", collectionRecordId: "independent_collection" }]);
+  expect((await listMaterialAnnouncements(f.persistence, input)).unresolvedRelationIndex).toEqual([{ sourceAnnouncementId: "independent_notice", kind, candidateAnnouncementIds: ["ann1", "ann2"] }]);
+});

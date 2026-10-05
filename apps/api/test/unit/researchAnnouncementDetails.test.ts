@@ -125,3 +125,20 @@ it("citation selectors: whitespace-normalized publisher date/title → same exac
   expect(announcementCitationSelectors({ ...record, subject: "更正本公司公告", explanation: "原115 年 10 月 02 日公告「公司　資本\ufeff支出公告」金額更正。" })).toEqual({ titles: ["公司資本支出公告"], days: ["2026-10-02"] });
   expect(announcementCitationSelectors({ ...record, subject: "更正本公司公告", explanation: "原115 / 10 / 02公告「公司資本支出公告」金額更正。" }).days).toEqual(["2026-10-02"]);
 });
+
+it.each(["corrects", "retracts"] as const)("ambiguous %s: exact same-listing targets → retain candidates without resolved edges", (kind) => {
+  const { record, detail } = fixture("TWSE");
+  const subject = `${kind === "corrects" ? "更正" : "撤回"}本公司公告`;
+  detail.result.data[0][6] = subject;
+  detail.result.data[0][9] = "原115/10/02公告「公司資本支出公告」內容變更。";
+  const prior = { ...record, id: "candidate_a", publishedAt: "2026-10-02T01:00:00.000Z", subject: "公司資本支出公告" };
+  const result = parseOfficialAnnouncementDetail(detail, { ...record, subject }, metadata, [
+    { ...prior, id: "candidate_b" }, prior,
+    { ...prior, id: "wrong_listing", listingId: "other_listing" },
+    { ...prior, id: "future_candidate", publishedAt: "2026-10-04T01:00:00.000Z" },
+  ]);
+  expect(result.record.relations).toEqual([]);
+  expect(result.record.unresolvedRelations).toEqual([{ kind, candidateAnnouncementIds: ["candidate_a", "candidate_b"] }]);
+  expect(result.reasonCodes).toEqual(["unresolved_correction_reference"]);
+  expect(parseOfficialAnnouncementDetail(detail, { ...record, subject }, metadata, []).record.unresolvedRelations).toEqual([]);
+});

@@ -164,6 +164,9 @@ function artifactReportScopeFailure(artifact: NonNullable<DisclosureArtifactOutp
     return "artifact_outside_report_window";
   }
   if (artifact.reference.kind === "announcement_attachment") {
+    if (pages.some((page) => page.unresolvedRelationIndex.some((relation) => relation.candidateAnnouncementIds.includes(artifact.reference.id)))) {
+      return "artifact_parent_unresolved_relation_target";
+    }
     const parent = pages.flatMap((page) => page.items).find((item) => item.id === artifact.reference.id);
     if (!parent) return "artifact_parent_not_returned";
     if (parent.detailQuality?.reasonCodes.includes("unresolved_correction_reference")) return "artifact_parent_unresolved_correction_reference";
@@ -251,11 +254,13 @@ export function composeFocusedDisclosureResearchReport(input: {
   const scanFailure = first.scan.status === "current" && !current ? "official_scan_evidence_invalid" : `official_scan_${first.scan.status}`;
   const invalidated = new Set(pages.flatMap((page) => page.relationIndex.map((relation) => relation.targetAnnouncementId)));
   const conflicted = new Set(pages.flatMap((page) => page.selection.conflictObservationIds));
+  const ambiguousTargets = new Set(pages.flatMap((page) => page.unresolvedRelationIndex.flatMap((relation) => relation.candidateAnnouncementIds)));
   const announcements = pages.flatMap((page) => page.items);
   function failedReason(reference: DisclosureEvidenceReference): string | null {
     if (reference.kind === "announcement") {
       const announcement = announcements.find((item) => item.id === reference.announcementId);
       if (invalidated.has(reference.announcementId)) return "announcement_corrected_or_retracted";
+      if (ambiguousTargets.has(reference.announcementId)) return "announcement_unresolved_relation_target";
       if (conflicted.has(reference.announcementId)) return "announcement_conflict_unresolved";
       if (!announcement) return "announcement_not_returned";
       if (announcement.detailQuality?.reasonCodes.includes("unresolved_correction_reference")) return "unresolved_correction_reference";
@@ -475,6 +480,7 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     "The latest acquisition attempt did not succeed. The selected successful scan retains its own timestamp and freshness boundary.": "最近一次擷取未成功；仍依採用的成功掃描原有時間戳記與時效界線評估。",
     "The latest acquisition attempt did not succeed. No successful official scan is available at this cutoff.": "最近一次擷取未成功；截至資訊截止時間尚無可用的成功官方掃描。",
     "Unresolved source conflict": "來源衝突尚未解決",
+    "Unresolved correction/retraction target": "更正／撤回公告之指向尚未確定",
     "Quality": "品質", "text truncated": "內文截斷", "rule": "適用條款", "event": "事件日期", "not reported": "未揭露", "hash": "內容雜湊", "extraction": "擷取版本", "source": "來源",
     "page": "頁", "table": "表", "subject": "主體", "period": "期間", "unit": "單位", "not applicable": "不適用", "unknown": "未知", "Reasons": "原因",
     "Analytical judgment (provisional); source assertion": "分析判斷（暫定）；原始陳述", "Mechanism": "作用機制", "affected": "影響指標或假設", "horizon": "時間範圍",
@@ -529,6 +535,8 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
       `  ${markdown(item.explanation.text)}`,
       `  ${t("Quality")}: ${t(item.quality)}; ${t("text truncated")}: ${item.explanation.truncated}; ${t("rule")}: ${markdown(item.ruleClause)}; ${t("event")}: ${markdown(item.eventDate ?? t("not reported"))}`,
       ...(page.selection.conflictObservationIds.includes(item.id) ? [`  ${t("Unresolved source conflict")}: ${markdown(item.id)}`] : []),
+      ...page.unresolvedRelationIndex.filter((relation) => relation.candidateAnnouncementIds.includes(item.id))
+        .map((relation) => `  ${t("Unresolved correction/retraction target")}: ${markdown(relation.sourceAnnouncementId)} (${relation.kind})`),
       ...item.relations.map((relation) => `  ${relation.kind}: ${markdown(relation.targetAnnouncementId)}`),
       ...page.relationIndex.filter((relation) => relation.targetAnnouncementId === item.id)
         .map((relation) => `  ${relation.kind}: ${markdown(relation.announcementId)} → ${markdown(item.id)}`),

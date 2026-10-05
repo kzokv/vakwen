@@ -1175,7 +1175,19 @@ export class MemoryPersistence implements Persistence {
       && (!query.eventFrom || (record.eventDate !== null && record.eventDate >= query.eventFrom)) && (!query.eventTo || (record.eventDate !== null && record.eventDate <= query.eventTo)));
     const collections = new Set(window.map((record) => record.collectionRecordId).filter(Boolean));
     const candidates = new Set([...window.map((record) => record.id), ...all.filter((record) => record.collectionRecordId && collections.has(record.collectionRecordId)).map((record) => record.id)]);
-    return all.filter((record) => candidates.has(record.id) || record.relations.some((relation) => candidates.has(relation.targetAnnouncementId))).map(disclosureMetadata);
+    // Traverse incoming lineage through notices too: a later resolved revision
+    // can supersede an out-of-window ambiguous notice rather than its target.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const record of all) {
+        if (!candidates.has(record.id) && (record.relations.some((relation) => candidates.has(relation.targetAnnouncementId))
+          || (record.unresolvedRelations ?? []).some((relation) => relation.candidateAnnouncementIds.some((id) => candidates.has(id))))) {
+          candidates.add(record.id); changed = true;
+        }
+      }
+    }
+    return all.filter((record) => candidates.has(record.id)).map(disclosureMetadata);
   }
   async getResearchAnnouncementsByIds(query: ResearchDisclosureScanLookup & { ids: string[] }): Promise<ResearchAnnouncementRecord[]> {
     validateResearchAnnouncementIdsQuery(query);

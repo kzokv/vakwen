@@ -12,6 +12,10 @@ export const disclosureProvenanceSchema = z.object({
 }).strict();
 export const disclosureRelationSchema = z.object({ kind: z.enum(["corrects", "retracts", "supersedes"]), targetAnnouncementId: id }).strict();
 export const disclosureAttachmentSchema = z.object({ id, artifactId: id.nullable(), title: z.string(), sourceUrl: safeUrl, mediaType: z.string() }).strict();
+export const disclosureUnresolvedRelationSchema = z.object({
+  kind: z.enum(["corrects", "retracts"]),
+  candidateAnnouncementIds: z.array(id).min(2).refine((ids) => ids.every((value, index) => index === 0 || ids[index - 1]! < value), "Candidate IDs must be unique and sorted"),
+}).strict();
 export const researchAnnouncementRecordSchema = z.object({
   id, collectionRecordId: id.optional(), issuerId: id, listingId: id, ticker: z.string(), venue: z.enum(["TWSE", "TPEX"]),
   publishedAt: time, publicationPrecision: z.enum(["second", "minute", "date"]), subject: z.string(), ruleClause: z.string(),
@@ -20,7 +24,7 @@ export const researchAnnouncementRecordSchema = z.object({
   rawEventDate: z.string().optional(),
   detailQuality: z.object({ status: z.enum(["available", "restricted", "processing_failed", "unavailable"]), reasonCodes: z.array(z.string()) }).strict().optional(),
   collectionProvenance: disclosureProvenanceSchema.optional(),
-  attachments: z.array(disclosureAttachmentSchema), relations: z.array(disclosureRelationSchema),
+  attachments: z.array(disclosureAttachmentSchema), relations: z.array(disclosureRelationSchema), unresolvedRelations: z.array(disclosureUnresolvedRelationSchema).optional(),
   quality: z.enum(["available", "restricted", "processing_failed", "indeterminate"]),
   provenance: disclosureProvenanceSchema,
 }).strict();

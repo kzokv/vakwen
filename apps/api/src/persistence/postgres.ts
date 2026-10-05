@@ -1608,11 +1608,13 @@ export class PostgresPersistence implements Persistence {
   }
   async listResearchAnnouncementSelectionMetadata(query: ResearchAnnouncementWindowQuery): Promise<ResearchAnnouncementMetadata[]> {
     validateResearchAnnouncementWindowQuery(query);
-    const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`WITH scoped AS NOT MATERIALIZED (SELECT id, record, published_at FROM research.announcements WHERE ${this.disclosureAnnouncementScope()}),
+    const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`WITH RECURSIVE scoped AS NOT MATERIALIZED (SELECT id, record, published_at FROM research.announcements WHERE ${this.disclosureAnnouncementScope()}),
       window_rows AS (SELECT id, record->>'collectionRecordId' AS collection FROM scoped WHERE published_at >= $6::timestamptz AND published_at <= $7::timestamptz
         AND ($8::text IS NULL OR record->>'eventDate' >= $8) AND ($9::text IS NULL OR record->>'eventDate' <= $9)),
       candidates AS (SELECT id FROM window_rows UNION SELECT id FROM scoped WHERE record->>'collectionRecordId' IN (SELECT collection FROM window_rows WHERE collection IS NOT NULL)),
-      wanted AS (SELECT id FROM candidates UNION SELECT scoped.id FROM candidates JOIN scoped ON scoped.record->'relations' @> jsonb_build_array(jsonb_build_object('targetAnnouncementId', candidates.id)))
+      wanted AS (SELECT id FROM candidates UNION SELECT scoped.id FROM wanted JOIN scoped ON
+        scoped.record->'relations' @> jsonb_build_array(jsonb_build_object('targetAnnouncementId', wanted.id))
+        OR scoped.record->'unresolvedRelations' @> jsonb_build_array(jsonb_build_object('candidateAnnouncementIds', jsonb_build_array(wanted.id))))
       SELECT record - 'explanation' - 'attachments' AS record FROM scoped WHERE id IN (SELECT id FROM wanted)`,
       [...this.disclosureScopeParameters(query), query.publishedFrom, query.publishedTo, query.eventFrom ?? null, query.eventTo ?? null]);
     return result.rows.map((row) => researchAnnouncementMetadataSchema.parse(row.record));

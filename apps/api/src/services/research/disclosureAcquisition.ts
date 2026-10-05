@@ -81,7 +81,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         record = priorSuccessfulDetail ? structuredClone(priorSuccessfulDetail) : enriched.record;
         const collectionRecordId = sourceRecord.id;
         if (!priorSuccessfulDetail) {
-          const variant = disclosureHash(JSON.stringify({ content: [record.subject, record.ruleClause, record.eventDate, record.explanation], parserVersion: record.provenance.parserVersion, detailQuality: record.detailQuality, attachments: record.attachments, relations: record.relations }));
+          const variant = disclosureHash(JSON.stringify({ content: [record.subject, record.ruleClause, record.eventDate, record.explanation], parserVersion: record.provenance.parserVersion, detailQuality: record.detailQuality, attachments: record.attachments, relations: record.relations, unresolvedRelations: record.unresolvedRelations }));
           record = { ...record, collectionRecordId, id: disclosureId("ann", collectionRecordId, variant) };
           record.attachments = record.attachments.map((attachment) => attachment.id === disclosureId("att", collectionRecordId, "explanation")
             ? { ...attachment, id: disclosureId("att", record.id, "explanation"), artifactId: disclosureId("art", record.id, "explanation") }

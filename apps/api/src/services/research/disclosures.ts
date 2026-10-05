@@ -145,6 +145,7 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
     window: { publishedFrom: start, publishedTo: end, ...(query.range?.eventFrom ? { eventFrom: query.range.eventFrom } : {}), ...(query.range?.eventTo ? { eventTo: query.range.eventTo } : {}), exhaustive }, quality,
     scan: { status, checkedAt: selectedScan?.checkedAt ?? null, record: selectedScan ?? null, latestAttempt: latestAttempt ?? null, eventFactFreshness: "not_applicable" }, items,
     relationIndex: all.flatMap((row) => row.relations.filter((relation) => items.some((item) => item.id === row.id || item.id === relation.targetAnnouncementId)).map((relation) => ({ announcementId: row.id, ...relation }))),
+    unresolvedRelationIndex: all.filter((row) => row.quality === "available" && !superseded.has(row.id)).flatMap((row) => (row.unresolvedRelations ?? []).map((relation) => ({ sourceAnnouncementId: row.id, kind: relation.kind, candidateAnnouncementIds: relation.candidateAnnouncementIds.filter((id) => items.some((item) => item.id === id)) })).filter((relation) => relation.candidateAnnouncementIds.length > 0)).sort((a, b) => a.sourceAnnouncementId.localeCompare(b.sourceAnnouncementId) || a.kind.localeCompare(b.kind)),
     page: { continuity: { queryHash, offset, returnedCount: items.length, totalCount: rows.length, requestCursor: "cursor" in parsed ? parsed.cursor : null }, nextCursor, order: query.order, limit: query.limit, truncatedBy: more ? budgetTruncated ? "response_budget" : "page_limit" : null },
     provenance: [...new Map(items.map((item) => [item.provenance.id, item.provenance])).values()],
   });
@@ -152,6 +153,7 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
     output.items.pop();
     output.page.continuity.returnedCount = output.items.length;
     const retainedIds = new Set(output.items.map((item) => item.id));
+    output.unresolvedRelationIndex = output.unresolvedRelationIndex.map((relation) => ({ ...relation, candidateAnnouncementIds: relation.candidateAnnouncementIds.filter((id) => retainedIds.has(id)) })).filter((relation) => relation.candidateAnnouncementIds.length > 0);
     output.relationIndex = output.relationIndex.filter((relation) => retainedIds.has(relation.announcementId) || retainedIds.has(relation.targetAnnouncementId));
     output.provenance = [...new Map(output.items.map((item) => [item.provenance.id, item.provenance])).values()];
     output.page.nextCursor = encode({ version: VERSION, purpose: "announcements", auth: options.authorizationBinding ?? "internal", issuedAt: cursor?.issuedAt ?? Date.now(), query: { ...query, subject: identity.selector }, requestedSubject: cursor?.requestedSubject ?? parsed.subject, after: output.items.at(-1)!.id }, options);

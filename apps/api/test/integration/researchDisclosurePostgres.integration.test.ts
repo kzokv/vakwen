@@ -183,4 +183,23 @@ describePostgres("disclosure memory/Postgres conformance", () => {
     expect(results[1]).toEqual(results[0]);
   });
 
+  it("ambiguous reverse lineage: out-of-window notice and superseding revision → recursive memory/Postgres parity", async () => {
+    const results = [];
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const f = await disclosureFixture(persistence);
+      const notice: ResearchAnnouncementRecord = { ...f.announcement, id: "ambiguous_notice", publishedAt: "2026-09-01T01:30:00.000Z", unresolvedRelations: [{ kind: "corrects", candidateAnnouncementIds: ["ann1", "ann2"] }] };
+      await persistence.appendResearchAnnouncements([{ ...f.announcement, id: "ann2" }, notice,
+        { ...notice, id: "wrong_listing_notice", listingId: "other_listing" },
+        { ...notice, id: "future_notice", provenance: { ...notice.provenance, processedAt: "2026-09-02T00:00:00.000Z" } }]);
+      const input = { subject: f.subject, context: f.context, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } };
+      const before = await listMaterialAnnouncements(persistence, input);
+      expect(before.unresolvedRelationIndex).toEqual([{ sourceAnnouncementId: notice.id, kind: "corrects", candidateAnnouncementIds: ["ann1", "ann2"] }]);
+      await persistence.appendResearchAnnouncements([{ ...notice, id: "resolved_notice", unresolvedRelations: [], relations: [{ kind: "corrects", targetAnnouncementId: "outside_target" }, { kind: "supersedes", targetAnnouncementId: notice.id }] }]);
+      const after = await listMaterialAnnouncements(persistence, input);
+      expect(after.unresolvedRelationIndex).toEqual([]);
+      results.push({ before, after });
+    }
+    expect(results[1]).toEqual(results[0]);
+  });
+
 });

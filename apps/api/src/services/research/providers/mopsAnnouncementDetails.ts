@@ -74,7 +74,7 @@ function relationFromPublisherText(record: ResearchAnnouncementRecord, previousR
   // and its publication date. Shared keywords or coincident event dates never link facts.
   const kind = /^(?:公告)?(?:撤回|撤銷)/.test(record.subject.trim()) ? "retracts" as const
     : /^(?:公告)?更正/.test(record.subject.trim()) ? "corrects" as const : null;
-  if (!kind) return { relations: record.relations, unresolved: false };
+  if (!kind) return { relations: record.relations, unresolved: false, unresolvedRelations: record.unresolvedRelations ?? [] };
   const text = compactTitle(record.explanation);
   const matches = previousRecords.filter((prior) => {
     if (prior.id === record.id || prior.issuerId !== record.issuerId || prior.listingId !== record.listingId || prior.venue !== record.venue || prior.publishedAt >= record.publishedAt) return false;
@@ -86,9 +86,11 @@ function relationFromPublisherText(record: ResearchAnnouncementRecord, previousR
     const day = Number(date.slice(8, 10));
     return [date, `${year}/${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`, `${year}/${month}/${day}`, `${year}年${month}月${day}日`].some((value) => text.includes(value));
   });
-  if (matches.length !== 1) return { relations: record.relations, unresolved: true };
+  const unresolvedRelations = (record.unresolvedRelations ?? []).filter((relation) => relation.kind !== kind);
+  if (matches.length !== 1) return { relations: record.relations, unresolved: true, unresolvedRelations: matches.length > 1
+    ? [...unresolvedRelations, { kind, candidateAnnouncementIds: [...new Set(matches.map((match) => match.id))].sort() }] : unresolvedRelations };
   const relation = { kind, targetAnnouncementId: matches[0]!.id };
-  return { relations: [...record.relations.filter((old) => old.kind !== kind || old.targetAnnouncementId !== relation.targetAnnouncementId), relation], unresolved: false };
+  return { relations: [...record.relations.filter((old) => old.kind !== kind || old.targetAnnouncementId !== relation.targetAnnouncementId), relation], unresolved: false, unresolvedRelations };
 }
 
 export function parseOfficialAnnouncementDetail(
@@ -127,7 +129,7 @@ export function parseOfficialAnnouncementDetail(
     explanation: field("說明"), attachments };
   const relation = relationFromPublisherText(enriched, previousRecords);
   const reasons = relation.unresolved ? ["unresolved_correction_reference"] : [];
-  const output = researchAnnouncementRecordSchema.parse({ ...enriched, relations: relation.relations,
+  const output = researchAnnouncementRecordSchema.parse({ ...enriched, relations: relation.relations, unresolvedRelations: relation.unresolvedRelations,
     collectionProvenance: record.collectionProvenance ?? record.provenance,
     detailQuality: { status: "available", reasonCodes: reasons },
     provenance: { ...record.provenance, id: disclosureId("pr", record.id, metadata.contentHash, MOPS_DETAIL_PARSER_VERSION),
