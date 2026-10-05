@@ -331,3 +331,46 @@ it.each([
     expect(artifact.verifiedClaims).toEqual([]);
   }
 });
+
+it.each([31, 121])("delayed enrichment %i minutes: snapshot freshness → observation clock with completion knowledge", async (minutes) => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  const persistence = new MemoryPersistence(); const { rows, identity } = fixture("TWSE");
+  await persistence.appendResearchIdentityRecords([identity]);
+  const history = JSON.parse(readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8"));
+  const detail = JSON.parse(readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8"));
+  const completed = new Date(Date.parse(at) + minutes * 60_000).toISOString();
+  vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date(at));
+  try {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const source = String(url);
+      if (source.endsWith("t05st01_detail")) { vi.setSystemTime(new Date(completed)); return new Response(JSON.stringify(detail)); }
+      return new Response(JSON.stringify(source.endsWith("t05st01") ? history : rows));
+    }) as unknown as typeof fetch;
+    await runOfficialDisclosureAcquisition(persistence, { fetchImpl, acquisitionRunId: "delayed" });
+    const query = { issuerId: identity.issuer.id, effectiveAt: completed, knowledgeAt: completed };
+    const scan = (await persistence.listResearchDisclosureScans(query))[0]!;
+    expect(scan).toMatchObject({ checkedAt: at, publicationEnd: at, knowledgeAt: completed, provenance: { retrievedAt: at, processedAt: completed } });
+    const result = await listMaterialAnnouncements(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: completed } });
+    expect(result.scan.status).toBe(minutes > 120 ? "stale" : "indeterminate");
+    expect(result.quality.readiness.currentAssessment).toBe("blocked");
+    expect(result.items).toHaveLength(1);
+    const before = { issuerId: identity.issuer.id, effectiveAt: at, knowledgeAt: at };
+    expect(await persistence.listResearchDisclosureScans(before)).toEqual([]);
+    expect(await persistence.listResearchAnnouncements(before)).toEqual([]);
+    expect(await persistence.listResearchDisclosureArtifacts(before)).toEqual([]);
+  } finally { vi.useRealTimers(); }
+});
+
+it("delayed failed refresh: no response snapshot → failure completion timestamp preserves cached success", async () => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  const persistence = new MemoryPersistence(); const { identity } = fixture("TWSE");
+  await persistence.appendResearchIdentityRecords([identity]);
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl: vi.fn(async () => new Response("[]")) as unknown as typeof fetch, retrievedAt: at, acquisitionRunId: "prior" });
+  const failedAt = "2026-10-04T05:05:00.000Z";
+  vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date(at));
+  try {
+    await runOfficialDisclosureAcquisition(persistence, { acquisitionRunId: "failure", fetchImpl: vi.fn(async () => { vi.setSystemTime(new Date(failedAt)); return new Response("unavailable", { status: 503 }); }) as unknown as typeof fetch });
+    const result = await listMaterialAnnouncements(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: failedAt } });
+    expect(result.scan).toMatchObject({ status: "current", checkedAt: at, latestAttempt: { checkedAt: failedAt, knowledgeAt: failedAt, status: "failed", provenance: { contentHash: null, processedAt: failedAt } } });
+  } finally { vi.useRealTimers(); }
+});

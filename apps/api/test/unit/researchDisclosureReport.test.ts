@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { runOfficialDisclosureAcquisition } from "../../src/services/research/disclosureAcquisition.js";
 import type { z } from "zod";
 import { disclosureCandidateSchema } from "../../src/services/research/disclosureReport.js";
 
@@ -771,6 +773,51 @@ describe("focused disclosure report", () => {
     expect(report.assessments[0]!.interpretationType).toBe("analytical_judgment");
   });
 
+  it("slow enrichment: completed detail after stale snapshot → preserve original scan age and prior successful evidence", async () => {
+    const f = await fixture();
+    const snapshotAt = "2026-10-04T03:10:00.000Z";
+    const completedAt = "2026-10-04T03:50:00.000Z";
+    const identityRecord = canonicalizeOfficialIdentityRow({ venue: "TWSE", snapshotDate: "2026-10-03", retrievedAt: "2026-10-03T02:00:00.000Z",
+      artifact: { contentHash: "slow-enrichment-identity", sourceUrl: "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" },
+      row: { kind: "company", ticker: "2072", legalName: "公司", displayName: "公司", unifiedBusinessNumber: "11111111", industryCode: "24", listedAt: "2000-01-01" } });
+    await f.persistence.appendResearchIdentityRecords([identityRecord]);
+    const prior = { ...f.scan, id: "prior_snapshot", listingId: identityRecord.listing.id, issuerId: identityRecord.issuer.id,
+      checkedAt: "2026-10-04T03:00:00.000Z", knowledgeAt: "2026-10-04T03:00:00.000Z", publicationEnd: "2026-10-04T03:00:00.000Z",
+      provenance: { ...f.scan.provenance, retrievedAt: "2026-10-04T03:00:00.000Z", processedAt: "2026-10-04T03:00:00.000Z" } };
+    await f.persistence.appendResearchDisclosureScans([prior]);
+    const rows = readFileSync(new URL("../fixtures/research/twse-announcements.json", import.meta.url), "utf8");
+    const history = readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8");
+    const detail = readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8");
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(snapshotAt);
+      const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+        const source = String(url);
+        if (source.endsWith("t05st01_detail")) vi.setSystemTime(completedAt);
+        return new Response(source.endsWith("t05st01_detail") ? detail : source.endsWith("t05st01") ? history : rows,
+          { headers: { "content-type": "application/json" } });
+      }) as unknown as typeof fetch;
+      await runOfficialDisclosureAcquisition(f.persistence, { fetchImpl, acquisitionRunId: "slow_enrichment" });
+      const subject = { kind: "listing_id" as const, listingId: identityRecord.listing.id };
+      const beforeCompletion = await listMaterialAnnouncements(f.persistence, { subject,
+        context: { knowledgeAt: "2026-10-04T03:30:00.000Z", effectiveAt: "2026-10-04T03:30:00.000Z" } });
+      expect(beforeCompletion.scan.record).toEqual(prior);
+      const page = await listMaterialAnnouncements(f.persistence, { subject, context });
+      expect(page.scan.record).toMatchObject({ checkedAt: snapshotAt, publicationEnd: snapshotAt, knowledgeAt: completedAt,
+        provenance: { retrievedAt: snapshotAt, processedAt: completedAt } });
+      expect(page.scan.status).toBe("indeterminate");
+      const acquired = page.items.find((item) => item.provenance.acquisitionRunId === "slow_enrichment")!;
+      expect(acquired.detailQuality?.status).toBe("available");
+      const reference = { kind: "announcement" as const, announcementId: acquired.id };
+      const report = composeFocusedDisclosureResearchReport({ identity: await getResearchIdentity(f.persistence, { subject, context, history: { limit: 1 } }),
+        announcementPages: [page], candidates: [{ ...candidate, statement: acquired.explanation.text,
+          statusEvidence: { reference, excerpt: acquired.explanation.text }, triggeringEvidence: [reference] }] });
+      expect(report.officialScanGate.status).toBe("withheld");
+      expect(report.assessments[0]!.reasonCodes).toContain("official_scan_indeterminate");
+      expect((await f.persistence.listResearchDisclosureScans({ issuerId: identityRecord.issuer.id, effectiveAt: context.effectiveAt, knowledgeAt: context.knowledgeAt })).find((scan) => scan.id === prior.id)).toEqual(prior);
+    } finally { vi.useRealTimers(); }
+  });
   it("failed refresh after current success: keep supported source → expose degraded latest attempt", async () => {
     const f = await seeded();
     await f.persistence.appendResearchDisclosureScans([{ ...f.scan, id: "scan_failed_refresh", checkedAt: "2026-10-04T03:59:00.000Z", status: "failed" }]);
