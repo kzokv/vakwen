@@ -212,6 +212,55 @@ describe("focused disclosure report", () => {
     expect(report.assessments[1]!.reasonCodes).toContain("artifact_parent_corrected_or_retracted");
     expect(report.officialScanGate.status).toBe("passed");
   });
+  it.each((["corrects", "retracts"] as const).flatMap((kind) =>
+    (["removed", "repointed"] as const).flatMap((change) =>
+      (["inside", "outside"] as const).flatMap((position) =>
+        (["selected_with_conflicts", "all_observations"] as const).map((evidenceView) => ({ kind, change, position, evidenceView }))))))(
+    "revised $kind $change, $position window, $evidenceView: active lineage → recover prior target and retain new target restrictions",
+    async ({ kind, change, position, evidenceView }) => {
+      const f = await fixture();
+      const second: ResearchAnnouncementRecord = { ...f.announcement, id: "second_target", subject: "Second target",
+        attachments: [{ ...f.announcement.attachments[0]!, id: "second_attachment", artifactId: "second_artifact" }] };
+      const obsolete: ResearchAnnouncementRecord = { ...f.announcement, id: "obsolete_notice", subject: "Original correction notice",
+        publishedAt: "2026-10-04T02:15:00.000Z", attachments: [], relations: [{ kind, targetAnnouncementId: f.announcement.id }] };
+      const replacement: ResearchAnnouncementRecord = { ...obsolete, id: "replacement_notice", subject: "Revised correction notice",
+        publishedAt: "2026-10-04T03:00:00.000Z", relations: [{ kind: "supersedes", targetAnnouncementId: obsolete.id },
+          ...(change === "repointed" ? [{ kind, targetAnnouncementId: second.id }] : [])] };
+      await f.persistence.appendResearchAnnouncements([f.announcement, second, obsolete, replacement]);
+      await f.persistence.appendResearchDisclosureArtifacts([f.artifact,
+        { ...f.artifact, id: "second_artifact", reference: { kind: "announcement_attachment", id: second.id } }]);
+      await f.persistence.appendResearchDisclosureScans([f.scan]);
+      const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+      const first = await listMaterialAnnouncements(f.persistence, { ...f.query, evidenceView, limit: 1,
+        range: { publishedFrom: "2026-10-04T00:00:00.000Z", publishedTo: position === "outside" ? "2026-10-04T02:30:00.000Z" : context.effectiveAt } });
+      const announcementPages = [first];
+      while (announcementPages.at(-1)!.page.nextCursor) announcementPages.push(await listMaterialAnnouncements(f.persistence,
+        { subject: f.query.subject, cursor: announcementPages.at(-1)!.page.nextCursor! }));
+      expect(announcementPages.every((page) => page.items.length === 1)).toBe(true);
+      const items = announcementPages.flatMap((page) => page.items);
+      expect(items.some((item) => item.id === replacement.id)).toBe(position === "inside");
+      if (evidenceView === "all_observations") expect(items.find((item) => item.id === obsolete.id)?.relations).toEqual(obsolete.relations);
+      const lineage = announcementPages.flatMap((page) => page.relationIndex);
+      expect(lineage.some((relation) => relation.announcementId === obsolete.id && relation.kind === kind)).toBe(false);
+      expect(lineage.some((relation) => relation.announcementId === replacement.id && relation.kind === kind && relation.targetAnnouncementId === second.id)).toBe(change === "repointed");
+      const announcementCandidate = (id: string) => ({ ...candidate, id, triggeringEvidence: [{ kind: "announcement" as const, announcementId: id }],
+        statusEvidence: { ...candidate.statusEvidence, reference: { kind: "announcement" as const, announcementId: id } } });
+      const secondReference = { kind: "artifact_claim" as const, artifactId: "second_artifact", claimId: "claim_1" };
+      const artifactPages = await Promise.all(["artifact_1", "second_artifact"].map((artifactId) => getDisclosureArtifact(f.persistence, { ...f.query, artifactId })));
+      const report = composeFocusedDisclosureResearchReport({ identity, announcementPages, artifactPages,
+        candidates: [candidate, artifactCandidate, announcementCandidate(second.id),
+          { ...artifactCandidate, id: "second_artifact_judgment", triggeringEvidence: [secondReference], statusEvidence: { ...artifactCandidate.statusEvidence, reference: secondReference } },
+          announcementCandidate(obsolete.id)] });
+      expect(report.assessments.map((assessment) => assessment.sourceSupport)).toEqual([
+        "supported", "supported", change === "repointed" ? "withheld" : "supported", change === "repointed" ? "withheld" : "supported", "withheld",
+      ]);
+      if (change === "repointed") {
+        expect(report.assessments[2]!.reasonCodes).toContain("announcement_corrected_or_retracted");
+        expect(report.assessments[3]!.reasonCodes).toContain("artifact_parent_corrected_or_retracted");
+      }
+      expect(report.officialScanGate.status).toBe("passed");
+      expect(() => renderFocusedDisclosureResearchReportMarkdown(report)).not.toThrow();
+    });
   it.each(["restricted", "processing_failed", "unavailable"] as const)("artifact %s: dependent evidence unavailable → independent facts and scan remain usable", async (state) => {
     const f = await fixture();
     await f.persistence.appendResearchAnnouncements([f.announcement]);

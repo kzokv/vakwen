@@ -393,3 +393,26 @@ it("missing material artifact: retained scoped membership → typed unavailable,
   await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: input.artifactId, reference: { kind: "announcement_attachment", id: f.announcement.id } }]);
   await expect(getDisclosureArtifact(f.persistence, input)).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
 });
+
+it.each(["corrects", "retracts"] as const)("superseded %s notice: effective index → old target restored while audit lineage survives", async (kind) => {
+  for (const evidenceView of ["selected_with_conflicts", "all_observations"] as const) {
+    for (const repoint of [false, true]) {
+      const f = await disclosureFixture();
+      const target = { ...f.announcement, id: "new_target" };
+      const old: ResearchAnnouncementRecord = { ...f.announcement, id: "old_notice", publishedAt: "2026-09-01T01:10:00.000Z", relations: [{ kind, targetAnnouncementId: f.announcement.id }] };
+      const middle: ResearchAnnouncementRecord = { ...old, id: "middle_notice", relations: [{ kind: "supersedes", targetAnnouncementId: old.id }] };
+      const latest: ResearchAnnouncementRecord = { ...middle, id: "latest_notice", relations: [{ kind: "supersedes", targetAnnouncementId: middle.id }, ...(repoint ? [{ kind, targetAnnouncementId: target.id }] : [])] };
+      await f.persistence.appendResearchAnnouncements([target, old, middle, latest]);
+      const result = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, evidenceView });
+      expect(result.relationIndex.filter((relation) => relation.kind === kind)).toEqual(repoint ? [{ announcementId: latest.id, kind, targetAnnouncementId: target.id }] : []);
+      expect(result.selection.selectedObservationIds).not.toContain(old.id);
+      expect(result.selection.selectedObservationIds).not.toContain(middle.id);
+      if (evidenceView === "all_observations") {
+        expect(result.items.find((item) => item.id === old.id)?.relations).toEqual(old.relations);
+        expect(result.relationIndex).toContainEqual({ announcementId: middle.id, kind: "supersedes", targetAnnouncementId: old.id });
+      }
+      const windowed = await listMaterialAnnouncements(f.persistence, { subject: f.subject, context: f.context, evidenceView, range: { publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt } });
+      expect(windowed.relationIndex.filter((relation) => relation.kind === kind)).toEqual(repoint ? [{ announcementId: latest.id, kind, targetAnnouncementId: target.id }] : []);
+    }
+  }
+});
