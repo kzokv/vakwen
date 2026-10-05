@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Client, Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { PostgresPersistence } from "../../src/persistence/postgres.js";
@@ -136,7 +136,7 @@ describePostgres("disclosure memory/Postgres conformance", () => {
     const f = await disclosureFixture(postgres);
     await postgres.appendResearchDisclosureArtifacts([{ ...f.artifact, id: "unrelated_large", retainedBytesBase64: "YQ==".repeat(250_000) }]);
     const query = { issuerId: f.identity.issuer.id, effectiveAt: f.context.knowledgeAt, knowledgeAt: f.context.knowledgeAt, artifactId: f.artifact.id };
-    const sql = vi.spyOn(Pool.prototype, "query");
+    const sql = vi.spyOn(Client.prototype, "query");
     try {
       expect(await postgres.listResearchDisclosureArtifacts(query)).toEqual([f.artifact]);
       expect(await postgres.listResearchDisclosureArtifacts({ ...query, artifactId: "unknown" })).toEqual([]);
@@ -161,7 +161,7 @@ describePostgres("disclosure memory/Postgres conformance", () => {
         { ...f.scan, id: "wrong_venue", venue: "TPEX", checkedAt: f.context.knowledgeAt },
         { ...f.scan, id: "future_knowledge", checkedAt: f.context.knowledgeAt, knowledgeAt: "2026-09-02T00:00:00.000Z" },
       ]);
-      const sql = vi.spyOn(Pool.prototype, "query");
+      const sql = vi.spyOn(Client.prototype, "query");
       try {
         const scans = await persistence.listLatestResearchDisclosureScans(query);
         const artifactAttempt = await persistence.getLatestResearchDisclosureArtifactAttempt({ ...query, artifactId: attempt.artifactId });
@@ -171,7 +171,8 @@ describePostgres("disclosure memory/Postgres conformance", () => {
         expect(await persistence.listLatestResearchDisclosureScans({ ...query, effectiveAt: "2026-09-01T01:00:00.000Z" })).toEqual([]);
         if (persistence === postgres) {
           const statements = sql.mock.calls.map(([statement]) => String(statement));
-          expect(statements.every((statement) => statement.includes("LIMIT 1"))).toBe(true);
+          expect(statements).toHaveLength(4);
+          expect(statements.every((statement) => statement.includes("research.disclosure_scans") && statement.includes("LIMIT 1"))).toBe(true);
           expect(statements.some((statement) => statement.startsWith("SELECT attempt.value AS attempt"))).toBe(true);
         }
         results.push({ scans, artifactAttempt });
@@ -188,7 +189,7 @@ describePostgres("disclosure memory/Postgres conformance", () => {
       const correction = { ...f.announcement, id: "outside_correction", publishedAt: "2026-09-01T01:30:00.000Z", relations: [{ kind: "corrects" as const, targetAnnouncementId: f.announcement.id }] };
       const unicode = { ...f.announcement, id: "unicode_candidate", collectionRecordId: "collection", subject: "公司\u3000資本\ufeff支出", detailQuality: { status: "available" as const, reasonCodes: [] } };
       await persistence.appendResearchAnnouncements([correction, unicode, { ...f.announcement, id: "large_unrelated_history", publishedAt: "2026-08-01T00:00:00.000Z", explanation: "x".repeat(1_000_000) }]);
-      const sql = vi.spyOn(Pool.prototype, "query");
+      const sql = vi.spyOn(Client.prototype, "query");
       try {
         const metadata = await persistence.listResearchAnnouncementSelectionMetadata({ ...scope, publishedFrom: f.announcement.publishedAt, publishedTo: f.announcement.publishedAt });
         expect(metadata.map((record) => record.id).sort()).toEqual([f.announcement.id, correction.id, unicode.id].sort());
