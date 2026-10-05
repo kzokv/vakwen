@@ -1599,10 +1599,11 @@ export class PostgresPersistence implements Persistence {
   private disclosureScopeParameters(query: ResearchDisclosureScanLookup): unknown[] { validateDisclosureReadScope(query); return [query.issuerId, query.effectiveAt, query.knowledgeAt, query.listingId, query.venue]; }
   async hasResearchDisclosureArtifactReference(query: ResearchDisclosureReferenceQuery): Promise<boolean> {
     validateResearchDisclosureReferenceQuery(query);
-    const material = query.reference?.kind === "investor_material";
-    const result = await this.pool.query<{ found: boolean }>(`SELECT EXISTS (SELECT 1 FROM research.${material ? "disclosure_material_references" : "announcements"}
+    const stores = query.reference ? [query.reference.kind] : ["announcement_attachment", "investor_material"];
+    const predicates = stores.map((kind) => `EXISTS (SELECT 1 FROM research.${kind === "investor_material" ? "disclosure_material_references" : "announcements"}
       WHERE ${this.disclosureAnnouncementScope()} ${query.reference ? "AND id=$7" : ""}
-      AND ${material ? "record->'artifactIds' @> jsonb_build_array($6::text)" : "record->'attachments' @> jsonb_build_array(jsonb_build_object('artifactId', $6::text))"}) AS found`,
+      AND ${kind === "investor_material" ? "record->'artifactIds' @> jsonb_build_array($6::text)" : "record->'attachments' @> jsonb_build_array(jsonb_build_object('artifactId', $6::text))"})`);
+    const result = await this.pool.query<{ found: boolean }>(`SELECT (${predicates.join(" OR ")}) AS found`,
       [...this.disclosureScopeParameters(query), query.artifactId, ...(query.reference ? [query.reference.id] : [])]);
     return result.rows[0]?.found === true;
   }

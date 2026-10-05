@@ -383,3 +383,13 @@ it.each(["corrects", "retracts"] as const)("outside-window ambiguous %s: target 
   await f.persistence.appendResearchAnnouncements([{ ...notice, id: "independent_notice", collectionRecordId: "independent_collection" }]);
   expect((await listMaterialAnnouncements(f.persistence, input)).unresolvedRelationIndex).toEqual([{ sourceAnnouncementId: "independent_notice", kind, candidateAnnouncementIds: ["ann1", "ann2"] }]);
 });
+
+it("missing material artifact: retained scoped membership → typed unavailable, explicit wrong parent still rejected", async () => {
+  const f = await disclosureFixture();
+  await f.persistence.appendResearchDisclosureMaterialReferences([{ id: "material_missing", issuerId: f.identity.issuer.id, listingId: f.identity.listing.id, venue: f.identity.listing.venue, publishedAt: f.artifact.publishedAt, artifactIds: ["missing_material_artifact"], provenance: f.artifact.provenance }]);
+  const input = { subject: f.subject, context: f.context, artifactId: "missing_material_artifact" };
+  const result = await getDisclosureArtifact(f.persistence, input);
+  expect(result.artifact).toBeNull(); expect(result.quality.status).toBe("not_acquired");
+  await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, id: input.artifactId, reference: { kind: "announcement_attachment", id: f.announcement.id } }]);
+  await expect(getDisclosureArtifact(f.persistence, input)).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
+});

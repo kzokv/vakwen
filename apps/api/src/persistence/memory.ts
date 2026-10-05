@@ -1160,11 +1160,12 @@ export class MemoryPersistence implements Persistence {
   async hasResearchDisclosureArtifactReference(query: ResearchDisclosureReferenceQuery): Promise<boolean> {
     validateResearchDisclosureReferenceQuery(query);
     validateDisclosureReadScope(query);
-    if (query.reference?.kind === "investor_material") {
-      const reference = this.retainedDisclosureMaterialReferences.get(query.reference.id);
-      return !!reference && reference.issuerId === query.issuerId && reference.listingId === query.listingId && reference.venue === query.venue
+    if (!query.reference || query.reference.kind === "investor_material") {
+      const references = query.reference ? [this.retainedDisclosureMaterialReferences.get(query.reference.id)].filter((reference): reference is ResearchDisclosureMaterialReference => !!reference) : [...this.retainedDisclosureMaterialReferences.values()];
+      const found = references.some((reference) => reference.issuerId === query.issuerId && reference.listingId === query.listingId && reference.venue === query.venue
         && reference.artifactIds.includes(query.artifactId) && Date.parse(reference.publishedAt) <= Date.parse(query.effectiveAt)
-        && Date.parse(reference.provenance.retrievedAt) <= Date.parse(query.knowledgeAt) && Date.parse(reference.provenance.processedAt) <= Date.parse(query.knowledgeAt);
+        && Date.parse(reference.provenance.retrievedAt) <= Date.parse(query.knowledgeAt) && Date.parse(reference.provenance.processedAt) <= Date.parse(query.knowledgeAt));
+      if (found || query.reference) return found;
     }
     return this.matchingDisclosureAnnouncements(query).some((record) => (!query.reference || record.id === query.reference.id) && record.attachments.some((attachment) => attachment.artifactId === query.artifactId));
   }

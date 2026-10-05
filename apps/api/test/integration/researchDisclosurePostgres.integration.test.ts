@@ -37,6 +37,28 @@ describePostgres("disclosure memory/Postgres conformance", () => {
     await postgres.init();
   });
   afterEach(async () => { await postgres.close(); await pool.end(); });
+  it("missing material artifact: exact scoped existence → backend parity without broad payload reads", async () => {
+    const outputs = [];
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const f = await disclosureFixture(persistence);
+      const scope = { issuerId: f.identity.issuer.id, listingId: f.identity.listing.id, venue: f.identity.listing.venue, effectiveAt: f.context.knowledgeAt, knowledgeAt: f.context.knowledgeAt };
+      await persistence.appendResearchDisclosureMaterialReferences([{ id: "material_missing", issuerId: scope.issuerId, listingId: scope.listingId, venue: scope.venue, publishedAt: f.artifact.publishedAt, artifactIds: ["missing_material_artifact"], provenance: f.artifact.provenance }]);
+      const query = { ...scope, artifactId: "missing_material_artifact" };
+      expect(await persistence.hasResearchDisclosureArtifactReference(query)).toBe(true);
+      expect(await persistence.hasResearchDisclosureArtifactReference({ ...query, listingId: "other_listing" })).toBe(false);
+      expect(await persistence.hasResearchDisclosureArtifactReference({ ...query, venue: "TPEX" })).toBe(false);
+      expect(await persistence.hasResearchDisclosureArtifactReference({ ...query, effectiveAt: "2026-09-01T01:00:00.000Z", knowledgeAt: "2026-09-01T01:00:00.000Z" })).toBe(false);
+      expect(await persistence.hasResearchDisclosureArtifactReference({ ...query, effectiveAt: "2026-09-01T00:00:00.000Z" })).toBe(false);
+      expect(await persistence.hasResearchDisclosureArtifactReference({ ...query, reference: { kind: "announcement_attachment", id: f.announcement.id } })).toBe(false);
+      expect(await persistence.hasResearchDisclosureArtifactReference({ ...query, reference: { kind: "investor_material", id: "wrong_parent" } })).toBe(false);
+      const materialSpy = vi.spyOn(persistence, "listResearchDisclosureMaterialReferences").mockRejectedValue(new Error("broad reads forbidden"));
+      const announcementsSpy = vi.spyOn(persistence, "listResearchAnnouncements").mockRejectedValue(new Error("broad reads forbidden"));
+      const result = await getDisclosureArtifact(persistence, { subject: f.subject, context: f.context, artifactId: query.artifactId });
+      expect(result.artifact).toBeNull(); expect(result.quality.status).toBe("not_acquired");
+      outputs.push(result); materialSpy.mockRestore(); announcementsSpy.mockRestore();
+    }
+    expect(outputs[0]).toEqual(outputs[1]);
+  });
   it.each(["TWSE", "TPEX"] as const)("%s: retained correction and artifact → backend parity and knowledge cutoff", async (venue) => {
     const memory = new MemoryPersistence();
     const fixtures = await Promise.all([disclosureFixture(memory, venue), disclosureFixture(postgres, venue)]);
@@ -164,7 +186,10 @@ describePostgres("disclosure memory/Postgres conformance", () => {
           const statements = sql.mock.calls.map(([statement]) => String(statement));
           expect(statements.some((statement) => statement.includes("record - 'explanation' - 'attachments'"))).toBe(true);
           expect(statements.some((statement) => statement.includes("AND id=ANY($6::text[])"))).toBe(true);
-          expect(statements.some((statement) => statement.startsWith("SELECT EXISTS"))).toBe(true);
+          const existenceQueries = statements.filter((statement) => /^SELECT \(?(?:EXISTS) \(/.test(statement));
+          expect(existenceQueries).toHaveLength(2);
+          expect(existenceQueries.every((statement) => statement.endsWith(" AS found") && !statement.includes("SELECT record"))).toBe(true);
+          expect(existenceQueries[1]).toContain(" OR EXISTS (SELECT 1 FROM research.disclosure_material_references");
         }
         results.push({ metadata: metadata.sort((a, b) => a.id.localeCompare(b.id)), candidates });
         const invalid = { ...scope, knowledgeAt: "2026-09-01T00:00:00.000Z" };

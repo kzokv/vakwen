@@ -104,7 +104,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
           if ((await persistence.listResearchDisclosureArtifacts({ ...artifactQuery, artifactId: attachment.artifactId! })).some((artifact) => artifact.state === "available")) continue;
           let attemptStatus: NonNullable<ResearchDisclosureScan["artifactAttempts"]>[number]["status"] = "unavailable";
           let fetched = false;
-          let reasonCode: "disclosure_source_too_large" | undefined;
+          let reasonCode: "disclosure_source_too_large" | "disclosure_extraction_physical_page_limit" | undefined;
           let artifact: ResearchDisclosureArtifact | undefined;
           try {
             const retained = await officialResponse(fetchImpl, attachment.sourceUrl, options.signal);
@@ -118,7 +118,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
             attemptStatus = "retained";
           } catch (error) {
             options.signal?.throwIfAborted();
-            reasonCode = error instanceof Error && error.message === "disclosure_source_too_large" ? "disclosure_source_too_large" : undefined;
+            reasonCode = error instanceof Error && (error.message === "disclosure_source_too_large" || error.message === "disclosure_extraction_physical_page_limit") ? error.message : undefined;
             attemptStatus = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : fetched || reasonCode ? "processing_failed" : "unavailable";
           }
           options.signal?.throwIfAborted();

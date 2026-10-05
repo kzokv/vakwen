@@ -56,3 +56,12 @@ it("PDF blank versus vector page: successful parsing → only proven blank gets 
   expect(vector.totalPages).toBe(2); expect(vector.confirmedEmptyPages).toEqual([]);
   expect(vector.blocks.map((block) => block.page)).toEqual([1]);
 });
+
+it("physical PDF page: more than retrieval character budget → reject without relabeling pages", async () => {
+  const pdf = (count: number) => twoPagePdf([`BT /F1 0.001 Tf 40 700 Td (${"a".repeat(count)}) Tj ET`, "q Q"]);
+  await expect(extractDisclosureContent(pdf(50_001), "application/pdf", "issuer", "large")).rejects.toThrow("disclosure_extraction_physical_page_limit");
+  const supported = await extractDisclosureContent(pdf(50_000), "application/pdf", "issuer", "boundary");
+  expect(supported.blocks[0]?.text).toHaveLength(50_000);
+  expect(supported.blocks[0]?.page).toBe(1);
+  expect(supported.totalPages).toBe(2);
+});

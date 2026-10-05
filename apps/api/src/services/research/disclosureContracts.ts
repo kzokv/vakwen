@@ -62,7 +62,7 @@ export const researchDisclosureScanSchema = z.object({
   publicationStart: time, publicationEnd: time, knowledgeAt: time,
   status: z.enum(["success", "failed", "restricted", "processing_failed"]), exhaustive: z.boolean(),
   detailAttempts: z.array(z.object({ announcementId: id, attemptedAt: time, status: z.enum(["available", "restricted", "unavailable", "processing_failed"]), reasonCodes: z.array(z.string()) }).strict()).optional(),
-  artifactAttempts: z.array(z.object({ artifactId: id, sourceUrl: safeUrl, attemptedAt: time, status: z.enum(["retained", "restricted", "unavailable", "processing_failed"]), reasonCode: z.literal("disclosure_source_too_large").optional() }).strict()).optional(),
+  artifactAttempts: z.array(z.object({ artifactId: id, sourceUrl: safeUrl, attemptedAt: time, status: z.enum(["retained", "restricted", "unavailable", "processing_failed"]), reasonCode: z.enum(["disclosure_source_too_large", "disclosure_extraction_physical_page_limit"]).optional() }).strict()).optional(),
   provenance: disclosureProvenanceSchema.extend({ contentHash: z.string().regex(/^[a-f0-9]{64}$/).nullable() }).strict(),
 }).strict();
 export type ResearchAnnouncementRecord = z.infer<typeof researchAnnouncementRecordSchema>;

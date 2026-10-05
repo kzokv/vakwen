@@ -137,9 +137,13 @@ describe("focused disclosure report", () => {
   beforeEach(() => setResearchRolloutOverrideForTest({ skillExposureEnabled: true, mcpExposureEnabled: true }));
   afterEach(() => setResearchRolloutOverrideForTest(null));
   it.each(["TWSE", "TPEX"] as const)("%s issuer: retained official evidence → independent classifications and faithful rendering", async (venue) => {
-    const f = await seeded(venue);
+    const f = await fixture(venue);
+    f.announcement.explanation = f.announcement.explanation.replace("，", "。");
+    await f.persistence.appendResearchAnnouncements([f.announcement]);
+    await f.persistence.appendResearchDisclosureArtifacts([f.artifact]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
     const candidates = (["observed", "scheduled", "conditional", "speculative"] as const).map((status) => {
-      const excerpt = status === "observed" ? "董事會於2026-10-03決議擴建產能" : candidate.statement;
+      const excerpt = status === "observed" ? "董事會於2026-10-03決議擴建產能" : f.announcement.explanation;
       return { ...candidate, id: status, status, statement: excerpt, statusEvidence: { ...candidate.statusEvidence, excerpt,
         ...(["observed", "scheduled"].includes(status) ? { eventDate: status === "observed" ? "2026-10-03" : "2027-01-01", eventDateText: status === "observed" ? "2026-10-03" : "2027-01-01" } : {}) } };
     });
@@ -507,6 +511,46 @@ describe("focused disclosure report", () => {
       if (dateText !== literal) expect(report.assessments[0]!.reasonCodes).toContain("classification_date_not_verified");
     }
   });
+  it.each([
+    ["observed", "The transaction was not completed on 2026/10/03.", "completed on 2026/10/03", "2026-10-03", "2026/10/03"],
+    ["observed", "交易尚未完成於2026年10月3日。", "完成於2026年10月3日", "2026-10-03", "2026年10月3日"],
+    ["observed", "The transaction was not, as previously claimed, completed on 2026/10/03.", "completed on 2026/10/03", "2026-10-03", "2026/10/03"],
+    ["observed", "The transaction was not\ncompleted on 2026/10/03.", "completed on 2026/10/03", "2026-10-03", "2026/10/03"],
+    ["observed", "交易尚未\n完成於2026年10月3日。", "完成於2026年10月3日", "2026-10-03", "2026年10月3日"],
+    ["observed", "If approved, the transaction completed on 2026/10/03.", "completed on 2026/10/03", "2026-10-03", "2026/10/03"],
+    ["scheduled", "The transaction is not scheduled for 2027/01/01.", "scheduled for 2027/01/01", "2027-01-01", "2027/01/01"],
+    ["scheduled", "交易尚未預定於2027年1月1日。", "預定於2027年1月1日", "2027-01-01", "2027年1月1日"],
+    ["scheduled", "The transaction was scheduled for 2027/01/01, but cancelled.", "scheduled for 2027/01/01", "2027-01-01", "2027/01/01"],
+    ["observed", "The transaction was not completed on 2026/10/03. Another transaction completed on 2026/10/03.", "completed on 2026/10/03", "2026-10-03", "2026/10/03"],
+    ["scheduled", "交易預定於2027年1月1日。另一交易尚未預定於2027年1月1日。", "預定於2027年1月1日", "2027-01-01", "2027年1月1日"],
+  ] as const)("%s quote %s: omitted surrounding negation or uncertainty → withhold both announcement and artifact judgment", async (status, source, excerpt, eventDate, eventDateText) => {
+    const f = await fixture();
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: source, eventDate }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, verifiedClaims: [{ ...f.artifact.verifiedClaims[0]!, text: source }] }]);
+    const announcementReference = { kind: "announcement" as const, announcementId: f.announcement.id };
+    const artifactReference = { kind: "artifact_claim" as const, artifactId: f.artifact.id, claimId: "claim_1" };
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [announcementReference, artifactReference].map((reference, index) => ({ ...candidate,
+      id: `trimmed_${index}`, status, statement: excerpt, triggeringEvidence: [reference], statusEvidence: { reference, excerpt, eventDate, eventDateText } })), readBudget: 10 });
+    for (const assessment of report.assessments) {
+      expect(assessment.sourceSupport).toBe("withheld");
+      expect(assessment.reasonCodes).toContain("classification_status_not_verified");
+      expect(assessment.reasonCodes).not.toContain("publisher_excerpt_not_verified");
+    }
+    for (const locale of ["en", "zh-TW"] as const) expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, locale))).toContain(source.replaceAll("\n", " "));
+  });
+  it.each(["observed", "scheduled"] as const)("%s quote: independent affirmative source sentence → preserve supported exact excerpt", async (status) => {
+    const f = await fixture();
+    const eventDate = status === "observed" ? "2026-10-03" : "2027-01-01";
+    const eventDateText = eventDate.replaceAll("-", "/");
+    const excerpt = status === "observed" ? `completed on ${eventDateText}` : `scheduled for ${eventDateText}`;
+    const source = `A different transaction was not approved. The transaction was ${excerpt}.`;
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: source, eventDate }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, status, statement: excerpt,
+      statusEvidence: { ...candidate.statusEvidence, excerpt, eventDate, eventDateText } }], readBudget: 10 });
+    expect(report.assessments[0]!.sourceSupport).toBe("supported");
+  });
   it("planned future event mislabeled observed: authentic excerpt → status withheld", async () => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, status: "observed", statusEvidence: { ...candidate.statusEvidence, eventDate: "2027-01-01", eventDateText: "2027-01-01" } }], readBudget: 10 });
@@ -645,18 +689,20 @@ describe("focused disclosure report", () => {
     await expect(buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "standard", extension: { months: 25, reason: "litigation", thesisItem: "Unresolved litigation" }, readBudget: 10 })).rejects.toThrow();
     await expect(buildFocusedDisclosureResearchReport(f.persistence, f.query, { mode: "focused", extension: { months: 24, reason: "litigation", thesisItem: "Unresolved litigation" }, readBudget: 10 })).rejects.toThrow(/standard/);
   });
-  it("oversized official attachment: operator recovery → faithful zh-TW guidance without changing canonical evidence", async () => {
+  it.each([
+    ["disclosure_source_too_large", "Operator action required: review the official attachment size against acquisition limits and retain a supported bounded source; dependent claims remain withheld.", "需由維運人員處理：依擷取上限檢查官方附件大小，並留存系統支援且大小受限的來源；依賴該附件的判斷仍暫不提出。"],
+    ["disclosure_extraction_physical_page_limit", "Operator action required: a physical PDF page exceeds retrieval limits; retain a supported source preserving physical page locations. Dependent claims remain withheld.", "需由維運人員處理：PDF 實體頁面超出讀取上限；請留存系統支援且保留實體頁面位置的來源。依賴該內容的判斷仍暫不提出。"],
+  ] as const)("%s: operator recovery → faithful zh-TW guidance without changing canonical evidence", async (reasonCode, recovery, translation) => {
     const f = await fixture();
     await f.persistence.appendResearchAnnouncements([f.announcement]);
     await f.persistence.appendResearchDisclosureScans([{ ...f.scan, artifactAttempts: [{ artifactId: f.artifact.id,
-      sourceUrl: f.artifact.sourceUrl, attemptedAt: f.scan.checkedAt, status: "processing_failed", reasonCode: "disclosure_source_too_large" }] }]);
+      sourceUrl: f.artifact.sourceUrl, attemptedAt: f.scan.checkedAt, status: "processing_failed", reasonCode }] }]);
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [artifactCandidate], readBudget: 10 });
-    const recovery = "Operator action required: review the official attachment size against acquisition limits and retain a supported bounded source; dependent claims remain withheld.";
     expect(report.recoveryRequirements).toContain(recovery);
     const before = JSON.stringify(report);
     expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, "en"))).toContain(recovery);
     const zh = literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, "zh-TW"));
-    expect(zh).toContain("需由維運人員處理：依擷取上限檢查官方附件大小，並留存系統支援且大小受限的來源；依賴該附件的判斷仍暫不提出。");
+    expect(zh).toContain(translation);
     expect(zh).not.toContain(recovery);
     expect(JSON.stringify(report)).toBe(before);
   });

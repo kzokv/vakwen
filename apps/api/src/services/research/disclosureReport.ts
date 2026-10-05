@@ -151,6 +151,24 @@ function validateDisclosurePageChain(pages: Array<{
   return offset < first.continuity.totalCount;
 }
 
+/** Expand every exact quote occurrence to source-derived sentence boundaries. */
+function publisherAssertionContexts(source: string | undefined, excerpt: string): string[] {
+  if (!source || !excerpt) return [];
+  // Line wrapping is not an assertion boundary; normalization preserves UTF-16 offsets.
+  const sentences = [...new Intl.Segmenter("en", { granularity: "sentence" }).segment(source.replace(/[\r\n\u2028\u2029]/g, " "))];
+  const contexts = new Set<string>();
+  let from = 0;
+  while (from < source.length) {
+    const start = source.indexOf(excerpt, from);
+    if (start < 0) break;
+    const end = start + excerpt.length;
+    const containing = sentences.filter((sentence) => sentence.index < end && sentence.index + sentence.segment.length > start);
+    if (containing.length) contexts.add(source.slice(containing[0]!.index, containing.at(-1)!.index + containing.at(-1)!.segment.length));
+    from = start + 1;
+  }
+  return [...contexts];
+}
+
 // Status excerpts are conservative evidence anchors: negated, conditional, or revoked
 // assertions cannot establish an affirmative occurrence or schedule by keyword alone.
 function hasUncertainStatusAssertion(excerpt: string): boolean {
@@ -306,7 +324,8 @@ export function composeFocusedDisclosureResearchReport(input: {
   const assessments = candidates.map((candidate) => {
     const refs = [...candidate.triggeringEvidence, ...candidate.confirmingEvidence, ...candidate.disconfirmingEvidence, candidate.statusEvidence.reference];
     const anchor = candidate.statusEvidence;
-    const excerptMatches = sourceText(anchor.reference)?.includes(anchor.excerpt) === true;
+    const assertionContexts = publisherAssertionContexts(sourceText(anchor.reference), anchor.excerpt);
+    const excerptMatches = assertionContexts.length > 0;
     const date = anchor.eventDate ? Date.parse(`${anchor.eventDate}T00:00:00+08:00`) : Number.NaN;
     const literalDate = anchor.eventDateText?.trim();
     const normalizedDate = normalizePublisherCalendarDate(literalDate);
@@ -317,11 +336,13 @@ export function composeFocusedDisclosureResearchReport(input: {
     const anchorAnnouncementId = anchor.reference.kind === "announcement" ? anchor.reference.announcementId : null;
     const occurrenceVerified = candidate.status !== "observed" || (
       /(?:完成|決議|發生|批准|通過|\b(?:approved|completed|occurred)\b)/i.test(anchor.excerpt)
-      && !hasUncertainStatusAssertion(anchor.excerpt)
-      && !/(?:預計|預定|預估|預期|計畫|擬|將於|scheduled|planned|expected)/i.test(anchor.excerpt)
+      && assertionContexts.length > 0
+      && assertionContexts.every((assertion) => !hasUncertainStatusAssertion(assertion)
+        && !/(?:預計|預定|預估|預期|計畫|擬|將於|scheduled|planned|expected)/i.test(assertion))
       && (anchorAnnouncementId === null || announcements.find((item) => item.id === anchorAnnouncementId)?.eventDate === anchor.eventDate)
     );
-    const scheduleVerified = candidate.status !== "scheduled" || (!hasUncertainStatusAssertion(anchor.excerpt)
+    const scheduleVerified = candidate.status !== "scheduled" || (assertionContexts.length > 0
+      && assertionContexts.every((assertion) => !hasUncertainStatusAssertion(assertion))
       && /(?:預計|預定|訂於|將於|\b(?:scheduled|planned|expected)\b)/i.test(anchor.excerpt));
     const failures = refs.map((reference) => ({ reference, reason: failedReason(reference) })).filter((failure) => failure.reason !== null);
     const reasons = [...new Set([
@@ -497,6 +518,7 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     "Await a successful current official announcement collection check.": "等待成功且符合時效要求的官方公告掃描。",
     "Obtain the exact failed evidence dependencies before reevaluating withheld judgments.": "補齊缺漏的必要證據後，再重新評估暫不提出的判斷。",
     "Wait for a successful scheduled official announcement scan.": "等待排程的官方公告掃描成功完成。",
+    "Operator action required: a physical PDF page exceeds retrieval limits; retain a supported source preserving physical page locations. Dependent claims remain withheld.": "需由維運人員處理：PDF 實體頁面超出讀取上限；請留存系統支援且保留實體頁面位置的來源。依賴該內容的判斷仍暫不提出。",
     "Operator action required: review the official attachment size against acquisition limits and retain a supported bounded source; dependent claims remain withheld.": "需由維運人員處理：依擷取上限檢查官方附件大小，並留存系統支援且大小受限的來源；依賴該附件的判斷仍暫不提出。",
     "Retained artifact content is unavailable; dependent claims must remain withheld.": "留存文件內容不可用；依賴此內容的判斷須暫不提出。",
   };

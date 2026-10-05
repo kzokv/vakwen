@@ -239,7 +239,7 @@ it.each([
   }
 });
 
-it.each(["declared", "streamed"] as const)("oversized %s attachment: body limit → processing failure and operator recovery", async (mode) => {
+it.each(["declared", "streamed", "physical_page"] as const)("oversized %s attachment: body limit → processing failure and operator recovery", async (mode) => {
   setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
   const persistence = new MemoryPersistence(); const { rows, identity } = fixture("TWSE");
   await persistence.appendResearchIdentityRecords([identity]);
@@ -250,7 +250,7 @@ it.each(["declared", "streamed"] as const)("oversized %s attachment: body limit 
   const cancel = vi.fn();
   const fetchImpl = vi.fn(async (url: string | URL | Request) => {
     const source = String(url);
-    if (source.endsWith("oversized.pdf")) return mode === "declared" ? new Response("", { headers: { "content-length": String(8 * 1024 * 1024 + 1) } }) : new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1)); }, cancel }));
+    if (source.endsWith("oversized.pdf")) return mode === "physical_page" ? new Response(Buffer.from(twoPagePdf([`BT /F1 0.001 Tf 40 700 Td (${"a".repeat(50_001)}) Tj ET`, "q Q"])), { headers: { "content-type": "application/pdf" } }) : mode === "declared" ? new Response("", { headers: { "content-length": String(8 * 1024 * 1024 + 1) } }) : new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1)); }, cancel }));
     return new Response(JSON.stringify(source.endsWith("t05st01_detail") ? detail : source.endsWith("t05st01") ? history : rows));
   }) as unknown as typeof fetch;
   const reads = vi.spyOn(persistence, "listResearchDisclosureArtifacts");
@@ -258,12 +258,13 @@ it.each(["declared", "streamed"] as const)("oversized %s attachment: body limit 
   expect(reads.mock.calls.every(([query]) => typeof query.artifactId === "string")).toBe(true);
   const query = { issuerId: identity.issuer.id, knowledgeAt: at, effectiveAt: at };
   const attempts = (await persistence.listResearchDisclosureScans(query))[0]!.artifactAttempts!;
-  expect(attempts[0]).toMatchObject({ status: "processing_failed", reasonCode: "disclosure_source_too_large" });
+  const reasonCode = mode === "physical_page" ? "disclosure_extraction_physical_page_limit" : "disclosure_source_too_large";
+  expect(attempts[0]).toMatchObject({ status: "processing_failed", reasonCode });
   expect(await persistence.listResearchDisclosureArtifacts(query)).toHaveLength(1);
   const result = await getDisclosureArtifact(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: at }, artifactId: attempts[0]!.artifactId });
   expect(result.artifact).toBeNull();
   expect(result.quality.status).toBe("processing_failed");
-  expect(result.quality.reasonCodes).toContain("disclosure_source_too_large");
+  expect(result.quality.reasonCodes).toContain(reasonCode);
   expect(result.quality.recovery[0]).toContain("Operator action required");
   if (mode === "streamed") expect(cancel).toHaveBeenCalledOnce();
   const explanation = (await persistence.listResearchDisclosureArtifacts(query))[0]!;

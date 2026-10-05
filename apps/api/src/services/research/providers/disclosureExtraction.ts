@@ -126,6 +126,7 @@ export async function extractDisclosureContent(
       const pdfPage = await document.getPage(page);
       const content = await pdfPage.getTextContent();
       const text = content.items.flatMap((item) => "str" in item ? [item.str + (item.hasEOL ? "\n" : " ")] : []).join("").trim();
+      if (Array.from(text).length > 50_000 || Buffer.byteLength(JSON.stringify(text)) > 180 * 1024) throw new Error("disclosure_extraction_physical_page_limit");
       append(text, page);
       if (!text) {
         const operators = await pdfPage.getOperatorList();
