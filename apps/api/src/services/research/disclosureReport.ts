@@ -546,7 +546,7 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     "Quality": "品質", "text truncated": "內文截斷", "rule": "適用條款", "event": "事件日期", "not reported": "未揭露", "hash": "內容雜湊", "extraction": "擷取版本", "source": "來源",
     "page": "頁", "table": "表", "subject": "主體", "period": "期間", "unit": "單位", "not applicable": "不適用", "unknown": "未知", "Reasons": "原因",
     "Analytical judgment (provisional); source assertion": "分析判斷（暫定）；原始陳述", "Mechanism": "作用機制", "affected": "影響指標或假設", "horizon": "時間範圍",
-    "Confirm": "確認條件", "disconfirm": "否定條件", "Condition": "前提條件", "Evidence": "證據",
+    "Confirm": "確認條件", "disconfirm": "否定條件", "Condition": "前提條件", "Evidence": "證據", "Status anchor": "狀態依據", "Failed dependency": "未滿足的證據依賴",
     "This catalyst/risk judgment is withheld because its required evidence is unavailable or insufficient.": "所需證據不可用或不足，因此暫不提出此催化因素／風險判斷。",
     "Operating-company disclosure conclusions do not apply to this security.": "營運公司重大訊息結論不適用於此證券。",
     "The current official announcement scan satisfies the disclosure prerequisite only.": "本次官方公告掃描符合時效要求，僅通過重大訊息這一項必要條件。",
@@ -593,6 +593,20 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
       lineageAudit.set(sourceId, `- ${markdown(sourceId)} [${markdown(provenance.id)}]; ${t("source")}: ${markdown(provenance.sourceUrl)}; ${t("hash")}: ${markdown(provenance.contentHash ?? t("unknown"))}; ${t("extraction")}: ${markdown(provenance.parserVersion)}`);
     }
   }
+  function assessmentEvidence(assessment: FocusedDisclosureResearchReport["assessments"][number]): string[] {
+    const key = (reference: DisclosureEvidenceReference) => JSON.stringify(reference.kind === "announcement"
+      ? [reference.kind, reference.announcementId] : [reference.kind, reference.artifactId, reference.claimId]);
+    const anchorKey = key(assessment.candidate.statusEvidence.reference);
+    const failed = new Set(assessment.failedDependencies.map(key));
+    const references = new Map([...assessment.candidate.triggeringEvidence, ...assessment.candidate.confirmingEvidence,
+      ...assessment.candidate.disconfirmingEvidence, assessment.candidate.statusEvidence.reference, ...assessment.failedDependencies]
+      .map((reference) => [key(reference), reference]));
+    return [...references].map(([id, reference]) => {
+      const roles = [...(id === anchorKey ? [t("Status anchor")] : []), ...(failed.has(id) ? [t("Failed dependency")] : [])];
+      const label = reference.kind === "announcement" ? reference.announcementId : `${reference.artifactId}/${reference.claimId}`;
+      return `  ${t("Evidence")}: ${markdown(label)}${roles.length ? ` (${roles.join("; ")})` : ""}`;
+    });
+  }
   return [
     `# ${t("Taiwan Disclosure Research")}: ${report.identity.listing.venue}:${markdown(report.identity.listing.ticker)}`,
     "", `- ${t("Listing ID")}: ${markdown(report.selector.listingId)}`, `- ${t("Knowledge at")}: ${markdown(report.context.knowledgeAt)}`, `- ${t("Effective at")}: ${markdown(report.context.effectiveAt)}`,
@@ -628,8 +642,8 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
         `  ${t("Analytical judgment (provisional); source assertion")}: ${t(assessment.sourceSupport)}. ${t("Mechanism")}: ${markdown(assessment.candidate.materialMechanism)}; ${t("affected")}: ${markdown(assessment.candidate.affectedMetricOrAssumption)}; ${t("horizon")}: ${markdown(assessment.candidate.horizon)}`,
         `  ${t("Confirm")}: ${markdown(assessment.candidate.confirmationCondition)}; ${t("disconfirm")}: ${markdown(assessment.candidate.disconfirmationCondition)}`,
         ...(assessment.candidate.condition ? [`  ${t("Condition")}: ${markdown(assessment.candidate.condition)}`] : []),
-        ...[...assessment.candidate.triggeringEvidence, ...assessment.candidate.confirmingEvidence, ...assessment.candidate.disconfirmingEvidence].map((reference) => `  ${t("Evidence")}: ${markdown(reference.kind === "announcement" ? reference.announcementId : `${reference.artifactId}/${reference.claimId}`)}`),
       ]),
+      ...assessmentEvidence(assessment),
     ]),
     "", `## ${t("Limitations and recovery")}`, "", ...report.limitations.map((item) => `- ${markdown(t(item))}`),
     ...report.recoveryRequirements.map((item) => `- ${markdown(t(item))}`),

@@ -227,6 +227,49 @@ describe("focused disclosure report", () => {
       for (const locale of ["en", "zh-TW"] as const) expect(() => renderFocusedDisclosureResearchReportMarkdown(mutated, locale)).toThrow();
     }
   });
+  it("distinct status anchor: supported judgment → render every unique evidence reference and anchor role", async () => {
+    const f = await seeded();
+    const announcementReference = candidate.statusEvidence.reference;
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { readBudget: 10, candidates: [{ ...artifactCandidate,
+      triggeringEvidence: [announcementReference, announcementReference], confirmingEvidence: [announcementReference], disconfirmingEvidence: [announcementReference] }] });
+    expect(report.assessments[0]!.support).toBe("provisional");
+    const before = JSON.stringify(report);
+    for (const locale of ["en", "zh-TW"] as const) {
+      const evidence = locale === "en" ? "Evidence" : "證據";
+      const anchor = locale === "en" ? "Status anchor" : "狀態依據";
+      const lines = literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, locale)).split("\n").filter((line) => line.startsWith(`  ${evidence}:`));
+      expect(lines).toEqual([`  ${evidence}: announcement_1`, `  ${evidence}: artifact_1/claim_1 (${anchor})`]);
+    }
+    expect(JSON.stringify(report)).toBe(before);
+  });
+  it.each(["artifact", "announcement"] as const)("failed %s dependency: withheld judgment → render exact failed IDs with escaped anchor and evidence", async (kind) => {
+    const f = await fixture();
+    await f.persistence.appendResearchAnnouncements([f.announcement]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, state: "restricted" }]);
+    const missingId = '[missing](https://example.com)![image](https://example.com/image)`\\';
+    const failedReference = kind === "artifact" ? artifactCandidate.statusEvidence.reference : { kind: "announcement" as const, announcementId: missingId };
+    const input = { ...candidate, triggeringEvidence: [failedReference, failedReference], confirmingEvidence: [failedReference], disconfirmingEvidence: [failedReference],
+      ...(kind === "announcement" ? { statusEvidence: { ...candidate.statusEvidence, reference: failedReference } } : {}) };
+    const report = composeFocusedDisclosureResearchReport({ identity: await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } }),
+      announcementPages: [await listMaterialAnnouncements(f.persistence, { ...f.query })],
+      artifactPages: [await getDisclosureArtifact(f.persistence, { ...f.query, artifactId: f.artifact.id })], candidates: [input] });
+    expect(report.assessments[0]!.support).toBe("withheld");
+    expect(report.assessments[0]!.failedDependencies).toContainEqual(failedReference);
+    const before = JSON.stringify(report);
+    for (const locale of ["en", "zh-TW"] as const) {
+      const rendered = renderFocusedDisclosureResearchReportMarkdown(report, locale);
+      const evidence = locale === "en" ? "Evidence" : "證據";
+      const failed = locale === "en" ? "Failed dependency" : "未滿足的證據依賴";
+      const anchor = locale === "en" ? "Status anchor" : "狀態依據";
+      const lines = literalMarkdownText(rendered).split("\n").filter((line) => line.startsWith(`  ${evidence}:`));
+      expect(lines).toEqual(kind === "artifact" ? [`  ${evidence}: artifact_1/claim_1 (${failed})`, `  ${evidence}: announcement_1 (${anchor})`]
+        : [`  ${evidence}: ${missingId} (${anchor}; ${failed})`]);
+      expect(rendered).not.toContain("[missing](");
+      expect(rendered).not.toContain("![image](");
+    }
+    expect(JSON.stringify(report)).toBe(before);
+  });
   it.each(["corrects", "retracts"] as const)("%s relation: original evidence invalidated → only dependent judgment withheld", async (kind) => {
     const f = await seeded();
     await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "revision", publishedAt: "2026-10-04T03:00:00.000Z", subject: "更正公告", relations: [{ kind, targetAnnouncementId: f.announcement.id }] }]);
