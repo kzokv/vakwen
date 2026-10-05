@@ -37,11 +37,20 @@ describe("disclosure specialist candidate contract", () => {
     expect(disclosureCandidateSchema.safeParse({ ...candidate, materialMechanism: "Bullish investor sentiment." }).success).toBe(false);
   });
   it.each(analyticalFields)("analytical %s: action or sentiment in either language → reject the specific field", (field) => {
-    for (const text of ["Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲"]) {
+    for (const text of ["Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲",
+      "Buy the stock now", "Sell these shares immediately.", "Hold this company's stock.", "Buy TSMC's shares.", "Buy TSMC shares now", "Buy 2330 stock",
+      "- Buy the stock now", '"Buy the stock now"', "1. Sell TSMC shares.", "- 請買進股票",
+      "I recommend buying shares", "I advise you to purchase shares.", "My advice is to buy stock.",
+      "Investors could accumulate shares.", "Confirmation: sell your position.", "You should reduce your holdings.",
+      "買進股票", "請賣出這檔股票", "立即持有股份", "建議投資人買入", "推薦加碼股票", "買進台積電股票", "請賣出2330股票"]) {
       const result = disclosureCandidateSchema.safeParse({ ...candidate, [field]: text });
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.issues.some((issue) => issue.path[0] === field)).toBe(true);
     }
+  });
+  it("publisher quote: exact source trading instruction → preserve literal evidence separately from analyst prose", () => {
+    for (const excerpt of ["Buy the stock now", "建議買入股票"]) expect(disclosureCandidateSchema.safeParse({ ...candidate,
+      statement: excerpt, statusEvidence: { ...candidate.statusEvidence, excerpt } }).success).toBe(true);
   });
   it("candidate identifier: prose or Markdown instruction → reject identifier misuse", () => {
     for (const id of ["Investors should buy the stock", "建議買進", "[advice](https://example.com)"]) {
@@ -163,7 +172,12 @@ describe("focused disclosure report", () => {
   });
   it.each(analyticalFields)("analytical %s: business sale/holding conditions in either language → preserve permitted report prose", async (field) => {
     const f = await seeded();
-    for (const text of ["The issuer may sell inventory or hold shipments until commissioning completes.", "公司出售庫存或暫停出貨，待產能驗收完成後確認營收。"]) {
+    for (const text of ["The issuer may sell inventory or hold shipments until commissioning completes.", "公司出售庫存或暫停出貨，待產能驗收完成後確認營收。",
+      "The issuer will buy back shares under the approved repurchase program.",
+      "The company may sell treasury shares to finance capacity.",
+      "The issuer plans to purchase shares in its subsidiary to consolidate control.",
+      "Holding shares reduces public float.", "The issuer is acquiring a business to expand capacity.",
+      "公司買回股份以執行庫藏股計畫。", "公司收購企業以擴充產能。"]) {
       const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, [field]: text }], readBudget: 10 });
       expect(report.assessments[0]!.sourceSupport).toBe("supported");
       for (const locale of ["en", "zh-TW"] as const) {
@@ -203,6 +217,15 @@ describe("focused disclosure report", () => {
       publishedFrom: new Date(Date.parse(expectedStart) + 1).toISOString() } }));
     const incomplete = composeFocusedDisclosureResearchReport({ identity, announcementPages: incompletePages, mode: "standard", extension });
     expect(incomplete.window.exhaustive).toBe(false);
+  });
+  it.each(analyticalFields)("rendered analytical %s: injected trading advice → reject revalidation", async (field) => {
+    const f = await seeded();
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [candidate], readBudget: 10 });
+    for (const advice of ["Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票"]) {
+      const mutated = structuredClone(report);
+      mutated.assessments[0]!.candidate[field] = advice;
+      for (const locale of ["en", "zh-TW"] as const) expect(() => renderFocusedDisclosureResearchReportMarkdown(mutated, locale)).toThrow();
+    }
   });
   it.each(["corrects", "retracts"] as const)("%s relation: original evidence invalidated → only dependent judgment withheld", async (kind) => {
     const f = await seeded();

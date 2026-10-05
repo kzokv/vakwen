@@ -13,6 +13,18 @@ const evidenceReferenceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("artifact_claim"), artifactId: z.string().min(1), claimId: z.string().min(1) }).strict(),
 ]);
 
+// Scope trading commands to imperative/advisory contexts, not ordinary issuer operations.
+function hasTradingAdvice(text: string): boolean {
+  const object = String.raw`(?:(?:the|this|these|those|your|more|some|all|its|company)\s+)?(?:[A-Za-z0-9][\w.-]*(?:['’]s)?\s+){0,2}(?:stock|stocks|shares?|securit(?:y|ies)|holdings?|position)\b`;
+  const imperative = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|add\s+to)\s+${object}`;
+  const inflected = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to)\s+${object}`;
+  return new RegExp(String.raw`(?:^|[.!?;:\n])\s*(?:(?:[-*+>]|\d+[.)])\s*)?["'“‘]*(?:please\s+)?${imperative}`, "i").test(text)
+    || new RegExp(String.raw`\b(?:recommend(?:ed|ing)?|advis(?:e|ed|ing)|suggest(?:ed|ing)?|advice\s+is|should|must|ought\s+to|need\s+to)\s+(?:(?:that\s+)?(?:you|investors?|traders?)\s+)?(?:to\s+)?${inflected}`, "i").test(text)
+    || new RegExp(String.raw`\b(?:you|investors?|traders?)\s+(?:(?:should|must|can|could)\s+)?${imperative}`, "i").test(text)
+    || /(?:^|[。！？；：\n])\s*(?:(?:[-*+>]|\d+[.)])\s*)?["'“‘「]*(?:請|立即|現在|應該)?(?:買進|買入|賣出|持有|加碼|減碼|放空)(?:這檔|該公司|這些|你的|手中)?[\p{Script=Han}A-Za-z0-9]{0,12}(?:股票|股份|持股|證券)/u.test(text)
+    || /(?:建議|推薦|應該|應當|務必)(?:投資人|投資者|你|您)?(?:買進|買入|賣出|持有|加碼|減碼|放空)/.test(text);
+}
+
 /** Analytical judgments belong to this report seam, never the canonical dataset tool. */
 export const disclosureCandidateSchema = z.object({
   id: z.string().min(1).max(120).regex(/^[A-Za-z0-9_-]+$/),
@@ -46,7 +58,7 @@ export const disclosureCandidateSchema = z.object({
   // statement/excerpt text remains source evidence rather than analyst advice.
   const analyticalFields = ["materialMechanism", "affectedMetricOrAssumption", "horizon", "condition", "confirmationCondition", "disconfirmationCondition"] as const;
   for (const field of analyticalFields) {
-    if (/(?:bullish|bearish|(?:investor|market|trading)\s+sentiment|guarantee[sd]?\s+(?:profits?|returns?|price)|(?:recommend|should|must)\s+(?:buy|sell|hold)\s+(?:the\s+)?(?:stock|shares|security)|看漲|看跌|保證獲利|建議(?:買進|賣出|持有))/i.test(candidate[field] ?? "")) {
+    if (/(?:bullish|bearish|(?:investor|market|trading)\s+sentiment|guarantee[sd]?\s+(?:profits?|returns?|price)|看漲|看跌|保證獲利)/i.test(candidate[field] ?? "") || hasTradingAdvice(candidate[field] ?? "")) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: "Unsupported sentiment and action wording are excluded from the disclosure specialist" });
     }
   }

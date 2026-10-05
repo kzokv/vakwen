@@ -78,7 +78,8 @@ describe("OAuth disclosure contract", () => {
     expect(first.result?.isError).not.toBe(true);
     const data = first.result?.structuredContent?.result as MaterialAnnouncementsOutput;
     expect(data.items).toHaveLength(1);
-    expect(data.relationIndex).toContainEqual({ announcementId: "ann2", kind: "retracts", targetAnnouncementId: "ann1" });
+    expect(data.relationIndex).toContainEqual({ announcementId: "ann2", provenanceId: f.announcement.provenance.id, kind: "retracts", targetAnnouncementId: "ann1" });
+    expect(data.provenance.find((record) => record.id === data.relationIndex.find((relation) => relation.announcementId === "ann2")?.provenanceId)).toEqual(f.announcement.provenance);
     expect(data.items[0]?.explanation.retainedCharacters).toBe(20000);
     const next = await call("list_material_announcements", { subject: f.subject, cursor: data.page.nextCursor });
     expect((next.result?.structuredContent?.result as MaterialAnnouncementsOutput).items[0]?.id).not.toBe(data.items[0]?.id);
