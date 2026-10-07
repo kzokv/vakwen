@@ -3,13 +3,13 @@ import { enrichOfficialAnnouncement, announcementCitationSelectors } from "./pro
 import { extractDisclosureContent, resolveDisclosureMediaType } from "./providers/disclosureExtraction.js";
 import { createHash } from "node:crypto";
 import type { Persistence } from "../../persistence/types.js";
-import type { ResearchDisclosureScan, ResearchDisclosureArtifact, ResearchAnnouncementRecord } from "./disclosureContracts.js";
+import type { ResearchDisclosureScan, ResearchDisclosureArtifact, ResearchAnnouncementRecord, DisclosureAcquisitionContinuation } from "./disclosureContracts.js";
 import { ResearchAcquisitionDisabledError } from "./acquisition.js";
 import { researchAcquisitionEnabled, researchDisclosureAcquisitionEnabled } from "./rollout.js";
 import { DISCLOSURE_PARSER_VERSION, OFFICIAL_ANNOUNCEMENT_SOURCES, disclosureHash, disclosureId, parseOfficialAnnouncementSnapshot, retainAnnouncementExplanation, safeDisclosureUrl } from "./providers/mopsAnnouncements.js";
 
 // Leave headroom inside the 30-minute scan freshness window for persistence.
-// Deferred rows remain explicit failures; this is not a scheduling fairness policy.
+// Deferred rows remain explicit failures and resume through a durable rotation marker.
 const BOARD_WORK_BUDGET_MS = 20 * 60 * 1000;
 class DisclosureBoardBudgetExhausted extends Error {}
 
@@ -76,6 +76,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
     const artifactOwners = new Map<string, string>();
     const failedListings = new Set<string>();
     const detailAttemptsByListing = new Map<string, NonNullable<ResearchDisclosureScan["detailAttempts"]>>();
+    let acquisitionContinuation: DisclosureAcquisitionContinuation | undefined;
     const pendingRecords = new Set<ResearchAnnouncementRecord>();
     let deadline = Infinity;
     let budgetSignal: AbortSignal | undefined;
@@ -95,9 +96,17 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
       catch { throw new Error("disclosure_response_invalid_utf8"); }
       const records = parseOfficialAnnouncementSnapshot(JSON.parse(snapshotText), { retrievedAt: observedAt, contentHash, sourceUrl, acquisitionRunId }, venue, identities);
       publicationStart = records.reduce((start, record) => record.publishedAt < start ? record.publishedAt : start, observedAt);
-      for (const record of records) pendingRecords.add(record);
-      for (const sourceRecord of records) {
+      const continuationAt = options.retrievedAt ?? new Date().toISOString();
+      const previousContinuation = await persistence.getLatestDisclosureAcquisitionContinuation({ venue, effectiveAt: continuationAt, knowledgeAt: continuationAt });
+      const ordered = [...records].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+      const successor = previousContinuation?.parserVersion === DISCLOSURE_PARSER_VERSION
+        ? ordered.findIndex((record) => record.id > previousContinuation.afterRecordId) : 0;
+      const start = Math.max(0, successor);
+      const rotated = [...ordered.slice(start), ...ordered.slice(0, start)];
+      for (const record of rotated) pendingRecords.add(record);
+      for (const sourceRecord of rotated) {
         checkWorkBudget();
+        acquisitionContinuation = { afterRecordId: sourceRecord.id, parserVersion: DISCLOSURE_PARSER_VERSION, snapshotHash: contentHash };
         let record = sourceRecord;
         const listingKey = JSON.stringify([record.issuerId, record.listingId, record.venue]);
         const readAt = options.retrievedAt ?? new Date().toISOString();
@@ -231,7 +240,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
       id: disclosureId("scan", acquisitionRunId, checkedAt, completedAt, venue, identity.listing.id), listingId: identity.listing.id, issuerId: identity.issuer.id, venue, checkedAt, publicationStart, publicationEnd: checkedAt, knowledgeAt: completedAt, status: status === "success" && failedListings.has(JSON.stringify([identity.issuer.id, identity.listing.id, venue])) ? "failed" : status,
       // Daily snapshots are not historical collection coverage or a guarantee
       // that attachment discovery is exhaustive.
-      exhaustive: false, detailAttempts: detailAttemptsByListing.get(JSON.stringify([identity.issuer.id, identity.listing.id, venue])) ?? [], artifactAttempts: artifactAttempts.filter((attempt) => artifactOwners.get(attempt.artifactId) === JSON.stringify([identity.issuer.id, identity.listing.id, venue])), provenance: { id: disclosureId("pr", acquisitionRunId, checkedAt, completedAt, venue, contentHash ?? "no_retained_response"), publisher: "MOPS", accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI", authorityRole: "authoritative", sourceUrl, contentHash, retrievedAt: checkedAt, processedAt: completedAt, acquisitionRunId, parserVersion: DISCLOSURE_PARSER_VERSION, usagePolicyVersion: "taiwan-open-data/1.0.0" },
+      exhaustive: false, ...(acquisitionContinuation ? { acquisitionContinuation } : {}), detailAttempts: detailAttemptsByListing.get(JSON.stringify([identity.issuer.id, identity.listing.id, venue])) ?? [], artifactAttempts: artifactAttempts.filter((attempt) => artifactOwners.get(attempt.artifactId) === JSON.stringify([identity.issuer.id, identity.listing.id, venue])), provenance: { id: disclosureId("pr", acquisitionRunId, checkedAt, completedAt, venue, contentHash ?? "no_retained_response"), publisher: "MOPS", accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI", authorityRole: "authoritative", sourceUrl, contentHash, retrievedAt: checkedAt, processedAt: completedAt, acquisitionRunId, parserVersion: DISCLOSURE_PARSER_VERSION, usagePolicyVersion: "taiwan-open-data/1.0.0" },
     }));
     options.signal?.throwIfAborted();
     await persistence.appendResearchDisclosureScans(scans);

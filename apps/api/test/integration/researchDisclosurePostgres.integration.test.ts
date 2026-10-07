@@ -1,3 +1,4 @@
+import { disclosureContinuationScenario } from "../fixtures/research/disclosureContinuationScenario.js";
 import { disclosurePublisherIdentityScenario } from "../fixtures/research/disclosurePublisherIdentityScenario.js";
 import { disclosureCitationLineageScenario } from "../fixtures/research/disclosureCitationLineageScenario.js";
 import { disclosureAttachmentRevisionScenario } from "../fixtures/research/disclosureAttachmentRevisionScenario.js";
@@ -64,6 +65,16 @@ describePostgres("disclosure memory/Postgres conformance", () => {
       await expect(persistence.appendResearchDisclosureArtifacts([{ ...raw, id: "new_oversized", verifiedClaims: [claim] }])).rejects.toThrow("50,000 combined block and claim characters");
       expect((await getDisclosureArtifact(persistence, { subject: f.subject, context: f.context, artifactId: raw.id })).page.retainedCharacters).toBe(50_000);
     }
+  });
+
+  it.each(["TWSE", "TPEX"] as const)("%s board rotation: bounded persisted marker → fair attempts and restart durability", async (venue) => {
+    const result = await disclosureContinuationScenario(postgres, venue);
+    expect(result.markers).toEqual(result.expected);
+    expect(result.afterFailure).toEqual(result.last);
+    expect(result.page.scan.record).not.toHaveProperty("acquisitionContinuation");
+    await postgres.close();
+    postgres = new PostgresPersistence({ databaseUrl: databaseUrl!, redisUrl: redisUrl! });
+    expect(await postgres.getLatestDisclosureAcquisitionContinuation(result.scope)).toEqual(result.last);
   });
 
   it.each(["TWSE", "TPEX"] as const)("%s same URL attachment A→B→B→failure→failure→A: immutable revisions and replay", async (venue) => {

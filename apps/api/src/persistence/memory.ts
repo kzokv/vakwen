@@ -1,3 +1,4 @@
+import { disclosureAcquisitionContinuationSchema, disclosureAcquisitionContinuationQuerySchema, type DisclosureAcquisitionContinuation, type DisclosureAcquisitionContinuationQuery } from "../services/research/disclosureContracts.js";
 import { disclosureNoticeMayAffectPublication } from "../services/research/disclosureContracts.js";
 import { validateResearchDisclosureReferenceQuery, validateResearchAnnouncementWindowQuery, validateResearchAnnouncementIdsQuery, validateResearchAnnouncementCandidateQuery, validateResearchSuccessfulDetailQuery } from "../services/research/disclosureContracts.js";
 import { validateDisclosureReadScope } from "../services/research/disclosureContracts.js";
@@ -1232,6 +1233,17 @@ export class MemoryPersistence implements Persistence {
     return [...this.retainedDisclosureScans.values()].filter((record) => record.issuerId === query.issuerId && record.listingId === query.listingId && record.venue === query.venue
       && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt) && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
       && Date.parse(record.checkedAt) <= Date.parse(query.effectiveAt) && Date.parse(record.knowledgeAt) <= Date.parse(query.knowledgeAt));
+  }
+  async getLatestDisclosureAcquisitionContinuation(query: DisclosureAcquisitionContinuationQuery): Promise<DisclosureAcquisitionContinuation | null> {
+    disclosureAcquisitionContinuationQuerySchema.parse(query);
+    let latest: ResearchDisclosureScan | undefined;
+    for (const scan of this.retainedDisclosureScans.values()) {
+      if (!scan.acquisitionContinuation || scan.venue !== query.venue || Date.parse(scan.checkedAt) > Date.parse(query.effectiveAt)
+        || Date.parse(scan.knowledgeAt) > Date.parse(query.knowledgeAt) || Date.parse(scan.provenance.retrievedAt) > Date.parse(query.knowledgeAt)
+        || Date.parse(scan.provenance.processedAt) > Date.parse(query.knowledgeAt)) continue;
+      if (!latest || Date.parse(scan.provenance.processedAt) > Date.parse(latest.provenance.processedAt) || (Date.parse(scan.provenance.processedAt) === Date.parse(latest.provenance.processedAt) && scan.id > latest.id)) latest = scan;
+    }
+    return latest ? disclosureAcquisitionContinuationSchema.parse(latest.acquisitionContinuation) : null;
   }
   async listLatestResearchDisclosureScans(query: ResearchDisclosureScanLookup): Promise<ResearchDisclosureScan[]> {
     validateResearchDisclosureScanLookup(query);

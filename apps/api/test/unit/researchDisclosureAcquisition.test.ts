@@ -1,3 +1,4 @@
+import { disclosureContinuationScenario } from "../fixtures/research/disclosureContinuationScenario.js";
 import * as announcementDetails from "../../src/services/research/providers/mopsAnnouncementDetails.js";
 import { disclosureAttachmentRevisionScenario } from "../fixtures/research/disclosureAttachmentRevisionScenario.js";
 import { disclosureReversionScenario } from "../fixtures/research/disclosureRevisionScenario.js";
@@ -744,6 +745,7 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => [false, true].map((fixedM
     await persistence.appendResearchIdentityRecords([identity, ...others]);
     const mixed = [rows[0], { ...rows[0], 公司代號: "9997", SecuritiesCompanyCode: "9997" },
       { ...rows[0], 說明: "Deferred second row for the first listing." }, { ...rows[0], 公司代號: "9998", SecuritiesCompanyCode: "9998" }];
+    const ordered = parseOfficialAnnouncementSnapshot(mixed, { retrievedAt: at, contentHash: disclosureHash(JSON.stringify(mixed)), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "order" }, venue, [identity, ...others]).sort((a, b) => a.id < b.id ? -1 : 1);
     setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
     vi.useFakeTimers({ toFake: ["Date", "performance"] }); vi.setSystemTime(new Date(at));
     let details = 0;
@@ -757,18 +759,19 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => [false, true].map((fixedM
       const result = await runOfficialDisclosureAcquisition(persistence, { fetchImpl, ...(fixedMetadataClock ? { retrievedAt: at } : {}) });
       expect(result.outcomes).toEqual([{ venue, status: "failed", announcementCount: 2 }]); expect(details).toBe(3);
       const completedAt = fixedMetadataClock ? at : "2026-10-04T05:20:00.000Z";
-      for (const [index, subject] of [identity, ...others].entries()) {
+      for (const subject of [identity, ...others]) {
+        const unfinished = ordered.slice(2).filter((record) => record.listingId === subject.listing.id);
         const scan = (await persistence.listResearchDisclosureScans({ issuerId: subject.issuer.id, effectiveAt: completedAt, knowledgeAt: completedAt }))[0]!;
-        expect(scan).toMatchObject({ checkedAt: at, publicationEnd: at, knowledgeAt: completedAt, status: index === 0 || index === 2 ? "failed" : "success", exhaustive: false });
+        expect(scan).toMatchObject({ checkedAt: at, publicationEnd: at, knowledgeAt: completedAt, status: unfinished.length ? "failed" : "success", exhaustive: false });
         expect(scan.provenance).toMatchObject({ retrievedAt: at, processedAt: completedAt });
         const deferred = scan.detailAttempts!.filter((attempt) => attempt.reasonCodes.includes("disclosure_board_work_budget_exhausted"));
-        expect(deferred).toHaveLength(index === 0 || index === 2 ? 1 : 0);
-        if (index === 1 || index === 3) {
+        expect(deferred).toHaveLength(unfinished.length);
+        if (!unfinished.length) {
           const page = await listMaterialAnnouncements(persistence, { subject: { kind: "listing_id", listingId: subject.listing.id }, context: { knowledgeAt: completedAt } });
           expect(page.scan.status).toBe("current");
         }
       }
-      expect(await persistence.listResearchAnnouncements({ issuerId: identity.issuer.id, effectiveAt: completedAt, knowledgeAt: completedAt })).toHaveLength(1);
+      expect(await persistence.listResearchAnnouncements({ issuerId: identity.issuer.id, effectiveAt: completedAt, knowledgeAt: completedAt })).toHaveLength(ordered.slice(0, 2).filter((record) => record.issuerId === identity.issuer.id).length);
     } finally { vi.useRealTimers(); }
   });
 
@@ -800,5 +803,40 @@ it.each(["history", "detail", "attachment"] as const)("internal board deadline d
     expect(failed.detailAttempts!.some((attempt) => attempt.reasonCodes.includes("disclosure_board_work_budget_exhausted"))).toBe(true);
     expect((await persistence.listResearchDisclosureScans({ ...scope, issuerId: empty.issuer.id }))[0]!.status).toBe("success");
     expect(await persistence.listResearchAnnouncements({ ...scope, issuerId: identity.issuer.id })).toEqual([]);
+  } finally { timeout.mockRestore(); }
+});
+
+
+it.each(["TWSE", "TPEX"] as const)("%s repeated budget expiry: durable rotation → every row attempted and marker stays internal", async (venue) => {
+  const result = await disclosureContinuationScenario(new MemoryPersistence(), venue);
+  expect(result.markers).toEqual(result.expected);
+  expect(result.afterFailure).toEqual(result.last);
+  expect(result.page.scan.record).not.toHaveProperty("acquisitionContinuation");
+  expect(result.page.scan.latestAttempt).not.toHaveProperty("acquisitionContinuation");
+});
+
+
+it("board rotation: removed cursor row and parser change → successor then deterministic reset", async () => {
+  const persistence = new MemoryPersistence();
+  const result = await disclosureContinuationScenario(persistence, "TWSE");
+  const historicalAt = "2026-10-04T05:01:00.000Z";
+  expect((await persistence.getLatestDisclosureAcquisitionContinuation({ venue: "TWSE", effectiveAt: historicalAt, knowledgeAt: historicalAt }))?.afterRecordId).toBe(result.records[1]!.id);
+  const remaining = result.rows.filter((row) => row.主旨 !== result.records[0]!.subject);
+  const originalTimeout = AbortSignal.timeout.bind(AbortSignal); let controller = new AbortController();
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => ms === 20 * 60 * 1000 ? controller.signal : originalTimeout(ms));
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  const run = async (rows: typeof remaining, at: string) => {
+    controller = new AbortController();
+    await runOfficialDisclosureAcquisition(persistence, { retrievedAt: at, acquisitionRunId: at, fetchImpl: async (url, init) => {
+      if (String(url) === OFFICIAL_ANNOUNCEMENT_SOURCES.TWSE) return new Response(JSON.stringify(rows));
+      controller.abort(new DOMException("Budget", "TimeoutError")); throw init?.signal?.reason;
+    } });
+    return persistence.getLatestDisclosureAcquisitionContinuation({ venue: "TWSE", effectiveAt: at, knowledgeAt: at });
+  };
+  try {
+    expect((await run(remaining, "2026-10-04T05:06:00.000Z"))?.afterRecordId).toBe(result.records[1]!.id);
+    const scan = (await persistence.listResearchDisclosureScans({ issuerId: result.identity.issuer.id, effectiveAt: "2026-10-04T05:06:00.000Z", knowledgeAt: "2026-10-04T05:06:00.000Z" })).find((scan) => scan.checkedAt === "2026-10-04T05:06:00.000Z")!;
+    await persistence.appendResearchDisclosureScans([{ ...scan, id: "old_parser_marker", knowledgeAt: "2026-10-04T05:07:00.000Z", provenance: { ...scan.provenance, processedAt: "2026-10-04T05:07:00.000Z" }, acquisitionContinuation: { ...scan.acquisitionContinuation!, parserVersion: "old" } }]);
+    expect((await run(result.rows, "2026-10-04T05:08:00.000Z"))?.afterRecordId).toBe(result.records[0]!.id);
   } finally { timeout.mockRestore(); }
 });

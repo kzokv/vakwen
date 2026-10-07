@@ -162,12 +162,12 @@ import { buildFocusedDisclosureResearchReport, composeFocusedDisclosureResearchR
 import type { ResearchAnnouncementRecord, ResearchDisclosureArtifact, ResearchDisclosureScan } from "../../src/services/research/disclosureContracts.js";
 
 const context = { knowledgeAt: "2026-10-04T04:00:00.000Z", effectiveAt: "2026-10-04T04:00:00.000Z", assessmentMode: "effective" as const };
-async function fixture(venue: "TWSE" | "TPEX" = "TWSE") {
+async function fixture(venue: "TWSE" | "TPEX" = "TWSE", name = "研究測試") {
   const persistence = new MemoryPersistence();
   const record = canonicalizeOfficialIdentityRow({
     venue, snapshotDate: "2026-10-03", retrievedAt: "2026-10-03T02:00:00.000Z",
     artifact: { contentHash: "sha256:disclosure-report", sourceUrl: venue === "TWSE" ? "https://openapi.twse.com.tw/v1/opendata/t187ap03_L" : "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O" },
-    row: { kind: "company", ticker: venue === "TWSE" ? "2330" : "6488", legalName: "研究測試股份有限公司", displayName: "研究測試", unifiedBusinessNumber: "22099131", industryCode: "24", listedAt: "2000-01-01" },
+    row: { kind: "company", ticker: venue === "TWSE" ? "2330" : "6488", legalName: `${name}股份有限公司`, displayName: name, unifiedBusinessNumber: "22099131", industryCode: "24", listedAt: "2000-01-01" },
   });
   await persistence.appendResearchIdentityRecords([record]);
   const query = { subject: { kind: "listing_id" as const, listingId: record.listing.id }, context };
@@ -199,8 +199,8 @@ async function fixture(venue: "TWSE" | "TPEX" = "TWSE") {
   };
   return { persistence, query, record, announcement, artifact, scan };
 }
-async function seeded(venue: "TWSE" | "TPEX" = "TWSE") {
-  const f = await fixture(venue);
+async function seeded(venue: "TWSE" | "TPEX" = "TWSE", name = "研究測試") {
+  const f = await fixture(venue, name);
   await f.persistence.appendResearchAnnouncements([f.announcement]);
   await f.persistence.appendResearchDisclosureArtifacts([f.artifact]);
   await f.persistence.appendResearchDisclosureScans([f.scan]);
@@ -1330,4 +1330,36 @@ describe("focused disclosure report", () => {
     expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report))).toContain("Unresolved source conflict: announcement_1");
   });
 
+});
+
+
+it("Chinese allocation: canonical issuer targets → reject analytical advice and renderer forgery, preserve resources", async () => {
+  const f = await seeded("TWSE", "台積電");
+  const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+  const page = await listMaterialAnnouncements(f.persistence, f.query);
+  const advice = ["建議將20%資金配置於台積電", "提高台積電配置比重", "降低2330曝險", "不要提高台積電配置比重", "台積電配置比重應降低", "建議增加2330配置比例"];
+  const compose = (value: typeof candidate) => composeFocusedDisclosureResearchReport({ identity, announcementPages: [page], candidates: [value] });
+  const clean = compose(candidate);
+  for (const field of analyticalFields) for (const text of advice) {
+    expect(() => compose({ ...candidate, [field]: text }), `${field}: ${text}`).toThrow();
+    const forged = structuredClone(clean); forged.assessments[0]!.candidate[field] = text;
+    for (const locale of ["en", "zh-TW"] as const) expect(() => renderFocusedDisclosureResearchReportMarkdown(forged, locale)).toThrow();
+  }
+  for (const text of ["提高生產設備配置比重", "降低匯率曝險", "降低美元曝險", "建議將20%資金配置於生產設備", "公司提高台積電配置比重以反映已披露交易。"])
+    expect(() => compose({ ...candidate, materialMechanism: text }), text).not.toThrow();
+  for (const text of ["降低2330曝險", "提高台積電股票配置比重", "建議將20%資金配置於2330"])
+    expect(disclosureCandidateSchema.safeParse({ ...candidate, materialMechanism: text }).success).toBe(false);
+});
+
+
+it("Chinese allocation source quote: exact retained publisher text → preserved as facts", async () => {
+  const f = await fixture("TWSE", "台積電");
+  const quote = "建議將20%資金配置於台積電";
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: quote }]);
+  await f.persistence.appendResearchDisclosureScans([f.scan]);
+  const identity = await getResearchIdentity(f.persistence, { ...f.query, history: { limit: 1 } });
+  const page = await listMaterialAnnouncements(f.persistence, f.query);
+  const source = { ...candidate, statement: quote, statusEvidence: { ...candidate.statusEvidence, excerpt: quote } };
+  const report = composeFocusedDisclosureResearchReport({ identity, announcementPages: [page], candidates: [source] });
+  for (const locale of ["en", "zh-TW"] as const) expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, locale))).toContain(quote);
 });

@@ -1,3 +1,4 @@
+import { disclosureAcquisitionContinuationSchema, disclosureAcquisitionContinuationQuerySchema, type DisclosureAcquisitionContinuation, type DisclosureAcquisitionContinuationQuery } from "../services/research/disclosureContracts.js";
 import { validateResearchDisclosureReferenceQuery, validateResearchAnnouncementWindowQuery, validateResearchAnnouncementIdsQuery, validateResearchAnnouncementCandidateQuery, validateResearchSuccessfulDetailQuery } from "../services/research/disclosureContracts.js";
 import { validateDisclosureReadScope, disclosureWhitespacePattern } from "../services/research/disclosureContracts.js";
 import { researchAnnouncementMetadataSchema } from "../services/research/disclosureContracts.js";
@@ -1658,6 +1659,15 @@ export class PostgresPersistence implements Persistence {
     validateResearchSuccessfulDetailQuery(query);
     const result = await this.pool.query<{ record: ResearchAnnouncementRecord }>(`SELECT record FROM research.announcements WHERE ${this.disclosureAnnouncementScope()} AND record->>'collectionRecordId'=$6 AND record->'detailQuality'->>'status'='available' ORDER BY processed_at DESC, id DESC LIMIT 1`, [...this.disclosureScopeParameters(query), query.collectionRecordId]);
     return result.rows[0] ? researchAnnouncementRecordSchema.parse(result.rows[0].record) : null;
+  }
+  async getLatestDisclosureAcquisitionContinuation(query: DisclosureAcquisitionContinuationQuery): Promise<DisclosureAcquisitionContinuation | null> {
+    disclosureAcquisitionContinuationQuerySchema.parse(query);
+    const result = await this.pool.query<{ continuation: DisclosureAcquisitionContinuation }>(
+      `SELECT record->'acquisitionContinuation' AS continuation FROM research.disclosure_scans
+       WHERE record->>'venue'=$1 AND record ? 'acquisitionContinuation' AND published_at <= $2::timestamptz
+         AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz AND (record->>'knowledgeAt')::timestamptz <= $3::timestamptz
+       ORDER BY processed_at DESC, id DESC LIMIT 1`, [query.venue, query.effectiveAt, query.knowledgeAt]);
+    return result.rows[0] ? disclosureAcquisitionContinuationSchema.parse(result.rows[0].continuation) : null;
   }
   async listLatestResearchDisclosureScans(query: ResearchDisclosureScanLookup): Promise<ResearchDisclosureScan[]> {
     validateResearchDisclosureScanLookup(query);

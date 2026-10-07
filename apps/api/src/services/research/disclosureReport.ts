@@ -15,7 +15,26 @@ const evidenceReferenceSchema = z.discriminatedUnion("kind", [
 ]);
 
 // Scope trading commands to imperative/advisory contexts, not ordinary issuer operations.
+// Bare Han names need canonical issuer context; resource and currency names are
+// not guessed to be securities. Exact publisher quotations never enter this guard.
+function hasChineseAllocationAdvice(text: string, issuerNames: readonly string[] = []): boolean {
+  const isSecurity = (target: string) => /(?:股票|股份|持股|證券)/u.test(target)
+    || /^(?:\d{4,6}|[A-Z]{2,5}|\$[A-Za-z][A-Za-z0-9.-]{0,9})$/u.test(target)
+    || issuerNames.some((name) => name.length > 1 && target === name);
+  const start = String.raw`(?:^|[.!?;:。！？；：\n])\s*(?:(?:建議|推薦|請|務必|應該|應當)(?:投資人|投資者|你|您)?)?(?:不要|不應該|不應|不宜|勿|別)?`;
+  const change = String.raw`(?:提高|增加|降低|減少|調高|調低|調整)`;
+  const holding = String.raw`(?:配置(?:比重|比例)|曝險|持股比重)`;
+  const target = String.raw`(?<target>[\p{Script=Han}A-Za-z0-9$.-]{1,40}?)`;
+  const patterns = [
+    String.raw`${start}${change}${target}${holding}`,
+    String.raw`${start}(?:將|把)?(?:\d+(?:\.\d+)?[%％]|更多|部分|全部)?(?:的)?(?:資金|投資組合)(?:的)?(?:\d+(?:\.\d+)?[%％])?(?:配置|分配|投入)(?:於|到|至|給)${target}(?=$|[，。；！？\s])`,
+    String.raw`${start}${target}${holding}(?:應該|應當|應|必須|不應|不要)(?:被)?${change}`,
+  ];
+  return patterns.some((pattern) => [...text.matchAll(new RegExp(pattern, "gu"))].some((match) => isSecurity(match.groups!.target!)));
+}
+
 function hasTradingAdvice(text: string): boolean {
+  if (hasChineseAllocationAdvice(text)) return true;
   const object = String.raw`(?:(?:the|this|these|those|your|more|some|all|its|company)\s+)?(?:[A-Za-z0-9][\w.-]*(?:['’]s)?\s+){0,2}(?:stock|stocks|shares?|securit(?:y|ies)|holdings?|position)\b`;
   const positionObject = String.raw`(?:(?:a|the|your|our|its|their)\s+)?(?:(?:long|short)\s+)?positions?\b(?:\s+(?:in|on)\s+[\p{L}\p{N}$][\p{L}\p{N}$.'’_-]*(?:\s+(?:stock|shares))?)?`;
   const positionAction = String.raw`(?:take|open|close|reduce|increase|build|establish)\s+${positionObject}`;
@@ -442,6 +461,13 @@ export function composeFocusedDisclosureResearchReport(input: {
     return artifacts.flatMap((page) => page.artifact?.id === reference.artifactId ? page.artifact.verifiedClaims : []).find((claim) => claim.id === reference.claimId)?.text;
   }
   const candidates = (input.candidates ?? []).map((candidate) => disclosureCandidateSchema.parse(candidate));
+  const issuerNames = identity.identity.facts.filter((fact) => ["legal_name", "display_name"].includes(fact.field))
+    .flatMap((fact) => fact.normalized.state === "present" ? [fact.normalized.value] : []);
+  for (const candidate of candidates) {
+    for (const field of ["materialMechanism", "affectedMetricOrAssumption", "horizon", "condition", "confirmationCondition", "disconfirmationCondition"] as const) {
+      if (hasChineseAllocationAdvice(candidate[field] ?? "", issuerNames)) throw new Error("Unsupported issuer-targeted allocation advice in disclosure judgment");
+    }
+  }
   if (new Set(candidates.map((candidate) => candidate.id)).size !== candidates.length) throw new Error("Duplicate disclosure judgment ID");
   const requiredArtifactIds = new Set(candidates.flatMap((candidate) => [
     ...candidate.triggeringEvidence, ...candidate.confirmingEvidence, ...candidate.disconfirmingEvidence, candidate.statusEvidence.reference,

@@ -71,10 +71,16 @@ export const researchDisclosureArtifactSchema = researchDisclosureArtifactBaseSc
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["verifiedClaims"], message: `Available artifact page ${page} exceeds 50,000 combined block and claim characters.` });
   }
 });
+export const disclosureAcquisitionContinuationSchema = z.object({ afterRecordId: id, parserVersion: z.string().min(1), snapshotHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+export type DisclosureAcquisitionContinuation = z.infer<typeof disclosureAcquisitionContinuationSchema>;
+export const disclosureAcquisitionContinuationQuerySchema = z.object({ venue: z.enum(["TWSE", "TPEX"]), effectiveAt: time, knowledgeAt: time }).strict()
+  .refine((value) => Date.parse(value.effectiveAt) <= Date.parse(value.knowledgeAt), "effectiveAt must not exceed knowledgeAt");
+export type DisclosureAcquisitionContinuationQuery = z.infer<typeof disclosureAcquisitionContinuationQuerySchema>;
 export const researchDisclosureScanSchema = z.object({
   id, listingId: id, issuerId: id, venue: z.enum(["TWSE", "TPEX"]), checkedAt: time,
   publicationStart: time, publicationEnd: time, knowledgeAt: time,
   status: z.enum(["success", "failed", "restricted", "processing_failed"]), exhaustive: z.boolean(),
+  acquisitionContinuation: disclosureAcquisitionContinuationSchema.optional(),
   detailAttempts: z.array(z.object({ announcementId: id, attemptedAt: time, status: z.enum(["available", "restricted", "unavailable", "processing_failed"]), reasonCodes: z.array(z.string()) }).strict()).optional(),
   artifactAttempts: z.array(z.object({ artifactId: id, sourceUrl: safeUrl, attemptedAt: time, status: z.enum(["retained", "restricted", "unavailable", "processing_failed"]), reasonCode: z.enum(["disclosure_source_too_large", "disclosure_extraction_physical_page_limit"]).optional() }).strict()).optional(),
   provenance: disclosureProvenanceSchema.extend({ contentHash: z.string().regex(/^[a-f0-9]{64}$/).nullable() }).strict(),

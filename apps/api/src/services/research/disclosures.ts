@@ -156,7 +156,7 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
   const output = materialAnnouncementsOutputSchema.parse({ contractVersion: "material-announcements/1.0.0", selector: identity.selector, context: identity.context, identity: summary,
     selection: evidenceSelection(query, quality.readiness, items.filter((item) => !superseded.has(item.id)).map((item) => item.id), items.filter((item) => conflictIds.has(item.id)).map((item) => item.id), query.evidenceView === "all_observations" ? 0 : scopedAll.length - scopedSelected.length, [query.evidenceView === "all_observations" ? "audit_all_retained_observations" : "authoritative_supersession_selected", ...(rows.some((row) => conflictIds.has(row.id)) ? ["open_equal_authority_conflict_retained"] : [])]),
     window: { publishedFrom: start, publishedTo: end, ...(query.range?.eventFrom ? { eventFrom: query.range.eventFrom } : {}), ...(query.range?.eventTo ? { eventTo: query.range.eventTo } : {}), exhaustive }, quality,
-    scan: { status, checkedAt: selectedScan?.checkedAt ?? null, record: selectedScan ?? null, latestAttempt: latestAttempt ?? null, eventFactFreshness: "not_applicable" }, items,
+    scan: { status, checkedAt: selectedScan?.checkedAt ?? null, record: selectedScan ? Object.fromEntries(Object.entries(selectedScan).filter(([key]) => key !== "acquisitionContinuation")) : null, latestAttempt: latestAttempt ? Object.fromEntries(Object.entries(latestAttempt).filter(([key]) => key !== "acquisitionContinuation")) : null, eventFactFreshness: "not_applicable" }, items,
     relationIndex,
     unknownRelationIndex,
     unresolvedRelationIndex,

@@ -1254,7 +1254,7 @@ export const materialAnnouncementsOutputSchema = z.object({
   identity: disclosureIdentitySummarySchema,
   window: z.object({ publishedFrom: z.string().datetime({ offset: true }), publishedTo: z.string().datetime({ offset: true }), eventFrom: isoDateSchema.optional(), eventTo: isoDateSchema.optional(), exhaustive: z.boolean() }).strict(),
   quality: disclosureQualitySchema, selection: disclosureSelectionOutputSchema,
-  scan: z.object({ status: z.enum(["current", "indeterminate", "stale", "not_acquired", "failed", "restricted", "processing_failed", "not_applicable"]), checkedAt: z.string().datetime({ offset: true }).nullable(), record: researchDisclosureScanSchema.nullable(), latestAttempt: researchDisclosureScanSchema.nullable(), eventFactFreshness: z.literal("not_applicable") }).strict(),
+  scan: z.object({ status: z.enum(["current", "indeterminate", "stale", "not_acquired", "failed", "restricted", "processing_failed", "not_applicable"]), checkedAt: z.string().datetime({ offset: true }).nullable(), record: researchDisclosureScanSchema.omit({ acquisitionContinuation: true }).nullable(), latestAttempt: researchDisclosureScanSchema.omit({ acquisitionContinuation: true }).nullable(), eventFactFreshness: z.literal("not_applicable") }).strict(),
   items: z.array(researchAnnouncementRecordSchema.omit({ explanation: true }).extend({
     explanation: z.object({ text: z.string(), originalCharacters: z.number().int().nonnegative(), retainedCharacters: z.number().int().nonnegative(), truncated: z.boolean(), contentHash: z.string(), sourceUrl: z.string().url(), location: z.literal("issuer_explanation") }).strict(),
   }).strict()),

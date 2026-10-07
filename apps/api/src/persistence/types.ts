@@ -1,3 +1,4 @@
+import type { DisclosureAcquisitionContinuation, DisclosureAcquisitionContinuationQuery } from "../services/research/disclosureContracts.js";
 import type { ResearchAnnouncementMetadata, ResearchAnnouncementWindowQuery, ResearchAnnouncementCandidateQuery, ResearchDisclosureReferenceQuery } from "../services/research/disclosureContracts.js";
 import type { ResearchDisclosureScanLookup, ResearchDisclosureArtifactAttempt } from "../services/research/disclosureContracts.js";
 import type { ResearchDisclosureMaterialReference } from "../services/research/disclosureContracts.js";
@@ -2886,6 +2887,7 @@ export interface Persistence {
   getResearchAnnouncementsByIds(query: ResearchDisclosureScanLookup & { ids: string[] }): Promise<ResearchAnnouncementRecord[]>;
   findResearchAnnouncementCandidates(query: ResearchAnnouncementCandidateQuery): Promise<ResearchAnnouncementMetadata[]>;
   getLatestSuccessfulDisclosureDetail(query: ResearchDisclosureScanLookup & { collectionRecordId: string }): Promise<ResearchAnnouncementRecord | null>;
+  getLatestDisclosureAcquisitionContinuation(query: DisclosureAcquisitionContinuationQuery): Promise<DisclosureAcquisitionContinuation | null>;
   listLatestResearchDisclosureScans(query: ResearchDisclosureScanLookup): Promise<ResearchDisclosureScan[]>;
   getLatestResearchDisclosureArtifactAttempt(query: ResearchDisclosureScanLookup & { artifactId: string }): Promise<ResearchDisclosureArtifactAttempt | null>;
   appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void>;
