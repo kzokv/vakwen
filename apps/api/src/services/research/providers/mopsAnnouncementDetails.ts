@@ -9,7 +9,7 @@ import { parseTaiwanOfficialDate } from "./twseIdentity.js";
 /** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
 export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
 export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
-export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.3";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.4";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const parametersSchema = z.object({
   marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
@@ -50,6 +50,16 @@ function localStamp(record: Pick<ResearchAnnouncementRecord, "publishedAt">) {
   return { day: taiwan.slice(0, 10), clock: taiwan.slice(11, 19) };
 }
 function dateMatches(raw: string, isoDate: string): boolean { return parseTaiwanOfficialDate(raw.replaceAll("/", "")) === isoDate; }
+function publicationClockMatches(raw: string, record: ResearchAnnouncementRecord): boolean {
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(raw.trim())
+    ?? /^(\d{2})(\d{2})$/.exec(raw.trim()) ?? /^(\d{1,2})(\d{2})(\d{2})$/.exec(raw.trim());
+  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59 || (match[3] !== undefined && Number(match[3]) > 59)) return false;
+  const clock = `${match[1]!.padStart(2, "0")}:${match[2]}`;
+  const retainedClock = localStamp(record).clock;
+  if (record.publicationPrecision === "minute") return clock === retainedClock.slice(0, 5);
+  if (record.publicationPrecision === "date") return false; // No date-only detail producer is supported.
+  return match[3] !== undefined && `${clock}:${match[3]}` === retainedClock;
+}
 function expectedMarket(record: ResearchAnnouncementRecord) { return record.venue === "TWSE" ? "sii" : "otc"; }
 function assertMarket(marketName: string, record: ResearchAnnouncementRecord) {
   if (marketName !== (record.venue === "TWSE" ? "上市公司" : "上櫃公司")) throw new Error("detail_market_mismatch");
@@ -61,7 +71,7 @@ export function selectOfficialAnnouncementDetailParameters(payload: unknown, rec
   assertMarket(response.result.marketName, record);
   if (response.result.companyId !== record.ticker) throw new Error("detail_subject_mismatch");
   const matches = response.result.data.filter((row) => row[0] === record.ticker
-    && dateMatches(row[2], stamp.day) && row[3] === stamp.clock && compactTitle(row[4]) === compactTitle(record.subject));
+    && dateMatches(row[2], stamp.day) && publicationClockMatches(row[3], record) && compactTitle(row[4]) === compactTitle(record.subject));
   if (matches.length !== 1) throw new Error("detail_reference_unresolved");
   const parameters = matches[0]![5].parameters;
   if (parameters.companyId !== record.ticker || parameters.marketKind !== expectedMarket(record)
@@ -110,7 +120,7 @@ export function parseOfficialAnnouncementDetail(
     return value.trim();
   }
   const stamp = localStamp(record);
-  if (!dateMatches(field("發言日期"), stamp.day) || field("發言時間") !== stamp.clock
+  if (!dateMatches(field("發言日期"), stamp.day) || !publicationClockMatches(field("發言時間"), record)
     || compactTitle(field("主旨")) !== compactTitle(record.subject)) throw new Error("detail_observation_mismatch");
   const attachments = [...record.attachments];
   for (const [index, value] of row.entries()) {
