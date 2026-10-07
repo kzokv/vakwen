@@ -27,16 +27,25 @@ function hasTradingAdvice(text: string): boolean {
   const operationalObject = String.raw`(?:(?:the|our|its|their)\s+)?(?:inventory|shipments?|equipment|machinery|assets?|business(?:es)?|subsidiar(?:y|ies)|supplies|materials?)\b`;
   const bareNamedAction = String.raw`${baseVerb}\s+(?!${operationalObject})[\p{L}\p{N}$]`;
   const namedInflection = String.raw`${inflectedVerb}\s+[\p{L}\p{N}$]`;
-  if (new RegExp(String.raw`${directiveStart}(?:please\s+)?${bareNamedAction}`, "iu").test(text)
-    || new RegExp(String.raw`(?:${directiveStart}|\b(?:I|we)\s+)(?:recommend(?:ed|ing)?|advis(?:e|ed|ing)|suggest(?:ed|ing)?)\s+(?:(?:that\s+)?(?:you|investors?|traders?)\s+)?(?:to\s+)?${namedInflection}`, "iu").test(text)
-    || new RegExp(String.raw`\b(?:you|investors?|traders?)\s+(?:(?:should|must|can|could|ought\s+to|need\s+to)\s+)?${namedAction}`, "iu").test(text)
-    || new RegExp(String.raw`${directiveStart}(?:my\s+advice\s+is\s+to|should|must|ought\s+to)\s+${namedAction}`, "iu").test(text)
-    || new RegExp(String.raw`${directiveStart}(?:請|立即|現在|應該)?(?:買進|買入|賣出|持有|加碼|減碼|放空)(?!(?:庫存|設備|機器|資產|企業|原料|貨物))[\p{L}\p{N}]`, "u").test(text)) return true;
-  return new RegExp(String.raw`(?:^|[.!?;:\n])\s*(?:(?:[-*+>]|\d+[.)])\s*)?["'“‘]*(?:please\s+)?${imperative}`, "i").test(text)
-    || new RegExp(String.raw`\b(?:recommend(?:ed|ing)?|advis(?:e|ed|ing)|suggest(?:ed|ing)?|advice\s+is|should|must|ought\s+to|need\s+to)\s+(?:(?:that\s+)?(?:you|investors?|traders?)\s+)?(?:to\s+)?${inflected}`, "i").test(text)
-    || new RegExp(String.raw`\b(?:you|investors?|traders?)\s+(?:(?:should|must|can|could)\s+)?${imperative}`, "i").test(text)
-    || /(?:^|[。！？；：\n])\s*(?:(?:[-*+>]|\d+[.)])\s*)?["'“‘「]*(?:請|立即|現在|應該)?(?:買進|買入|賣出|持有|加碼|減碼|放空)(?:這檔|該公司|這些|你的|手中)?[\p{Script=Han}A-Za-z0-9]{0,12}(?:股票|股份|持股|證券)/u.test(text)
-    || /(?:建議|推薦|應該|應當|務必)(?:投資人|投資者|你|您)?(?:買進|買入|賣出|持有|加碼|減碼|放空)/.test(text);
+  const bareNamedInflection = String.raw`${inflectedVerb}\s+(?!${operationalObject})[\p{L}\p{N}$]`;
+  const avoidance = String.raw`(?:avoid|refrain\s+from)\s+`;
+  const negative = String.raw`(?:(?:not|never)\s+)?`;
+  const directivePrefix = String.raw`(?:please\s+)?(?:(?:do\s+not|don['’]t|never)\s+)?(?:please\s+)?`;
+  const modal = String.raw`(?:(?:should|must|can|could)\s+${negative}|(?:shouldn['’]t|mustn['’]t|can['’]t|couldn['’]t|cannot)\s+|ought\s+${negative}to\s+|need\s+${negative}to\s+)`;
+  const advisory = String.raw`(?:(?:do\s+not|don['’]t)\s+)?(?:recommend(?:ed|ing)?|advis(?:e|ed|ing)|suggest(?:ed|ing)?)\s+(?:(?:that\s+)?(?:you|investors?|traders?)\s+)?(?:${modal})?(?:against\s+)?${negative}(?:to\s+)?${negative}`;
+  const chineseNegative = String.raw`(?:不要|不應該|不應|不宜|不必|不得|勿|別)?`;
+  const chineseDirectivePrefix = String.raw`(?:請)?(?:立即|現在)?(?:應該|應當)?${chineseNegative}`;
+  const chineseVerb = String.raw`(?:買進|買入|賣出|持有|加碼|減碼|放空)`;
+  if (new RegExp(String.raw`${directiveStart}${directivePrefix}(?:${bareNamedAction}|${avoidance}${bareNamedInflection})`, "iu").test(text)
+    || new RegExp(String.raw`(?:${directiveStart}|\b(?:I|we)\s+)${advisory}${namedInflection}`, "iu").test(text)
+    || new RegExp(String.raw`\b(?:you|investors?|traders?)\s+(?:${modal})?${directivePrefix}(?:${namedAction}|${avoidance}${namedInflection})`, "iu").test(text)
+    || new RegExp(String.raw`${directiveStart}(?:my\s+advice\s+is\s+${negative}to\s+${negative}|${modal})(?:${namedAction}|${avoidance}${namedInflection})`, "iu").test(text)
+    || new RegExp(String.raw`${directiveStart}${chineseDirectivePrefix}${chineseVerb}(?!(?:庫存|設備|機器|資產|企業|原料|貨物))[\p{L}\p{N}]`, "u").test(text)) return true;
+  return new RegExp(String.raw`${directiveStart}${directivePrefix}${imperative}`, "iu").test(text)
+    || new RegExp(String.raw`\b(?:${advisory}|advice\s+is\s+${negative}(?:to\s+)?${negative}|${modal})${inflected}`, "i").test(text)
+    || new RegExp(String.raw`\b(?:you|investors?|traders?)\s+(?:${modal})?${directivePrefix}${imperative}`, "i").test(text)
+    || new RegExp(String.raw`${directiveStart}${chineseDirectivePrefix}${chineseVerb}(?:這檔|該公司|這些|你的|手中)?[\p{Script=Han}A-Za-z0-9]{0,12}(?:股票|股份|持股|證券)`, "u").test(text)
+    || new RegExp(String.raw`(?:建議|推薦|應該|應當|務必)(?:投資人|投資者|你|您)?${chineseNegative}${chineseVerb}`).test(text);
 }
 
 /** Analytical judgments belong to this report seam, never the canonical dataset tool. */
