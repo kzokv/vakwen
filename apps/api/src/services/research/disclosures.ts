@@ -199,19 +199,24 @@ export async function getDisclosureArtifact(persistence: Persistence, input: Res
   const queryHash = continuityHash({ purpose: "artifact", version: VERSION, query: { ...query, subject: identity.selector, context: identity.context }, binding, artifact, pages });
   const offset = cursor ? pages.indexOf(Number(cursor.after)) + 1 : 0;
   if (cursor && offset === 0) throw new DisclosureServiceError("research_cursor_invalid", "Artifact page boundary is invalid.");
+  const eligibleBlocks = available ? artifact!.blocks.filter((block) => block.subject === summary.issuer.id) : [];
+  const retainedBlockIds = new Set(eligibleBlocks.filter((block) => block.extractionState === "retained_text").map((block) => block.id));
+  const eligibleClaims = available ? artifact!.verifiedClaims.filter((claim) => claim.subject === summary.issuer.id
+    && Date.parse(claim.verifiedAt) <= Date.parse(query.context.knowledgeAt)
+    && claim.blockIds.every((id) => retainedBlockIds.has(id) && eligibleBlocks.some((block) => block.id === id && block.page === claim.page
+      && block.table === claim.table && block.period === claim.period && block.unit === claim.unit))) : [];
   const selectedPages: number[] = [];
   let count = 0;
   for (const page of pages.slice(offset, offset + query.limit)) {
-    const pageBlocks = artifact!.blocks.filter((block) => block.page === page);
+    const pageBlocks = eligibleBlocks.filter((block) => block.page === page);
     const size = pageBlocks.reduce((total, block) => total + Array.from(block.text).length, 0)
-      + artifact!.verifiedClaims.filter((claim) => claim.page === page).reduce((total, claim) => total + Array.from(claim.text).length, 0);
+      + eligibleClaims.filter((claim) => claim.page === page).reduce((total, claim) => total + Array.from(claim.text).length, 0);
     if (size > 50_000 && selectedPages.length === 0) throw new DisclosureServiceError("record_too_large", "Retained page exceeds 50,000 characters; a narrower retained artifact is required.");
     if (count + size > 50_000) break;
     count += size; selectedPages.push(page);
   }
-  const blocks = available ? artifact!.blocks.filter((block) => selectedPages.includes(block.page) && block.subject === summary.issuer.id) : [];
-  const blockIds = new Set(blocks.filter((block) => block.extractionState === "retained_text").map((block) => block.id));
-  const verifiedClaims = available ? artifact!.verifiedClaims.filter((claim) => claim.subject === summary.issuer.id && Date.parse(claim.verifiedAt) <= Date.parse(query.context.knowledgeAt) && claim.blockIds.every((id) => blockIds.has(id) && blocks.some((block) => block.id === id && block.page === claim.page && block.table === claim.table && block.period === claim.period && block.unit === claim.unit))) : [];
+  const blocks = eligibleBlocks.filter((block) => selectedPages.includes(block.page));
+  const verifiedClaims = eligibleClaims.filter((claim) => selectedPages.includes(claim.page));
   const missingPages = selectedPages.some((page) => !blocks.some((block) => block.page === page) && !artifact?.confirmedEmptyPages?.includes(page));
   const provisional = blocks.some((block) => block.extractionState === "provisional_ocr");
   const retainedCharacters = blocks.reduce((total, block) => total + Array.from(block.text).length, 0) + verifiedClaims.reduce((total, claim) => total + Array.from(claim.text).length, 0);

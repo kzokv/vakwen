@@ -56,7 +56,16 @@ export function validateDisclosureEmptyPages(artifact: { totalPages: number; con
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["confirmedEmptyPages"], message: "Confirmed empty pages must be unique physical pages without retained or provisional blocks." });
   }
 }
-export const researchDisclosureArtifactSchema = researchDisclosureArtifactBaseSchema.superRefine(validateDisclosureEmptyPages);
+export const researchDisclosureArtifactSchema = researchDisclosureArtifactBaseSchema.superRefine(validateDisclosureEmptyPages).superRefine((artifact, ctx) => {
+  if (artifact.state !== "available") return;
+  const charactersByPage = new Map<number, number>();
+  for (const evidence of [...artifact.blocks, ...artifact.verifiedClaims]) {
+    charactersByPage.set(evidence.page, (charactersByPage.get(evidence.page) ?? 0) + Array.from(evidence.text).length);
+  }
+  for (const [page, characters] of charactersByPage) if (characters > 50_000) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["verifiedClaims"], message: `Available artifact page ${page} exceeds 50,000 combined block and claim characters.` });
+  }
+});
 export const researchDisclosureScanSchema = z.object({
   id, listingId: id, issuerId: id, venue: z.enum(["TWSE", "TPEX"]), checkedAt: time,
   publicationStart: time, publicationEnd: time, knowledgeAt: time,

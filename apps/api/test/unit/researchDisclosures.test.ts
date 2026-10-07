@@ -485,3 +485,43 @@ it("lineage provenance byte budget: page trimming → prune dropped target sourc
   }
   expect(seen.sort()).toEqual(ids.sort());
 });
+
+
+it("available artifact admission: combined Unicode page boundary → exact-limit reads and atomic oversized rejection", async () => {
+  const f = await disclosureFixture();
+  const raw: ResearchDisclosureArtifact = { ...f.artifact, id: "raw_boundary", totalPages: 1,
+    blocks: [{ ...f.artifact.blocks[0]!, text: "😀".repeat(50_000) }], verifiedClaims: [] };
+  const claim: ResearchDisclosureArtifact["verifiedClaims"][number] = { id: "boundary_claim", kind: "source_fact", text: "😀", blockIds: [raw.blocks[0]!.id], page: 1,
+    table: null, subject: f.identity.issuer.id, period: null, unit: null, verification: "verified", publisher: "MOPS", verifiedAt: f.context.knowledgeAt };
+  const verified = { ...raw, id: "verified_boundary", blocks: [{ ...raw.blocks[0]!, text: "😀".repeat(49_999) }], verifiedClaims: [claim] };
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "boundary_parent", attachments: [raw, verified].map((artifact) => ({ ...f.announcement.attachments[0]!, id: artifact.id, artifactId: artifact.id })) }]);
+  raw.reference = { kind: "announcement_attachment", id: "boundary_parent" }; verified.reference = raw.reference;
+  await f.persistence.appendResearchDisclosureArtifacts([raw, verified]);
+  for (const artifact of [raw, verified]) {
+    const page = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: artifact.id, limit: 1 });
+    expect(page.page).toMatchObject({ retainedCharacters: 50_000, originalCharacters: 50_000, returnedPages: [1], pageTruncated: false, nextCursor: null });
+    expect(page.artifact!.verifiedClaims.map((entry) => entry.id)).toEqual(artifact.verifiedClaims.map((entry) => entry.id));
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(255 * 1024);
+  }
+  const scope = { issuerId: f.identity.issuer.id, knowledgeAt: f.context.knowledgeAt, effectiveAt: f.context.knowledgeAt };
+  const before = await f.persistence.listResearchDisclosureArtifacts(scope);
+  await expect(f.persistence.appendResearchDisclosureArtifacts([{ ...verified, id: "batch_should_not_commit" }, { ...raw, verifiedClaims: [claim] }])).rejects.toThrow("50,000 combined block and claim characters");
+  expect(await f.persistence.listResearchDisclosureArtifacts(scope)).toEqual(before);
+  await expect(f.persistence.appendResearchDisclosureArtifacts([{ ...raw, id: "new_oversized", verifiedClaims: [claim] }])).rejects.toThrow("50,000 combined block and claim characters");
+  expect((await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: raw.id })).page.retainedCharacters).toBe(50_000);
+});
+
+it.each(["future", "wrong_subject", "wrong_location"] as const)("ineligible %s claim: page budget → count only exposed evidence", async (reason) => {
+  const f = await disclosureFixture();
+  const blocks = [1, 2].map((page) => ({ ...f.artifact.blocks[0]!, id: `budget_block${page}`, page, text: "a".repeat(20_000) }));
+  const claims: ResearchDisclosureArtifact["verifiedClaims"] = blocks.map((block) => ({ id: `excluded_${block.page}`, kind: "source_fact", text: "b".repeat(20_000), blockIds: [block.id], page: block.page,
+    table: reason === "wrong_location" ? "wrong_table" : null, subject: reason === "wrong_subject" ? "foreign" : f.identity.issuer.id, period: null, unit: null,
+    verification: "verified", publisher: "MOPS", verifiedAt: reason === "future" ? "2026-09-02T00:00:00.000Z" : f.context.knowledgeAt }));
+  const artifact = { ...f.artifact, id: "filtered_budget", totalPages: 2, blocks, verifiedClaims: claims };
+  await f.persistence.appendResearchAnnouncements([{ ...f.announcement, id: "filtered_budget_parent", attachments: [{ ...f.announcement.attachments[0]!, artifactId: artifact.id }] }]);
+  artifact.reference = { kind: "announcement_attachment", id: "filtered_budget_parent" };
+  await f.persistence.appendResearchDisclosureArtifacts([artifact]);
+  const page = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId: artifact.id, limit: 2 });
+  expect(page.page).toMatchObject({ retainedCharacters: 40_000, originalCharacters: 80_000, returnedPages: [1, 2], nextCursor: null, pageTruncated: false });
+  expect(page.artifact!.verifiedClaims).toEqual([]);
+});

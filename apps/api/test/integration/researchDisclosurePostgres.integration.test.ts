@@ -37,6 +37,30 @@ describePostgres("disclosure memory/Postgres conformance", () => {
     await postgres.init();
   });
   afterEach(async () => { await postgres.close(); await pool.end(); });
+  it("available page admission: memory/Postgres → exact combined boundary and atomic rejected verification", async () => {
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const f = await disclosureFixture(persistence);
+      const raw: ResearchDisclosureArtifact = { ...f.artifact, id: "raw_boundary", totalPages: 1,
+        blocks: [{ ...f.artifact.blocks[0]!, text: "😀".repeat(50_000) }], verifiedClaims: [] };
+      const claim: ResearchDisclosureArtifact["verifiedClaims"][number] = { id: "boundary_claim", kind: "source_fact", text: "😀", blockIds: [raw.blocks[0]!.id], page: 1,
+        table: null, subject: f.identity.issuer.id, period: null, unit: null, verification: "verified", publisher: "MOPS", verifiedAt: f.context.knowledgeAt };
+      const verified = { ...raw, id: "verified_boundary", blocks: [{ ...raw.blocks[0]!, text: "😀".repeat(49_999) }], verifiedClaims: [claim] };
+      await persistence.appendResearchAnnouncements([{ ...f.announcement, id: "boundary_parent", attachments: [raw, verified].map((artifact) => ({ ...f.announcement.attachments[0]!, id: artifact.id, artifactId: artifact.id })) }]);
+      raw.reference = { kind: "announcement_attachment", id: "boundary_parent" }; verified.reference = raw.reference;
+      await persistence.appendResearchDisclosureArtifacts([raw, verified]);
+      for (const artifact of [raw, verified]) {
+        const page = await getDisclosureArtifact(persistence, { subject: f.subject, context: f.context, artifactId: artifact.id, limit: 1 });
+        expect(page.page).toMatchObject({ retainedCharacters: 50_000, originalCharacters: 50_000, returnedPages: [1], pageTruncated: false, nextCursor: null });
+        expect(page.artifact!.verifiedClaims.map((entry) => entry.id)).toEqual(artifact.verifiedClaims.map((entry) => entry.id));
+      }
+      const scope = { issuerId: f.identity.issuer.id, knowledgeAt: f.context.knowledgeAt, effectiveAt: f.context.knowledgeAt };
+      const before = await persistence.listResearchDisclosureArtifacts(scope);
+      await expect(persistence.appendResearchDisclosureArtifacts([{ ...verified, id: "batch_should_not_commit" }, { ...raw, verifiedClaims: [claim] }])).rejects.toThrow("50,000 combined block and claim characters");
+      expect(await persistence.listResearchDisclosureArtifacts(scope)).toEqual(before);
+      await expect(persistence.appendResearchDisclosureArtifacts([{ ...raw, id: "new_oversized", verifiedClaims: [claim] }])).rejects.toThrow("50,000 combined block and claim characters");
+      expect((await getDisclosureArtifact(persistence, { subject: f.subject, context: f.context, artifactId: raw.id })).page.retainedCharacters).toBe(50_000);
+    }
+  });
   it("missing material artifact: exact scoped existence → backend parity without broad payload reads", async () => {
     const outputs = [];
     for (const persistence of [new MemoryPersistence(), postgres]) {
