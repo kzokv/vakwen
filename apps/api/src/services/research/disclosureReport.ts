@@ -1,3 +1,4 @@
+import { assessArtifactRevalidation } from "./disclosureFreshness.js";
 import { disclosureNoticeMayAffectPublication } from "./disclosureContracts.js";
 import { z } from "zod";
 import type { Persistence } from "../../persistence/types.js";
@@ -431,6 +432,13 @@ export function composeFocusedDisclosureResearchReport(input: {
       && assertionContexts.every((assertion) => !hasUncertainStatusAssertion(assertion, "scheduled"))
       && /(?:預計|預定|訂於|將於|\b(?:scheduled|planned|expected|will|shall)\b)/i.test(anchor.excerpt));
     const failures = refs.map((reference) => ({ reference, reason: failedReason(reference) })).filter((failure) => failure.reason !== null);
+    const revalidationFailures = refs.flatMap((reference) => {
+      if (reference.kind !== "artifact_claim") return [];
+      const artifact = artifacts.find((page) => page.artifact?.id === reference.artifactId)?.artifact;
+      if (!artifact || artifact.state !== "available") return [];
+      const reason = assessArtifactRevalidation(artifact, scan, identity.context);
+      return reason === "current" || reason === "not_applicable" ? [] : [{ reference, reason }];
+    });
     const sourceReasons = [...new Set([
       ...(!applicable ? ["disclosures_not_applicable"] : !current ? [scanFailure] : []),
       ...(candidate.requiresExhaustiveCoverage && !exhaustive ? ["non_exhaustive_window"] : []),
@@ -439,7 +447,7 @@ export function composeFocusedDisclosureResearchReport(input: {
       ...(!occurrenceVerified || !scheduleVerified ? ["classification_status_not_verified"] : []),
       ...failures.map((failure) => failure.reason!),
     ])];
-    const reasons = [...sourceReasons, ...(refs.some(hasUnknownCorrectionScope) ? ["unknown_correction_scope"] : [])];
+    const reasons = [...new Set([...sourceReasons, ...revalidationFailures.map((failure) => failure.reason), ...(refs.some(hasUnknownCorrectionScope) ? ["unknown_correction_scope"] : [])])];
     return {
       candidate,
       support: reasons.length > 0 ? "withheld" as const : "provisional" as const,
@@ -447,7 +455,7 @@ export function composeFocusedDisclosureResearchReport(input: {
       interpretationType: "analytical_judgment" as const,
       statement: reasons.length > 0 ? "This catalyst/risk judgment is withheld because its required evidence is unavailable or insufficient." : candidate.statement,
       reasonCodes: reasons,
-      failedDependencies: failures.map((failure) => failure.reference),
+      failedDependencies: [...failures, ...revalidationFailures].map((failure) => failure.reference),
     };
   });
   const latestAttempt = first.scan.latestAttempt;
@@ -479,6 +487,7 @@ export function composeFocusedDisclosureResearchReport(input: {
     announcementPages: pages, artifactPages: artifacts, assessments, limitations,
     recoveryRequirements: [...new Set([
       ...pages.flatMap((page) => page.quality.recovery), ...artifacts.flatMap((page) => page.quality.recovery),
+      ...(assessments.some((assessment) => assessment.reasonCodes.some((reason) => reason.startsWith("artifact_current_revalidation_"))) ? ["Current interpretations require successful revalidation of this source locator; retained historical facts remain available."] : []),
       ...(!current && applicable ? ["Await a successful current official announcement collection check."] : []),
       ...(assessments.some((assessment) => assessment.support === "withheld") ? ["Obtain the exact failed evidence dependencies before reevaluating withheld judgments."] : []),
     ])],
@@ -609,6 +618,7 @@ export function renderFocusedDisclosureResearchReportMarkdown(input: FocusedDisc
     "Wait for a successful scheduled official announcement scan.": "等待排程的官方公告掃描成功完成。",
     "Operator action required: a physical PDF page exceeds retrieval limits; retain a supported source preserving physical page locations. Dependent claims remain withheld.": "需由維運人員處理：PDF 實體頁面超出讀取上限；請留存系統支援且保留實體頁面位置的來源。依賴該內容的判斷仍暫不提出。",
     "Operator action required: review the official attachment size against acquisition limits and retain a supported bounded source; dependent claims remain withheld.": "需由維運人員處理：依擷取上限檢查官方附件大小，並留存系統支援且大小受限的來源；依賴該附件的判斷仍暫不提出。",
+    "Current interpretations require successful revalidation of this source locator; retained historical facts remain available.": "當前解讀須先成功重新驗證此來源位置；已留存的歷史事實仍可使用。",
     "Retained artifact content is unavailable; dependent claims must remain withheld.": "留存文件內容不可用；依賴此內容的判斷須暫不提出。",
   };
   const t = (value: string) => locale === "zh-TW" ? translations[value] ?? value : value;

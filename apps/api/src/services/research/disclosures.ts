@@ -1,3 +1,4 @@
+import { assessArtifactRevalidation } from "./disclosureFreshness.js";
 import { disclosureNoticeMayAffectPublication } from "./disclosureContracts.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Env } from "@vakwen/config";
@@ -97,7 +98,7 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
   const superseded = new Set(all.filter((record) => record.quality === "available").flatMap((record) => record.relations.filter((relation) => relation.kind === "supersedes").map((relation) => relation.targetAnnouncementId)));
   const selectedRecords = all.filter((record) => !superseded.has(record.id));
   const groups = new Map<string, string[]>();
-  for (const record of selectedRecords) { const key = record.collectionRecordId ?? record.id; groups.set(key, [...(groups.get(key) ?? []), record.id]); }
+  for (const record of selectedRecords) { const key = record.publisherRecordId ?? record.collectionRecordId ?? record.id; groups.set(key, [...(groups.get(key) ?? []), record.id]); }
   const conflictIds = new Set([...groups.values()].filter((ids) => ids.length > 1).flat());
   // Resolve lineage across retained listing evidence before restricting metadata
   // to the requested window: an out-of-window revision still invalidates its target.
@@ -131,16 +132,18 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
   const more = offset + items.length < rows.length;
   const nextCursor = more ? encode({ version: VERSION, purpose: "announcements", auth: options.authorizationBinding ?? "internal", issuedAt: cursor?.issuedAt ?? Date.now(), query: { ...query, subject: identity.selector }, requestedSubject: cursor?.requestedSubject ?? parsed.subject, after: items.at(-1)!.id }, options) : null;
   const status = applicable ? scanState(selectedScan, query.context.effectiveAt) : "not_applicable";
+  const attachmentRefreshMissing = items.some((item) => item.attachments.some((attachment) => attachment.artifactId !== null
+    && !["current", "not_applicable"].includes(assessArtifactRevalidation({ id: attachment.artifactId, reference: { kind: "announcement_attachment", id: item.id }, sourceUrl: attachment.sourceUrl }, selectedScan, query.context))));
   const attachmentRefreshFailed = latestAttempt?.artifactAttempts?.some((attempt) => attempt.status !== "retained") ?? false;
   const quality: MaterialAnnouncementsOutput["quality"] = {
     freshness: status === "current" ? "current" : status === "stale" ? "stale" : !applicable ? "not_applicable" : "indeterminate",
     completeness: !applicable ? "not_applicable" : exhaustive ? more || offset > 0 ? "partial" : "complete" : "indeterminate",
     confidence: selectedScan?.status === "success" ? "supported" : "indeterminate",
-    readiness: { factualUse: !applicable ? "not_applicable" : items.some((item) => item.quality === "available") ? "degraded" : "blocked", currentAssessment: !applicable ? "not_applicable" : status === "current" ? latestAttempt?.status === "success" && !attachmentRefreshFailed ? "ready" : "degraded" : "blocked", exhaustiveConclusion: !applicable ? "not_applicable" : exhaustive && !more && offset === 0 ? "ready" : "blocked" },
+    readiness: { factualUse: !applicable ? "not_applicable" : items.some((item) => item.quality === "available") ? "degraded" : "blocked", currentAssessment: !applicable ? "not_applicable" : status === "current" ? latestAttempt?.status === "success" && !attachmentRefreshFailed && !attachmentRefreshMissing ? "ready" : "degraded" : "blocked", exhaustiveConclusion: !applicable ? "not_applicable" : exhaustive && !more && offset === 0 ? "ready" : "blocked" },
     versions: { contract: VERSION, freshnessPolicy: "official-scan/1.0.0", exposurePolicy: "retained-disclosures/1.0.0" },
     status: !applicable ? "not_applicable" : status === "not_acquired" ? "not_acquired" : status === "restricted" || status === "processing_failed" ? status : status === "current" ? "available" : "indeterminate",
-    reasonCodes: [...(attachmentRefreshFailed ? ["attachment_refresh_failed"] : []), ...(latestAttempt && latestAttempt.status !== "success" ? ["latest_refresh_failed"] : []), ...(!exhaustive ? ["non_exhaustive_window"] : []), ...(status !== "current" ? [`official_scan_${status}`] : [])],
-    recovery: [...(applicable && (status !== "current" || latestAttempt?.status !== "success") ? ["Wait for a successful scheduled official announcement scan."] : []), ...(attachmentRefreshFailed ? ["Retained artifact content is unavailable; dependent claims must remain withheld."] : [])],
+    reasonCodes: [...(attachmentRefreshMissing ? ["attachment_current_revalidation_missing"] : []), ...(attachmentRefreshFailed ? ["attachment_refresh_failed"] : []), ...(latestAttempt && latestAttempt.status !== "success" ? ["latest_refresh_failed"] : []), ...(!exhaustive ? ["non_exhaustive_window"] : []), ...(status !== "current" ? [`official_scan_${status}`] : [])],
+    recovery: [...(applicable && (status !== "current" || latestAttempt?.status !== "success") ? ["Wait for a successful scheduled official announcement scan."] : []), ...(attachmentRefreshFailed ? ["Retained artifact content is unavailable; dependent claims must remain withheld."] : []), ...(attachmentRefreshMissing ? ["Current interpretations require successful revalidation of this source locator; retained historical facts remain available."] : [])],
   };
   const provenanceById = new Map(all.map((record) => [record.provenance.id, record.provenance]));
   const pageProvenance = (page: Pick<MaterialAnnouncementsOutput, "items" | "relationIndex" | "unresolvedRelationIndex" | "unknownRelationIndex">) => {
@@ -196,8 +199,13 @@ export async function getDisclosureArtifact(persistence: Persistence, input: Res
   const binding = artifact ? `${artifact.id}:${artifact.contentHash}:${artifact.extractionVersion}` : "";
   if (cursor && cursor.artifactBinding !== binding) throw new DisclosureServiceError("research_cursor_invalid", "Artifact hash or extraction version does not match cursor.");
   const available = artifact?.state === "available";
+  const scans = available ? await persistence.listLatestResearchDisclosureScans({ ...storeQuery, listingId: summary.listing.id, venue: summary.listing.venue }) : [];
+  const selectedScan = scans.filter((scan) => scan.listingId === summary.listing.id && scan.venue === summary.listing.venue && scan.status === "success")
+    .sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt) || b.id.localeCompare(a.id))[0];
+  const revalidation = artifact ? assessArtifactRevalidation(artifact, selectedScan, query.context) : "not_applicable";
+  const revalidationFailed = revalidation !== "current" && revalidation !== "not_applicable";
   const pages = artifact && available ? Array.from({ length: artifact.totalPages }, (_, index) => index + 1).sort((a, b) => (a - b) * (query.order === "asc" ? 1 : -1)) : [];
-  const queryHash = continuityHash({ purpose: "artifact", version: VERSION, query: { ...query, subject: identity.selector, context: identity.context }, binding, artifact, pages });
+  const queryHash = continuityHash({ purpose: "artifact", version: VERSION, query: { ...query, subject: identity.selector, context: identity.context }, binding, artifact, pages, revalidation });
   const offset = cursor ? pages.indexOf(Number(cursor.after)) + 1 : 0;
   if (cursor && offset === 0) throw new DisclosureServiceError("research_cursor_invalid", "Artifact page boundary is invalid.");
   const eligibleBlocks = available ? artifact!.blocks.filter((block) => block.subject === summary.issuer.id) : [];
@@ -223,15 +231,15 @@ export async function getDisclosureArtifact(persistence: Persistence, input: Res
   const retainedCharacters = blocks.reduce((total, block) => total + Array.from(block.text).length, 0) + verifiedClaims.reduce((total, claim) => total + Array.from(claim.text).length, 0);
   const more = offset + selectedPages.length < pages.length;
   const nextCursor = more ? encode({ version: VERSION, purpose: "artifact", auth: options.authorizationBinding ?? "internal", issuedAt: cursor?.issuedAt ?? Date.now(), query: { ...query, subject: identity.selector }, requestedSubject: cursor?.requestedSubject ?? parsed.subject, after: String(selectedPages.at(-1)), artifactBinding: binding }, options) : null;
-  const artifactReadiness: MaterialAnnouncementsOutput["quality"]["readiness"] = { factualUse: !eligible(summary) ? "not_applicable" : available ? more || missingPages || provisional ? "degraded" : "ready" : "blocked", currentAssessment: "not_applicable", exhaustiveConclusion: !eligible(summary) ? "not_applicable" : available && !more && offset === 0 && !missingPages ? "ready" : "blocked" };
+  const artifactReadiness: MaterialAnnouncementsOutput["quality"]["readiness"] = { factualUse: !eligible(summary) ? "not_applicable" : available ? more || missingPages || provisional ? "degraded" : "ready" : "blocked", currentAssessment: !available || revalidation === "not_applicable" ? "not_applicable" : revalidationFailed ? "blocked" : "ready", exhaustiveConclusion: !eligible(summary) ? "not_applicable" : available && !more && offset === 0 && !missingPages ? "ready" : "blocked" };
   const exposedArtifact = artifact ? Object.fromEntries(Object.entries(artifact).filter(([key]) => key !== "retainedBytesBase64")) : null;
   const output = disclosureArtifactOutputSchema.parse({ contractVersion: "disclosure-artifact/1.0.0", selector: identity.selector, context: identity.context, identity: summary,
     selection: evidenceSelection(query, artifactReadiness, [...blocks.map((block) => block.id), ...verifiedClaims.map((claim) => claim.id)], [], 0, ["immutable_retained_artifact_selected"]),
     quality: {
-      freshness: "not_applicable", completeness: !eligible(summary) ? "not_applicable" : available && !missingPages ? more || offset > 0 ? "partial" : "complete" : "indeterminate", confidence: !available || missingPages ? "indeterminate" : provisional ? "provisional" : verifiedClaims.length > 0 ? "verified" : "supported",
+      freshness: revalidation === "not_applicable" ? "not_applicable" : revalidation === "current" ? "current" : revalidation === "artifact_current_revalidation_stale" ? "stale" : "indeterminate", completeness: !eligible(summary) ? "not_applicable" : available && !missingPages ? more || offset > 0 ? "partial" : "complete" : "indeterminate", confidence: !available || missingPages ? "indeterminate" : provisional ? "provisional" : verifiedClaims.length > 0 ? "verified" : "supported",
       readiness: artifactReadiness,
       versions: { contract: VERSION, freshnessPolicy: "official-scan/1.0.0", exposurePolicy: "retained-disclosures/1.0.0" },
-      status: !eligible(summary) ? "not_applicable" : artifact?.state === "unavailable" ? "not_acquired" : artifact?.state ?? unavailableState, reasonCodes: available ? [] : [artifact?.state ?? (eligible(summary) ? unavailableState : "not_applicable_subject"), ...(attempts[0]?.reasonCode ? [attempts[0].reasonCode] : [])], recovery: available ? [] : [attempts[0]?.reasonCode === "disclosure_extraction_physical_page_limit" ? "Operator action required: a physical PDF page exceeds retrieval limits; retain a supported source preserving physical page locations. Dependent claims remain withheld." : attempts[0]?.reasonCode === "disclosure_source_too_large" ? "Operator action required: review the official attachment size against acquisition limits and retain a supported bounded source; dependent claims remain withheld." : "Retained artifact content is unavailable; dependent claims must remain withheld."] },
+      status: !eligible(summary) ? "not_applicable" : artifact?.state === "unavailable" ? "not_acquired" : artifact?.state ?? unavailableState, reasonCodes: available ? revalidationFailed ? [revalidation] : [] : [artifact?.state ?? (eligible(summary) ? unavailableState : "not_applicable_subject"), ...(attempts[0]?.reasonCode ? [attempts[0].reasonCode] : [])], recovery: available ? revalidationFailed ? ["Current interpretations require successful revalidation of this source locator; retained historical facts remain available."] : [] : [attempts[0]?.reasonCode === "disclosure_extraction_physical_page_limit" ? "Operator action required: a physical PDF page exceeds retrieval limits; retain a supported source preserving physical page locations. Dependent claims remain withheld." : attempts[0]?.reasonCode === "disclosure_source_too_large" ? "Operator action required: review the official attachment size against acquisition limits and retain a supported bounded source; dependent claims remain withheld." : "Retained artifact content is unavailable; dependent claims must remain withheld."] },
     artifact: exposedArtifact ? { ...exposedArtifact,
       blocks: blocks.map((block) => ({ ...block, qualifiers: { period: qualifier(block.period), unit: qualifier(block.unit) } })),
       verifiedClaims: verifiedClaims.map((claim) => ({ ...claim, qualifiers: { period: qualifier(claim.period), unit: qualifier(claim.unit) } })),

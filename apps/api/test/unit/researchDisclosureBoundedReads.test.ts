@@ -1,3 +1,4 @@
+import { disclosurePublisherIdentityScenario } from "../fixtures/research/disclosurePublisherIdentityScenario.js";
 import { disclosureCitationLineageScenario } from "../fixtures/research/disclosureCitationLineageScenario.js";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
@@ -89,8 +90,10 @@ describe("bounded disclosure reads", () => {
     const broadReads = rejectHistoryReads(f.persistence);
     const artifacts = vi.spyOn(f.persistence, "listResearchDisclosureArtifacts");
     const references = vi.spyOn(f.persistence, "hasResearchDisclosureArtifactReference");
+    const scans = vi.spyOn(f.persistence, "listLatestResearchDisclosureScans");
     const read = (artifactId: string) => getDisclosureArtifact(f.persistence, { subject: f.subject, context: f.context, artifactId });
     expect((await read(f.artifact.id)).artifact?.id).toBe(f.artifact.id);
+    expect(scans).toHaveBeenCalledExactlyOnceWith({ issuerId: f.identity.issuer.id, listingId: f.identity.listing.id, venue: f.identity.listing.venue, effectiveAt: f.context.effectiveAt, knowledgeAt: f.context.knowledgeAt });
     expect((await read("missing_artifact")).artifact).toBeNull();
     for (const id of ["unknown", "foreign_artifact", "wrong_parent_artifact"]) {
       await expect(read(id)).rejects.toMatchObject({ code: "research_artifact_not_referenced" });
@@ -216,4 +219,16 @@ it.each(["TWSE", "TPEX"] as const)("%s citation metadata: recursive changed-titl
   expect(result.historical.map((record) => record.id)).toEqual(["citation_seed"]);
   expect(result.cycle.map((record) => record.id).sort()).toEqual(["citation_cycle_a", "citation_cycle_b"]);
   expect([...result.current, ...result.historical, ...result.cycle].every((record) => !("explanation" in record) && !("attachments" in record))).toBe(true);
+});
+
+it.each(["TWSE", "TPEX"] as const)("%s revision identity: same title/time → require exact collection or verified publisher row", async (venue) => {
+  const f = await fixture(venue); const persistence = f.persistence;
+  const result = await disclosurePublisherIdentityScenario(persistence, f.announcement, f.context.knowledgeAt);
+  expect(result.samePublisher.map((row) => row.id).sort()).toEqual(["publisher_a", "publisher_a2"]);
+  expect(result.differentPublisher.map((row) => row.id)).toEqual(["publisher_b"]);
+  expect(result.noProof).toEqual([]);
+  expect(result.pages.flatMap((page) => page.selection.conflictObservationIds).sort()).toEqual(["publisher_a", "publisher_a2"]);
+  expect(result.pages.flatMap((page) => page.items.map((row) => row.id))).toContain("publisher_b");
+  expect(result.window.map((row) => row.id)).toContain("publisher_a2");
+  expect([...result.samePublisher, ...result.differentPublisher].every((row) => !("explanation" in row) && !("attachments" in row))).toBe(true);
 });

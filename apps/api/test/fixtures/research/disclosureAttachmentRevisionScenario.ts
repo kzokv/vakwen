@@ -59,6 +59,13 @@ export async function disclosureAttachmentRevisionScenario(persistence: Persiste
     const oldRead = await getDisclosureArtifact(persistence, { subject, context, artifactId: reads[0]!.artifact!.id });
     const records = await persistence.listResearchAnnouncements({ issuerId: identity.issuer.id, effectiveAt: context.knowledgeAt, knowledgeAt: context.knowledgeAt });
     const artifacts = await persistence.listResearchDisclosureArtifacts({ issuerId: identity.issuer.id, effectiveAt: context.knowledgeAt, knowledgeAt: context.knowledgeAt });
-    return { pages, reads, counts, requests, historical, oldRead, records, artifacts, failureReport: failureReport! };
+    const agedAt = "2026-10-04T06:45:00.000Z";
+    await runOfficialDisclosureAcquisition(persistence, { retrievedAt: agedAt, acquisitionRunId: "aged_out", fetchImpl: async (url) => {
+      if (String(url) !== OFFICIAL_ANNOUNCEMENT_SOURCES[venue]) throw new Error("An aged-out attachment must not be fetched by a public read");
+      return new Response("[]");
+    } });
+    const agedPage = await listMaterialAnnouncements(persistence, { subject, context: { knowledgeAt: agedAt } });
+    const agedRead = await getDisclosureArtifact(persistence, { subject, context: { knowledgeAt: agedAt }, artifactId: reads[6]!.artifact!.id });
+    return { pages, reads, counts, requests, historical, oldRead, records, artifacts, failureReport: failureReport!, agedPage, agedRead };
   } finally { setResearchRolloutOverrideForTest(null); }
 }

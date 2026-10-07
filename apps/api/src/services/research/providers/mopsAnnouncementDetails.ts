@@ -9,7 +9,7 @@ import { parseTaiwanOfficialDate } from "./twseIdentity.js";
 /** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
 export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
 export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
-export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.7";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.8";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const parametersSchema = z.object({
   marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
@@ -128,7 +128,7 @@ function relationFromPublisherText(record: ResearchAnnouncementRecord, previousR
 export function parseOfficialAnnouncementDetail(
   payload: unknown,
   record: ResearchAnnouncementRecord,
-  metadata: { contentHash: string; retrievedAt: string },
+  metadata: { contentHash: string; retrievedAt: string; publisherRecordId?: string },
   previousRecords: readonly ResearchAnnouncementMetadata[] = [],
 ): AnnouncementEnrichmentResult {
   const response = detailSchema.parse(payload);
@@ -162,7 +162,7 @@ export function parseOfficialAnnouncementDetail(
     explanation: field("說明"), attachments };
   const relation = relationFromPublisherText(enriched, previousRecords, metadata.retrievedAt);
   const reasons = relation.unresolved ? ["unresolved_correction_reference"] : [];
-  const output = researchAnnouncementRecordSchema.parse({ ...enriched, relations: relation.relations, unresolvedRelations: relation.unresolvedRelations, unknownRelationTargets: relation.unknownRelationTargets,
+  const output = researchAnnouncementRecordSchema.parse({ ...enriched, ...(metadata.publisherRecordId ? { publisherRecordId: metadata.publisherRecordId } : {}), relations: relation.relations, unresolvedRelations: relation.unresolvedRelations, unknownRelationTargets: relation.unknownRelationTargets,
     collectionProvenance: record.collectionProvenance ?? record.provenance,
     detailQuality: { status: "available", reasonCodes: reasons },
     provenance: { ...record.provenance, id: disclosureId("pr", record.id, metadata.contentHash, MOPS_DETAIL_PARSER_VERSION),
@@ -215,6 +215,7 @@ export async function enrichOfficialAnnouncement(record: ResearchAnnouncementRec
   const fetchImpl = options.fetchImpl ?? fetch;
   const stamp = localStamp(record);
   const retrievedAt = options.retrievedAt ?? new Date().toISOString();
+  let publisherRecordId: string | undefined;
   try {
     options.signal?.throwIfAborted();
     const history = await readOfficialJson(fetchImpl, MOPS_ANNOUNCEMENT_HISTORY_URL, {
@@ -223,9 +224,10 @@ export async function enrichOfficialAnnouncement(record: ResearchAnnouncementRec
     }, options.signal);
     options.signal?.throwIfAborted();
     const parameters = selectOfficialAnnouncementDetailParameters(history.payload, record);
+    publisherRecordId = disclosureId("mops", parameters.marketKind, parameters.companyId, parameters.enterDate, parameters.serialNumber);
     const detail = await readOfficialJson(fetchImpl, MOPS_ANNOUNCEMENT_DETAIL_URL, parameters, options.signal);
     options.signal?.throwIfAborted();
-    const metadata = { contentHash: detail.hash, retrievedAt };
+    const metadata = { contentHash: detail.hash, retrievedAt, publisherRecordId };
     const result = parseOfficialAnnouncementDetail(detail.payload, record, metadata, options.previousRecords);
     if (!options.resolvePreviousRecords) return result;
     const previousRecords = await options.resolvePreviousRecords(result.record);
@@ -240,7 +242,7 @@ export async function enrichOfficialAnnouncement(record: ResearchAnnouncementRec
     options.signal?.throwIfAborted();
     const relation = relationFromPublisherText(record, previousRecords, retrievedAt);
     const reasonCodes = [reason, ...(relation.unresolved ? ["unresolved_correction_reference"] : [])];
-    return { record: { ...record, relations: relation.relations, unresolvedRelations: relation.unresolvedRelations, unknownRelationTargets: relation.unknownRelationTargets, detailQuality: { status, reasonCodes } }, detailStatus: status, reasonCodes };
+    return { record: { ...record, ...(publisherRecordId ? { publisherRecordId } : {}), relations: relation.relations, unresolvedRelations: relation.unresolvedRelations, unknownRelationTargets: relation.unknownRelationTargets, detailQuality: { status, reasonCodes } }, detailStatus: status, reasonCodes };
   }
 }
 

@@ -1175,8 +1175,15 @@ export class MemoryPersistence implements Persistence {
     const all = this.matchingDisclosureAnnouncements(query);
     const window = all.filter((record) => Date.parse(record.publishedAt) >= Date.parse(query.publishedFrom) && Date.parse(record.publishedAt) <= Date.parse(query.publishedTo)
       && (!query.eventFrom || (record.eventDate !== null && record.eventDate >= query.eventFrom)) && (!query.eventTo || (record.eventDate !== null && record.eventDate <= query.eventTo)));
-    const collections = new Set(window.map((record) => record.collectionRecordId).filter(Boolean));
-    const candidates = new Set([...window.map((record) => record.id), ...all.filter((record) => record.collectionRecordId && collections.has(record.collectionRecordId)).map((record) => record.id)]);
+    const collections = new Map<string, Set<string | undefined>>();
+    for (const record of window) if (record.collectionRecordId) {
+      const publisherIds = collections.get(record.collectionRecordId) ?? new Set<string | undefined>();
+      publisherIds.add(record.publisherRecordId); collections.set(record.collectionRecordId, publisherIds);
+    }
+    const publisherRecords = new Set(window.map((record) => record.publisherRecordId).filter(Boolean));
+    const candidates = new Set([...window.map((record) => record.id), ...all.filter((record) => (record.collectionRecordId && collections.has(record.collectionRecordId)
+      && (!record.publisherRecordId || collections.get(record.collectionRecordId)!.has(undefined) || collections.get(record.collectionRecordId)!.has(record.publisherRecordId)))
+      || (record.publisherRecordId && publisherRecords.has(record.publisherRecordId))).map((record) => record.id)]);
     for (const record of all) if (record.unknownRelationTargets?.length && window.some((target) => disclosureNoticeMayAffectPublication(record, target.publishedAt))) candidates.add(record.id);
     // Traverse incoming lineage through notices too: a later resolved revision
     // can supersede an out-of-window ambiguous notice rather than its target.
@@ -1202,8 +1209,8 @@ export class MemoryPersistence implements Persistence {
   async findResearchAnnouncementCandidates(query: ResearchAnnouncementCandidateQuery): Promise<ResearchAnnouncementMetadata[]> {
     validateResearchAnnouncementCandidateQuery(query);
     const scoped = this.matchingDisclosureAnnouncements(query);
-    if (query.kind === "revision") return scoped.filter((record) => Date.parse(record.publishedAt) === Date.parse(query.publishedAt)
-      && (record.collectionRecordId === query.collectionRecordId || record.subject === query.subject)).map(disclosureMetadata);
+    if (query.kind === "revision") return scoped.filter((record) => (query.publisherRecordId !== undefined && record.publisherRecordId === query.publisherRecordId)
+      || (record.collectionRecordId === query.collectionRecordId && (!query.publisherRecordId || !record.publisherRecordId || record.publisherRecordId === query.publisherRecordId))).map(disclosureMetadata);
     const before = scoped.filter((record) => Date.parse(record.publishedAt) < Date.parse(query.before));
     const wanted = new Set(before.filter((record) => query.titles.includes(record.subject.replace(/\s+/g, ""))
       && query.days.includes(new Date(Date.parse(record.publishedAt) + 8 * 3_600_000).toISOString().slice(0, 10))).map((record) => record.id));

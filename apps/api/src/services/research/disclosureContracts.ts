@@ -22,7 +22,7 @@ export const disclosureUnresolvedRelationSchema = z.object({
   candidateAnnouncementIds: z.array(id).min(2).refine((ids) => ids.every((value, index) => index === 0 || ids[index - 1]! < value), "Candidate IDs must be unique and sorted"),
 }).strict();
 export const researchAnnouncementRecordSchema = z.object({
-  id, collectionRecordId: id.optional(), issuerId: id, listingId: id, ticker: z.string(), venue: z.enum(["TWSE", "TPEX"]),
+  id, collectionRecordId: id.optional(), publisherRecordId: id.optional(), issuerId: id, listingId: id, ticker: z.string(), venue: z.enum(["TWSE", "TPEX"]),
   publishedAt: time, publicationPrecision: z.enum(["second", "minute", "date"]), subject: z.string(), ruleClause: z.string(),
   eventDate: z.string().nullable(), explanation: z.string(), sourceUrl: safeUrl,
   rawPublication: z.object({ date: z.string(), time: z.string() }).strict().optional(),
@@ -112,7 +112,7 @@ export function validateResearchDisclosureScanLookup(query: ResearchDisclosureSc
 export const researchAnnouncementMetadataSchema = researchAnnouncementRecordSchema.omit({ explanation: true, attachments: true });
 export type ResearchAnnouncementMetadata = z.infer<typeof researchAnnouncementMetadataSchema>;
 export type ResearchAnnouncementWindowQuery = ResearchDisclosureScanLookup & { publishedFrom: string; publishedTo: string; eventFrom?: string; eventTo?: string };
-export type ResearchAnnouncementCandidateQuery = ResearchDisclosureScanLookup & ({ kind: "revision"; collectionRecordId: string; publishedAt: string; subject: string } | { kind: "citation"; before: string; titles: string[]; days: string[] });
+export type ResearchAnnouncementCandidateQuery = ResearchDisclosureScanLookup & ({ kind: "revision"; collectionRecordId: string; publisherRecordId?: string; publishedAt: string; subject: string } | { kind: "citation"; before: string; titles: string[]; days: string[] });
 export type ResearchDisclosureReferenceQuery = ResearchDisclosureScanLookup & { artifactId: string; reference?: { kind: "announcement_attachment" | "investor_material"; id: string } };
 export function disclosureMetadata(record: ResearchAnnouncementRecord): ResearchAnnouncementMetadata {
   return researchAnnouncementMetadataSchema.parse(Object.fromEntries(Object.entries(record).filter(([key]) => key !== "explanation" && key !== "attachments")));
@@ -143,7 +143,7 @@ export function validateResearchDisclosureReferenceQuery(query: ResearchDisclosu
 export function validateResearchAnnouncementCandidateQuery(query: ResearchAnnouncementCandidateQuery): void {
   validateDisclosureReadScope(query);
   z.discriminatedUnion("kind", [
-    z.object({ ...disclosureLookupFields, kind: z.literal("revision"), collectionRecordId: id, publishedAt: time, subject: z.string() }).strict(),
+    z.object({ ...disclosureLookupFields, kind: z.literal("revision"), collectionRecordId: id, publisherRecordId: id.optional(), publishedAt: time, subject: z.string() }).strict(),
     z.object({ ...disclosureLookupFields, kind: z.literal("citation"), before: time, titles: z.array(z.string().min(1)), days: z.array(disclosureDay) }).strict(),
   ]).refine((value) => Date.parse(value.kind === "revision" ? value.publishedAt : value.before) <= Date.parse(value.effectiveAt), "Candidate time exceeds effectiveAt").parse(query);
 }

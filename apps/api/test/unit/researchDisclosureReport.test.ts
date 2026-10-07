@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { disclosureId } from "../../src/services/research/providers/mopsAnnouncements.js";
 import { runOfficialDisclosureAcquisition } from "../../src/services/research/disclosureAcquisition.js";
 import type { z } from "zod";
 import { disclosureCandidateSchema } from "../../src/services/research/disclosureReport.js";
@@ -164,6 +165,7 @@ async function fixture(venue: "TWSE" | "TPEX" = "TWSE") {
     id: "scan_1", listingId: record.listing.id, issuerId: record.issuer.id, venue, checkedAt: "2026-10-04T03:50:00.000Z",
     publicationStart: "2025-10-04T04:00:00.000Z", publicationEnd: context.effectiveAt, knowledgeAt: context.knowledgeAt,
     status: "success", exhaustive: true, provenance,
+    artifactAttempts: [{ artifactId: artifact.id, sourceUrl: artifact.sourceUrl, attemptedAt: "2026-10-04T03:50:00.000Z", status: "retained" }],
   };
   return { persistence, query, record, announcement, artifact, scan };
 }
@@ -921,6 +923,59 @@ describe("focused disclosure report", () => {
     expect(rendered).toContain("&#38;&#35;91&#59;x&#38;&#35;93&#59;");
     expect(literalMarkdownText(rendered)).toContain(injection.replace(/[\r\n\u2028\u2029]/g, " "));
     expect(JSON.stringify(report)).toBe(before);
+  });
+  it.each((["announcement_attachment", "investor_material"] as const).flatMap((kind) =>
+    (["retained", "missing", "restricted", "wrong_locator", "old_attempt", "prior_scan_only"] as const).map((attempt) => ({ kind, attempt }))))(
+    "$kind current assessment with $attempt refresh: retain historical facts → require selected successful scan proof", async ({ kind, attempt }) => {
+      const f = await fixture();
+      const retainedAttempt = f.scan.artifactAttempts![0]!;
+      const artifact = { ...f.artifact, reference: { kind, id: kind === "announcement_attachment" ? f.announcement.id : "material_1" } };
+      await f.persistence.appendResearchAnnouncements([f.announcement]);
+      await f.persistence.appendResearchDisclosureArtifacts([artifact]);
+      if (kind === "investor_material") await f.persistence.appendResearchDisclosureMaterialReferences([{ id: "material_1",
+        issuerId: f.record.issuer.id, listingId: f.record.listing.id, venue: f.record.listing.venue,
+        publishedAt: artifact.publishedAt, artifactIds: [artifact.id], provenance: artifact.provenance }]);
+      const artifactAttempts = attempt === "missing" || attempt === "prior_scan_only" ? [] : [{ ...retainedAttempt,
+        ...(attempt === "restricted" ? { status: "restricted" as const } : {}),
+        ...(attempt === "wrong_locator" ? { sourceUrl: "https://mops.twse.com.tw/changed.pdf" } : {}),
+        ...(attempt === "old_attempt" ? { attemptedAt: "2026-10-04T03:40:00.000Z" } : {}) }];
+      if (attempt === "prior_scan_only") await f.persistence.appendResearchDisclosureScans([{ ...f.scan, id: "earlier_scan",
+        checkedAt: "2026-10-04T03:40:00.000Z", artifactAttempts: [{ ...retainedAttempt, attemptedAt: "2026-10-04T03:40:00.000Z" }] }]);
+      await f.persistence.appendResearchDisclosureScans([{ ...f.scan, artifactAttempts }]);
+      const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [candidate, artifactCandidate], readBudget: 10 });
+      expect(report.assessments[0]!.support).toBe("provisional");
+      expect(report.assessments[1]!.sourceSupport).toBe("supported");
+      expect(report.assessments[1]!.support).toBe(attempt === "retained" ? "provisional" : "withheld");
+      expect(report.artifactPages[0]!.artifact!.blocks).toMatchObject(artifact.blocks);
+      if (attempt !== "retained") {
+        expect(report.assessments[1]!.reasonCodes).toContain(attempt === "restricted" ? "artifact_current_revalidation_failed" : "artifact_current_revalidation_missing");
+        expect(report.assessments[1]!.failedDependencies).toContainEqual(artifactCandidate.statusEvidence.reference);
+        const recovery = "Current interpretations require successful revalidation of this source locator; retained historical facts remain available.";
+        expect(report.recoveryRequirements).toContain(recovery);
+        expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, "en"))).toContain(recovery);
+        expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, "zh-TW"))).toContain("當前解讀須先成功重新驗證此來源位置；已留存的歷史事實仍可使用。");
+        const forged = structuredClone(report);
+        forged.assessments[1]!.support = "provisional";
+        forged.assessments[1]!.reasonCodes = [];
+        forged.assessments[1]!.failedDependencies = [];
+        forged.artifactPages[0]!.quality.freshness = "current";
+        forged.artifactPages[0]!.quality.readiness.currentAssessment = "ready";
+        for (const locale of ["en", "zh-TW"] as const) expect(() => renderFocusedDisclosureResearchReportMarkdown(forged, locale)).toThrow();
+      }
+    });
+  it("synthetic inline explanation: no external refresh attempt → preserve current verified interpretation", async () => {
+    const f = await fixture();
+    const id = disclosureId("art", f.announcement.id, "explanation");
+    const artifact = { ...f.artifact, id };
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, attachments: [{ ...f.announcement.attachments[0]!, artifactId: id }] }]);
+    await f.persistence.appendResearchDisclosureArtifacts([artifact]);
+    await f.persistence.appendResearchDisclosureScans([{ ...f.scan, artifactAttempts: [] }]);
+    const reference = { ...artifactCandidate.statusEvidence.reference, artifactId: id };
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...artifactCandidate,
+      triggeringEvidence: [reference], statusEvidence: { ...artifactCandidate.statusEvidence, reference } }], readBudget: 10 });
+    expect(report.assessments[0]!.sourceSupport).toBe("supported");
+    expect(report.assessments[0]!.support).toBe("provisional");
+    for (const locale of ["en", "zh-TW"] as const) expect(() => renderFocusedDisclosureResearchReportMarkdown(report, locale)).not.toThrow();
   });
   it.each(["announcement_attachment", "investor_material"] as const)("%s publication: old artifact → withhold until declared extension encompasses publication", async (kind) => {
     const f = await fixture();

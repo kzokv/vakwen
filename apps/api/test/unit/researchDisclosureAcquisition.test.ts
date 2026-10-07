@@ -157,8 +157,8 @@ it.each(["TWSE", "TPEX"] as const)("%s issuer-wide history: identical title/time
   const persistence = new MemoryPersistence(); const { identity, rows } = fixture(venue);
   await persistence.appendResearchIdentityRecords([identity]);
   const source = parseOfficialAnnouncementSnapshot(rows, { retrievedAt: at, contentHash: "d".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "prior" }, venue, [identity])[0]!;
-  const foreign = { ...source, id: "foreign_observation", listingId: "another_listing", venue: venue === "TWSE" ? "TPEX" as const : "TWSE" as const };
-  const local = { ...source, id: "local_observation" };
+  const foreign = { ...source, collectionRecordId: source.id, id: "foreign_observation", listingId: "another_listing", venue: venue === "TWSE" ? "TPEX" as const : "TWSE" as const };
+  const local = { ...source, collectionRecordId: source.id, id: "local_observation" };
   await persistence.appendResearchAnnouncements([foreign, local]);
   const fetchImpl = vi.fn(async () => new Response(JSON.stringify(rows), { headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
   const result = await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "lineage" });
@@ -522,6 +522,12 @@ it.each([
     for (const persistence of [new MemoryPersistence()]) {
       const result = await disclosureAttachmentRevisionScenario(persistence, venue);
       expect(result.requests).toBe(7);
+      expect(result.agedPage.scan.status).toBe("current");
+      expect(result.agedPage.quality.readiness.currentAssessment).toBe("degraded");
+      expect(result.agedRead.artifact).toEqual(result.reads[6]!.artifact);
+      expect(result.reads[6]!.quality.readiness.currentAssessment).toBe("ready");
+      expect(result.agedRead.quality.readiness.currentAssessment).toBe("blocked");
+      expect(result.agedRead.quality.reasonCodes).toContain("artifact_current_revalidation_missing");
       expect(result.failureReport.assessments.map((assessment) => assessment.support)).toEqual(["provisional", "withheld", "withheld"]);
       expect(result.failureReport.assessments[0]!.sourceSupport).toBe("supported");
       expect(result.failureReport.assessments[1]!.reasonCodes).toContain("artifact_not_returned");
@@ -571,7 +577,7 @@ it("duplicate attachment locator: one response per scan → consistent content i
   } finally { spy.mockRestore(); }
 });
 
-it.each(["TWSE", "TPEX"] as const)("%s changed snapshot event/rule with failed detail → fresh source metadata replaces cached enrichment", async (venue) => {
+it.each(["TWSE", "TPEX"] as const)("%s changed snapshot event/rule with failed identity → preserve fresh source without unproven supersession", async (venue) => {
   const persistence = new MemoryPersistence(); const { rows, identity } = fixture(venue);
   await persistence.appendResearchIdentityRecords([identity]);
   const ticker = venue === "TWSE" ? "2072" : "4530";
@@ -590,10 +596,12 @@ it.each(["TWSE", "TPEX"] as const)("%s changed snapshot event/rule with failed d
   rows[0].事實發生日 = "1151002"; rows[0].符合條款 = "第20款"; failDetail = true;
   const next = "2026-10-04T05:15:00.000Z";
   await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: next, acquisitionRunId: "changed" });
-  const current = (await listMaterialAnnouncements(persistence, { subject, context: { knowledgeAt: next } })).items[0]!;
+  const selected = (await listMaterialAnnouncements(persistence, { subject, context: { knowledgeAt: next } })).items;
+  expect(selected).toHaveLength(2);
+  const current = selected.find((item) => item.collectionRecordId !== original.collectionRecordId)!;
   expect(current).toMatchObject({ eventDate: "2026-10-02", rawEventDate: "1151002", ruleClause: "第20款", detailQuality: { status: "restricted" } });
   expect(current.collectionRecordId).not.toBe(original.collectionRecordId);
-  expect(current.relations).toContainEqual({ kind: "supersedes", targetAnnouncementId: original.id });
+  expect(current.relations).toEqual([]);
   expect(current.provenance.contentHash).toBe(disclosureHash(Buffer.from(JSON.stringify(rows))));
   expect((await listMaterialAnnouncements(persistence, { subject, context: { knowledgeAt: at } })).items[0]).toEqual(original);
 });
@@ -628,4 +636,43 @@ it("snapshot semantic identity: each retained field changes → distinct observa
     expect(parse({ ...rows[0], ...patch }).id).not.toBe(original.id);
   }
   expect(parse({ ...rows[0], 出表日期: "1151005", unrelated: "value" }).id).toBe(original.id);
+});
+
+it.each(["TWSE", "TPEX"] as const)("%s minute-colliding unknown rows: differing source evidence → neither row supersedes the other in either order", async (venue) => {
+  const results: string[][] = [];
+  for (const reverse of [false, true]) {
+    const persistence = new MemoryPersistence(); const { rows, identity } = fixture(venue); await persistence.appendResearchIdentityRecords([identity]);
+    const a = { ...rows[0], 發言時間: "07:00", 事實發生日: "1151001", 符合條款: "第20款", 說明: "First independent disclosure." };
+    const b = { ...a, 事實發生日: "1151002", 符合條款: "第21款", 說明: "Second independent disclosure." };
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+    await runOfficialDisclosureAcquisition(persistence, { retrievedAt: at, fetchImpl: async (url) => String(url) === OFFICIAL_ANNOUNCEMENT_SOURCES[venue]
+      ? new Response(JSON.stringify(reverse ? [b, a] : [a, b])) : new Response("restricted", { status: 403 }) });
+    const page = await listMaterialAnnouncements(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: at } });
+    expect(page.items).toHaveLength(2); expect(page.items.every((item) => item.relations.length === 0)).toBe(true);
+    expect(page.items.map((item) => item.ruleClause).sort()).toEqual(["第20款", "第21款"]);
+    results.push(page.items.map((item) => item.id).sort());
+  }
+  expect(results[1]).toEqual(results[0]);
+});
+
+it.each(["TWSE", "TPEX"] as const)("%s verified publisher identity: same row across changed snapshot links; different serial does not", async (venue) => {
+  for (const differentSerial of [false, true]) {
+    const persistence = new MemoryPersistence(); const { rows, identity } = fixture(venue); await persistence.appendResearchIdentityRecords([identity]);
+    const ticker = venue === "TWSE" ? "2072" : "4530";
+    const history = JSON.parse(readFileSync(new URL(`../fixtures/research/mops-history-${ticker}.json`, import.meta.url), "utf8"));
+    const detail = JSON.parse(readFileSync(new URL(`../fixtures/research/mops-detail-${ticker}.json`, import.meta.url), "utf8"));
+    const fetchImpl: typeof fetch = async (url) => new Response(JSON.stringify(String(url).endsWith("t05st01_detail") ? detail : String(url).endsWith("t05st01") ? history : rows));
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+    await runOfficialDisclosureAcquisition(persistence, { retrievedAt: at, fetchImpl });
+    const query = { subject: { kind: "listing_id" as const, listingId: identity.listing.id }, context: { knowledgeAt: at } };
+    const first = (await listMaterialAnnouncements(persistence, query)).items[0]!;
+    expect(first.publisherRecordId).toMatch(/^mops_/);
+    if (differentSerial) history.result.data[0][5].parameters.serialNumber = "2";
+    else { rows[0].符合條款 = "第20款"; rows[0].事實發生日 = "1151002"; }
+    await runOfficialDisclosureAcquisition(persistence, { retrievedAt: "2026-10-04T05:15:00.000Z", fetchImpl });
+    const page = await listMaterialAnnouncements(persistence, { ...query, context: { knowledgeAt: "2026-10-04T05:15:00.000Z" } });
+    expect(page.items).toHaveLength(differentSerial ? 2 : 1);
+    if (differentSerial) { expect(page.items.every((item) => item.relations.length === 0)).toBe(true); expect(new Set(page.items.map((item) => item.publisherRecordId)).size).toBe(2); }
+    else { expect(page.items[0]!.publisherRecordId).toBe(first.publisherRecordId); expect(page.items[0]!.relations).toEqual([{ kind: "supersedes", targetAnnouncementId: first.id }]); }
+  }
 });

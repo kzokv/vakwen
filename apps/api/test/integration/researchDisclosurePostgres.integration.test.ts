@@ -1,3 +1,4 @@
+import { disclosurePublisherIdentityScenario } from "../fixtures/research/disclosurePublisherIdentityScenario.js";
 import { disclosureCitationLineageScenario } from "../fixtures/research/disclosureCitationLineageScenario.js";
 import { disclosureAttachmentRevisionScenario } from "../fixtures/research/disclosureAttachmentRevisionScenario.js";
 import { disclosureReversionScenario } from "../fixtures/research/disclosureRevisionScenario.js";
@@ -69,6 +70,12 @@ describePostgres("disclosure memory/Postgres conformance", () => {
     for (const persistence of [new MemoryPersistence(), postgres]) {
       const result = await disclosureAttachmentRevisionScenario(persistence, venue);
       expect(result.requests).toBe(7);
+      expect(result.agedPage.scan.status).toBe("current");
+      expect(result.agedPage.quality.readiness.currentAssessment).toBe("degraded");
+      expect(result.agedRead.artifact).toEqual(result.reads[6]!.artifact);
+      expect(result.reads[6]!.quality.readiness.currentAssessment).toBe("ready");
+      expect(result.agedRead.quality.readiness.currentAssessment).toBe("blocked");
+      expect(result.agedRead.quality.reasonCodes).toContain("artifact_current_revalidation_missing");
       expect(result.failureReport.assessments.map((assessment) => assessment.support)).toEqual(["provisional", "withheld", "withheld"]);
       expect(result.failureReport.assessments[0]!.sourceSupport).toBe("supported");
       expect(result.failureReport.assessments[1]!.reasonCodes).toContain("artifact_not_returned");
@@ -268,6 +275,20 @@ describePostgres("disclosure memory/Postgres conformance", () => {
       expect(result.historical.map((record) => record.id)).toEqual(["citation_seed"]);
       expect(result.cycle.map((record) => record.id).sort()).toEqual(["citation_cycle_a", "citation_cycle_b"]);
       expect([...result.current, ...result.historical, ...result.cycle].every((record) => !("explanation" in record) && !("attachments" in record))).toBe(true);
+    }
+  });
+
+  it.each(["TWSE", "TPEX"] as const)("%s revision identity: same title/time → require exact collection or verified publisher row", async (venue) => {
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const f = await disclosureFixture(persistence, venue);
+    const result = await disclosurePublisherIdentityScenario(persistence, f.announcement, f.context.knowledgeAt);
+    expect(result.samePublisher.map((row) => row.id).sort()).toEqual(["publisher_a", "publisher_a2"]);
+    expect(result.differentPublisher.map((row) => row.id)).toEqual(["publisher_b"]);
+    expect(result.noProof).toEqual([]);
+  expect(result.pages.flatMap((page) => page.selection.conflictObservationIds).sort()).toEqual(["publisher_a", "publisher_a2"]);
+  expect(result.pages.flatMap((page) => page.items.map((row) => row.id))).toContain("publisher_b");
+    expect(result.window.map((row) => row.id)).toContain("publisher_a2");
+    expect([...result.samePublisher, ...result.differentPublisher].every((row) => !("explanation" in row) && !("attachments" in row))).toBe(true);
     }
   });
   it("bounded announcement SQL: window companions, exact references, page IDs and Unicode candidates → memory parity", async () => {

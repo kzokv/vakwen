@@ -1610,9 +1610,11 @@ export class PostgresPersistence implements Persistence {
   async listResearchAnnouncementSelectionMetadata(query: ResearchAnnouncementWindowQuery): Promise<ResearchAnnouncementMetadata[]> {
     validateResearchAnnouncementWindowQuery(query);
     const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`WITH RECURSIVE scoped AS NOT MATERIALIZED (SELECT id, record, published_at FROM research.announcements WHERE ${this.disclosureAnnouncementScope()}),
-      window_rows AS (SELECT id, published_at, record->>'collectionRecordId' AS collection FROM scoped WHERE published_at >= $6::timestamptz AND published_at <= $7::timestamptz
+      window_rows AS (SELECT id, published_at, record->>'collectionRecordId' AS collection, record->>'publisherRecordId' AS publisher_record FROM scoped WHERE published_at >= $6::timestamptz AND published_at <= $7::timestamptz
         AND ($8::text IS NULL OR record->>'eventDate' >= $8) AND ($9::text IS NULL OR record->>'eventDate' <= $9)),
-      candidates AS (SELECT id FROM window_rows UNION SELECT id FROM scoped WHERE record->>'collectionRecordId' IN (SELECT collection FROM window_rows WHERE collection IS NOT NULL)
+      candidates AS (SELECT id FROM window_rows UNION SELECT id FROM scoped WHERE EXISTS (SELECT 1 FROM window_rows WHERE collection=record->>'collectionRecordId'
+          AND (publisher_record IS NULL OR record->>'publisherRecordId' IS NULL OR publisher_record=record->>'publisherRecordId'))
+        OR record->>'publisherRecordId' IN (SELECT publisher_record FROM window_rows WHERE publisher_record IS NOT NULL)
         UNION SELECT id FROM scoped WHERE jsonb_array_length(COALESCE(record->'unknownRelationTargets', '[]'::jsonb)) > 0 AND CASE record->>'publicationPrecision'
           WHEN 'date' THEN ((date_trunc('day', published_at AT TIME ZONE 'Asia/Taipei') + interval '1 day') AT TIME ZONE 'Asia/Taipei') > (SELECT min(published_at) FROM window_rows)
           WHEN 'minute' THEN published_at + interval '1 minute' > (SELECT min(published_at) FROM window_rows)
@@ -1647,8 +1649,9 @@ export class PostgresPersistence implements Persistence {
       return result.rows.map((row) => researchAnnouncementMetadataSchema.parse(row.record));
     }
     const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`SELECT record - 'explanation' - 'attachments' AS record FROM research.announcements WHERE ${this.disclosureAnnouncementScope()}
-      AND published_at=$6::timestamptz AND (record->>'collectionRecordId'=$7 OR record->>'subject'=$8)`,
-      [...this.disclosureScopeParameters(query), query.publishedAt, query.collectionRecordId, query.subject]);
+      AND (($7::text IS NOT NULL AND record->>'publisherRecordId'=$7)
+        OR (record->>'collectionRecordId'=$6 AND ($7::text IS NULL OR record->>'publisherRecordId' IS NULL OR record->>'publisherRecordId'=$7)))`,
+      [...this.disclosureScopeParameters(query), query.collectionRecordId, query.publisherRecordId ?? null]);
     return result.rows.map((row) => researchAnnouncementMetadataSchema.parse(row.record));
   }
   async getLatestSuccessfulDisclosureDetail(query: ResearchDisclosureScanLookup & { collectionRecordId: string }): Promise<ResearchAnnouncementRecord | null> {

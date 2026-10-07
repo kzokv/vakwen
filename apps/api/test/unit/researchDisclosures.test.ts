@@ -525,3 +525,18 @@ it.each(["future", "wrong_subject", "wrong_location"] as const)("ineligible %s c
   expect(page.page).toMatchObject({ retainedCharacters: 40_000, originalCharacters: 80_000, returnedPages: [1, 2], nextCursor: null, pageTruncated: false });
   expect(page.artifact!.verifiedClaims).toEqual([]);
 });
+
+it.each(["retained", "boundary", "restricted", "missing", "wrong_url", "future", "future_scan", "before_scan", "stale"] as const)("artifact revalidation %s: fixed scan proof → current readiness without losing retained facts", async (mode) => {
+  const f = await disclosureFixture();
+  const checkedAt = "2026-09-01T02:09:00.000Z", knowledgeAt = "2026-09-01T02:10:00.000Z";
+  await f.persistence.appendResearchDisclosureScans([{ ...f.scan, id: "refresh_scan", checkedAt, publicationEnd: checkedAt, knowledgeAt,
+    provenance: { ...f.scan.provenance, id: "refresh_provenance", retrievedAt: checkedAt, processedAt: knowledgeAt },
+    artifactAttempts: mode === "missing" ? [] : [{ artifactId: f.artifact.id, sourceUrl: mode === "wrong_url" ? "https://mops.twse.com.tw/other" : f.artifact.sourceUrl,
+      attemptedAt: mode === "future" ? "2026-09-01T02:11:00.000Z" : mode === "before_scan" ? "2026-09-01T02:08:00.000Z" : checkedAt,
+      status: mode === "restricted" ? "restricted" : "retained" }] }]);
+  const result = await getDisclosureArtifact(f.persistence, { subject: f.subject, context: { knowledgeAt: mode === "stale" ? "2026-09-01T02:40:00.000Z" : mode === "boundary" ? "2026-09-01T02:39:00.000Z" : knowledgeAt, ...(mode === "future_scan" ? { effectiveAt: "2026-09-01T02:08:00.000Z" } : {}) }, artifactId: f.artifact.id });
+  expect(result.artifact?.blocks.map((block) => block.text)).toEqual(["證據", "證據", "證據"]);
+  expect(result.quality.status).toBe("available");
+  expect(result.quality.readiness.currentAssessment).toBe(mode === "retained" || mode === "boundary" ? "ready" : "blocked");
+  if (mode !== "retained" && mode !== "boundary") expect(result.quality.reasonCodes).toContain(`artifact_current_revalidation_${mode === "restricted" ? "failed" : mode === "stale" ? "stale" : "missing"}`);
+});

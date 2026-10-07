@@ -41,7 +41,7 @@ async function officialResponse(fetchImpl: typeof fetch, url: string, signal?: A
 }
 function announcementContentVariant(record: ResearchAnnouncementRecord): string {
   return disclosureHash(JSON.stringify({
-    content: [record.subject, record.ruleClause, record.eventDate, record.explanation], parserVersion: record.provenance.parserVersion,
+    publisherRecordId: record.publisherRecordId, content: [record.subject, record.ruleClause, record.eventDate, record.explanation], parserVersion: record.provenance.parserVersion,
     detailQuality: record.detailQuality ? { ...record.detailQuality, reasonCodes: [...record.detailQuality.reasonCodes].sort() } : undefined,
     attachments: record.attachments.map((attachment) => ({ title: attachment.title, sourceUrl: attachment.sourceUrl,
       mediaType: attachment.mediaType, contentIdentity: attachment.contentIdentity, hasArtifact: attachment.artifactId !== null })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
@@ -94,7 +94,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         detailAttempts.push({ announcementId: sourceRecord.id, attemptedAt: detailCompletedAt, status: enriched.detailStatus, reasonCodes: enriched.reasonCodes });
         detailAttemptsByListing.set(listingKey, detailAttempts);
         const collectionRecordId = sourceRecord.id;
-        const previous = await persistence.findResearchAnnouncementCandidates({ ...scope, kind: "revision", collectionRecordId,
+        const previous = await persistence.findResearchAnnouncementCandidates({ ...scope, kind: "revision", collectionRecordId, publisherRecordId: enriched.record.publisherRecordId,
           publishedAt: enriched.record.publishedAt, subject: enriched.record.subject });
         const superseded = new Set(previous.flatMap((prior) => prior.relations.filter((relation) => relation.kind === "supersedes").map((relation) => relation.targetAnnouncementId)));
         const tips = previous.filter((prior) => !superseded.has(prior.id)).sort((a, b) => a.id.localeCompare(b.id));

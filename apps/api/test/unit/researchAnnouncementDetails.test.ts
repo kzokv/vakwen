@@ -195,7 +195,7 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"]
       const results = [parseOfficialAnnouncementDetail(detail, notice, metadata, previous),
         await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), resolvePreviousRecords: async () => previous })];
       expect(results[0]!.detailStatus).toBe("available");
-      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.7");
+      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.8");
       expect(results[1]!.detailStatus).toBe("restricted");
       for (const result of results) {
         expect(result.record.relations).toEqual(targets.length === 1 ? [{ kind, targetAnnouncementId: prior.id }] : []);
