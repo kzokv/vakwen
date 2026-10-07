@@ -9,7 +9,7 @@ import { parseTaiwanOfficialDate } from "./twseIdentity.js";
 /** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
 export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
 export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
-export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.9";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.10";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const parametersSchema = z.object({
   marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
@@ -267,7 +267,7 @@ function announcementCitationPairs(record: ResearchAnnouncementRecord): { title:
   for (let index = 0; index + 1 < tokens.length; index++) {
     const first = tokens[index]!; const second = tokens[index + 1]!;
     const bridge = explanation.slice(first.end, second.start);
-    if (first.day && second.title && /^(?:之?公告)?$/.test(bridge)) pairs.push({ title: second.title, day: first.day, token: index });
+    if (first.day && second.title && /^(?:公告|之公告|公告之)?$/.test(bridge)) pairs.push({ title: second.title, day: first.day, token: index });
     else if (first.title && second.day && /^(?:[（(])?(?:公告日期|發布日期|公告於)(?:為|[:：])?$/.test(bridge)) pairs.push({ title: first.title, day: second.day, token: index });
   }
   // A token cannot establish competing associations (e.g. title/date/title).

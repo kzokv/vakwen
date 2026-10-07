@@ -177,11 +177,11 @@ it.each(["TWSE", "TPEX"] as const)("%s optional detailed event date: unavailable
 });
 
 it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"] as const).flatMap((kind) =>
-  ["2026-10-02", "2026-10-2", "2026/10/02", "2026/10/2", "2026年10月02日", "2026年10月2日", "115-10-02", "115-10-2", "115/10/02", "115/10/2", "115年10月02日", "115年10月2日"].map((citationDate) => ({ venue, kind, citationDate })))))(
-  "$venue $kind citation $citationDate: shared normalized selectors → same exact lineage in detail and failed-detail fallback", async ({ venue, kind, citationDate }) => {
+  ["2026-10-02", "2026-10-2", "2026/10/02", "2026/10/2", "2026年10月02日", "2026年10月2日", "115-10-02", "115-10-2", "115/10/02", "115/10/2", "115年10月02日", "115年10月2日"].map((citationDate) => ({ venue, kind, citationDate, bridge: "公告" })).concat([{ venue, kind, citationDate: "115/10/02", bridge: "公告之" }]))))(
+  "$venue $kind citation $citationDate$bridge: shared normalized selectors → same exact lineage in detail and failed-detail fallback", async ({ venue, kind, citationDate, bridge }) => {
     const { record, detail } = fixture(venue);
     const prior = { ...record, id: "cited_prior", publishedAt: "2026-10-02T01:00:00.000Z", subject: "公司資本支出公告" };
-    const notice = { ...record, subject: `${kind === "corrects" ? "更正" : "撤回"}本公司公告`, explanation: `原${citationDate}公告「公司\u3000資本支出公告」內容變更。` };
+    const notice = { ...record, subject: `${kind === "corrects" ? "更正" : "撤回"}本公司公告`, explanation: `原${citationDate}${bridge}「公司\u3000資本支出公告」內容變更。` };
     for (const field of ["主旨", "說明"]) detail.result.data[0][detail.result.titles.findIndex((title: { main: string }) => title.main.trim() === field)] = field === "主旨" ? notice.subject : notice.explanation;
     expect(announcementCitationSelectors(notice)).toEqual({ titles: [prior.subject], days: ["2026-10-02"] });
     const isolated = [
@@ -195,7 +195,7 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"]
       const results = [parseOfficialAnnouncementDetail(detail, notice, metadata, previous),
         await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), resolvePreviousRecords: async () => previous })];
       expect(results[0]!.detailStatus).toBe("available");
-      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.9");
+      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.10");
       expect(results[1]!.detailStatus).toBe("restricted");
       for (const result of results) {
         expect(result.record.relations).toEqual(targets.length === 1 ? [{ kind, targetAnnouncementId: prior.id }] : []);
