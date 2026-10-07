@@ -740,6 +740,28 @@ describe("focused disclosure report", () => {
     }
   });
   it.each([
+    "The board meeting will be held on 2026/11/01.", "The company shall hold its board meeting on 2026/11/01.",
+    "The project will be completed on 2026/11/01.", "The project shall be completed on 2026/11/01.",
+    "董事會將於2026/11/01召開。", "工程將於2026/11/01完成。",
+  ])("firm future %s: exact future date → support scheduled but withhold observed", async (statement) => {
+    const f = await fixture();
+    const eventDate = "2026-11-01";
+    const eventDateText = "2026/11/01";
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: statement, eventDate }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, verifiedClaims: [{ ...f.artifact.verifiedClaims[0]!, text: statement }] }]);
+    const references = [candidate.statusEvidence.reference, { kind: "artifact_claim" as const, artifactId: f.artifact.id, claimId: "claim_1" }];
+    for (const status of ["scheduled", "observed"] as const) {
+      const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: references.map((reference, index) => ({ ...candidate,
+        id: `future_${index}`, status, statement, triggeringEvidence: [reference], statusEvidence: { reference, excerpt: statement, eventDate, eventDateText } })), readBudget: 10 });
+      for (const assessment of report.assessments) {
+        expect(assessment.sourceSupport).toBe(status === "scheduled" ? "supported" : "withheld");
+        if (status === "observed") expect(assessment.reasonCodes).toContain("classification_status_not_verified");
+      }
+      for (const locale of ["en", "zh-TW"] as const) expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, locale))).toContain(statement);
+    }
+  });
+  it.each([
     ["2027/02/29", "2027-02-29"], ["2027年4月31日", "2027-04-31"],
     ["2027-02-29", "2027-02-29"], ["2100/02/29", "2100-02-29"],
     ["116/02/29", "2027-02-29"], ["116年4月31日", "2027-04-31"],
@@ -777,6 +799,8 @@ describe("focused disclosure report", () => {
     ["observed", "The transaction was not\ncompleted on 2026/10/03.", "completed on 2026/10/03", "2026-10-03", "2026/10/03"],
     ["observed", "交易尚未\n完成於2026年10月3日。", "完成於2026年10月3日", "2026-10-03", "2026年10月3日"],
     ["observed", "If approved, the transaction completed on 2026/10/03.", "completed on 2026/10/03", "2026-10-03", "2026/10/03"],
+    ["scheduled", "If approved, the meeting will be held on 2027/01/01.", "will be held on 2027/01/01", "2027-01-01", "2027/01/01"],
+    ["scheduled", "The meeting shall be held on 2027/01/01, subject to approval.", "shall be held on 2027/01/01", "2027-01-01", "2027/01/01"],
     ["scheduled", "The transaction is not scheduled for 2027/01/01.", "scheduled for 2027/01/01", "2027-01-01", "2027/01/01"],
     ["scheduled", "交易尚未預定於2027年1月1日。", "預定於2027年1月1日", "2027-01-01", "2027年1月1日"],
     ["scheduled", "The transaction was scheduled for 2027/01/01, but cancelled.", "scheduled for 2027/01/01", "2027-01-01", "2027/01/01"],
@@ -823,11 +847,17 @@ describe("focused disclosure report", () => {
     ["observed", "not completed", "2026-10-03"], ["observed", "hasn't occurred", "2026-10-03"],
     ["observed", "uncompleted", "2026-10-03"], ["observed", "if approved", "2026-10-03"],
     ["observed", "completed subject to approval", "2026-10-03"],
-    ["observed", "will be completed", "2026-10-03"], ["observed", "並無發生", "2026-10-03"],
+    ["observed", "will be completed", "2026-10-03"], ["observed", "shall be completed", "2026-10-03"], ["observed", "並無發生", "2026-10-03"],
     ["observed", "不排除發生", "2026-10-03"], ["observed", "預估完成", "2026-10-03"],
     ["scheduled", "尚未預定", "2027-01-01"], ["scheduled", "取消原訂於", "2027-01-01"],
     ["scheduled", "not scheduled", "2027-01-01"], ["scheduled", "no longer planned", "2027-01-01"],
     ["scheduled", "scheduled but cancelled", "2027-01-01"],
+    ["scheduled", "will not be held", "2027-01-01"], ["scheduled", "shall never be held", "2027-01-01"],
+    ["scheduled", "will be held if approved", "2027-01-01"], ["scheduled", "shall be held subject to approval", "2027-01-01"],
+    ["scheduled", "will probably be held", "2027-01-01"], ["scheduled", "will possibly be held", "2027-01-01"],
+    ["scheduled", "may be scheduled", "2027-01-01"], ["scheduled", "might be scheduled", "2027-01-01"],
+    ["scheduled", "could be scheduled", "2027-01-01"], ["scheduled", "would be scheduled", "2027-01-01"],
+    ["scheduled", "若批准將於當日完成", "2027-01-01"], ["scheduled", "將於當日完成但可能取消", "2027-01-01"],
   ] as const)("%s negative/conditional cue %s: exact dated source → withhold affirmative classification", async (status, cue, date) => {
     const f = await fixture();
     const statement = `${date}: ${cue}`;

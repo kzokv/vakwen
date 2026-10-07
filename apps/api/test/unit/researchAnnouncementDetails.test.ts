@@ -195,7 +195,7 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"]
       const results = [parseOfficialAnnouncementDetail(detail, notice, metadata, previous),
         await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), resolvePreviousRecords: async () => previous })];
       expect(results[0]!.detailStatus).toBe("available");
-      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.4");
+      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.5");
       expect(results[1]!.detailStatus).toBe("restricted");
       for (const result of results) {
         expect(result.record.relations).toEqual(targets.length === 1 ? [{ kind, targetAnnouncementId: prior.id }] : []);
@@ -293,4 +293,50 @@ it.each(["TWSE", "TPEX"] as const)("%s precise publication: clock mismatch or in
   const dateOnly = { ...record, publicationPrecision: "date" as const };
   expect(() => selectOfficialAnnouncementDetailParameters(history, dateOnly)).toThrow("detail_reference_unresolved");
   expect(() => parseOfficialAnnouncementDetail(detail, dateOnly, metadata)).toThrow("detail_observation_mismatch");
+});
+
+it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"] as const).map((kind) => ({ venue, kind }))))(
+  "$venue $kind paired citations: coarse selector cross-product → only actual title/date pairs may link", async ({ venue, kind }) => {
+    const { record, detail } = fixture(venue);
+    const notice = { ...record, subject: `${kind === "corrects" ? "更正" : "撤回"}本公司公告`, explanation: '原115/10/01公告「公告A」及2026年10月2日公告「公告B」內容變更。' };
+    const a = { ...record, id: "prior_a", subject: "公告A", publishedAt: "2026-10-01T01:00:00.000Z" };
+    const b = { ...record, id: "prior_b", subject: "公告B", publishedAt: "2026-10-02T01:00:00.000Z" };
+    const swapped = [{ ...a, id: "swapped_a", publishedAt: b.publishedAt }, { ...b, id: "swapped_b", publishedAt: a.publishedAt }];
+    expect(announcementCitationSelectors(notice)).toEqual({ titles: ["公告A", "公告B"], days: ["2026-10-01", "2026-10-02"] });
+    for (const matched of [[], [a], [b], [a, b]]) {
+      for (const field of ["主旨", "說明"]) detail.result.data[0][detail.result.titles.findIndex((title: { main: string }) => title.main.trim() === field)] = field === "主旨" ? notice.subject : notice.explanation;
+      const results = [parseOfficialAnnouncementDetail(detail, notice, metadata, [...swapped, ...matched]),
+        await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), resolvePreviousRecords: async () => [...swapped, ...matched] })];
+      for (const result of results) {
+        expect(result.record.relations).toEqual(matched.length === 1 ? [{ kind, targetAnnouncementId: matched[0]!.id }] : []);
+        expect(result.record.unresolvedRelations).toEqual(matched.length === 2 ? [{ kind, candidateAnnouncementIds: [a.id, b.id] }] : []);
+        expect(result.record.unknownRelationTargets).toEqual(matched.length === 0 ? [{ kind }] : []);
+      }
+    }
+    for (const explanation of ['事實發生日115/10/01。更正「公告A」。', '115/10/01另有董事會決議，公告「公告A」。', '115/10/01「公告B」及「公告A」。', '「公告A」於2026/10/01完成交易。', '「其他公告」公告日期為2026/10/01「公告A」公告日期為2026/10/02。']) {
+      const uncertain = { ...notice, explanation };
+      detail.result.data[0][detail.result.titles.findIndex((title: { main: string }) => title.main.trim() === "說明")] = explanation;
+      const results = [parseOfficialAnnouncementDetail(detail, uncertain, metadata, [a]),
+        await enrichOfficialAnnouncement(uncertain, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), previousRecords: [a] })];
+      for (const result of results) {
+        expect(result.record.relations).toEqual([]);
+        expect(result.record.unknownRelationTargets).toEqual([{ kind }]);
+      }
+    }
+  });
+
+it("citation token boundaries: title-first explicit date → paired; title-contained date and sentence boundary → unknown", () => {
+  const { record } = fixture("TWSE");
+  for (const explanation of ['「公告A」公告日期為115/10/01。', '「公告A」發布日期：2026年10月1日。', '「公告A」公告於2026/10/01。']) {
+    expect(announcementCitationSelectors({ ...record, subject: "更正公告", explanation })).toEqual({ titles: ["公告A"], days: ["2026-10-01"] });
+  }
+  for (const explanation of ['「115/10/01公告」與「公告A」。', '「公告A」。公告日期115/10/01。', '「115/10/01」公告「公告A」。']) {
+    expect(announcementCitationSelectors({ ...record, subject: "更正公告", explanation })).toEqual({ titles: [], days: [] });
+  }
+});
+
+it("overlapping citation tokens: ambiguous component → discarded without losing independent pair", () => {
+  const { record } = fixture("TWSE");
+  const notice = { ...record, subject: "更正公告", explanation: '「公告A」公告日期為2026/10/01「公告B」公告日期為2026/10/02；2026/10/03公告「公告C」。' };
+  expect(announcementCitationSelectors(notice)).toEqual({ titles: ["公告C"], days: ["2026-10-03"] });
 });

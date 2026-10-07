@@ -221,8 +221,9 @@ function publisherAssertionContexts(source: string | undefined, excerpt: string)
 
 // Status excerpts are conservative evidence anchors: negated, conditional, or revoked
 // assertions cannot establish an affirmative occurrence or schedule by keyword alone.
-function hasUncertainStatusAssertion(excerpt: string): boolean {
-  return /(?:未|無法|並無|尚無|無(?:完成|發生|決議|通過|批准)|沒有|否認|並非|並不|不是|不曾|不會|不再|不予|不排除|不(?:完成|發生|決議|通過|批准|預計|預定|訂於)|取消|撤回|撤銷|否決|暫緩|中止|終止|尚待|如果|假如|假設|倘若|若|可能|如獲)|\b(?:not|never|no|cannot|can't|isn't|wasn't|weren't|hasn't|haven't|hadn't|won't|wouldn't|didn't|doesn't|don't|denied|cancelled|canceled|rescinded|withdrawn|unapproved|uncompleted|incomplete|unscheduled|unplanned|if|unless|pending|will|shall|should|would|could|might|may)\b|\b(?:failed\s+to|subject\s+to)\b/i.test(excerpt.replaceAll("’", "'"));
+function hasUncertainStatusAssertion(excerpt: string, status: "observed" | "scheduled"): boolean {
+  return /(?:未|無法|並無|尚無|無(?:完成|發生|決議|通過|批准)|沒有|否認|並非|並不|不是|不曾|不會|不再|不予|不排除|不(?:完成|發生|決議|通過|批准|預計|預定|訂於)|取消|撤回|撤銷|否決|暫緩|中止|終止|尚待|如果|假如|假設|倘若|若|可能|如獲)|\b(?:not|never|no|cannot|can't|isn't|wasn't|weren't|hasn't|haven't|hadn't|won't|wouldn't|didn't|doesn't|don't|denied|cancelled|canceled|rescinded|withdrawn|unapproved|uncompleted|incomplete|unscheduled|unplanned|if|unless|pending|should|would|could|might|may|probably|possibly|potentially|perhaps|likely)\b|\b(?:failed\s+to|subject\s+to)\b/i.test(excerpt.replaceAll("’", "'"))
+    || (status === "observed" && /\b(?:will|shall)\b/i.test(excerpt));
 }
 
 function artifactReportScopeFailure(artifact: NonNullable<DisclosureArtifactOutput["artifact"]>, pages: MaterialAnnouncementsOutput[]): string | null {
@@ -412,13 +413,13 @@ export function composeFocusedDisclosureResearchReport(input: {
     const occurrenceVerified = candidate.status !== "observed" || (
       /(?:完成|決議|發生|批准|通過|\b(?:approved|completed|occurred)\b)/i.test(anchor.excerpt)
       && assertionContexts.length > 0
-      && assertionContexts.every((assertion) => !hasUncertainStatusAssertion(assertion)
+      && assertionContexts.every((assertion) => !hasUncertainStatusAssertion(assertion, "observed")
         && !/(?:預計|預定|預估|預期|計畫|擬|將於|scheduled|planned|expected)/i.test(assertion))
       && (anchorAnnouncementId === null || announcements.find((item) => item.id === anchorAnnouncementId)?.eventDate === anchor.eventDate)
     );
     const scheduleVerified = candidate.status !== "scheduled" || (assertionContexts.length > 0
-      && assertionContexts.every((assertion) => !hasUncertainStatusAssertion(assertion))
-      && /(?:預計|預定|訂於|將於|\b(?:scheduled|planned|expected)\b)/i.test(anchor.excerpt));
+      && assertionContexts.every((assertion) => !hasUncertainStatusAssertion(assertion, "scheduled"))
+      && /(?:預計|預定|訂於|將於|\b(?:scheduled|planned|expected|will|shall)\b)/i.test(anchor.excerpt));
     const failures = refs.map((reference) => ({ reference, reason: failedReason(reference) })).filter((failure) => failure.reason !== null);
     const sourceReasons = [...new Set([
       ...(!applicable ? ["disclosures_not_applicable"] : !current ? [scanFailure] : []),

@@ -9,7 +9,7 @@ import { parseTaiwanOfficialDate } from "./twseIdentity.js";
 /** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
 export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
 export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
-export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.4";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.5";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const parametersSchema = z.object({
   marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
@@ -89,10 +89,10 @@ function relationFromPublisherText(record: ResearchAnnouncementRecord, previousR
   // and its publication date. Shared keywords or coincident event dates never link facts.
   const kind = announcementNoticeKind(record.subject);
   if (!kind) return { relations: record.relations, unresolved: false, unresolvedRelations: record.unresolvedRelations ?? [], unknownRelationTargets: record.unknownRelationTargets ?? [] };
-  const selectors = announcementCitationSelectors(record);
+  const citations = announcementCitationPairs(record);
   const matches = previousRecords.filter((prior) => {
     if (prior.id === record.id || prior.issuerId !== record.issuerId || prior.listingId !== record.listingId || prior.venue !== record.venue || prior.publishedAt >= record.publishedAt) return false;
-    return selectors.titles.includes(compactTitle(prior.subject)) && selectors.days.includes(localStamp(prior).day);
+    return citations.some((citation) => citation.title === compactTitle(prior.subject) && citation.day === localStamp(prior).day);
   });
   const unresolvedRelations = (record.unresolvedRelations ?? []).filter((relation) => relation.kind !== kind);
   const unknownRelationTargets = (record.unknownRelationTargets ?? []).filter((relation) => relation.kind !== kind);
@@ -218,16 +218,40 @@ export async function enrichOfficialAnnouncement(record: ResearchAnnouncementRec
   }
 }
 
-/** Exact publisher citation selectors; final relation verification remains in the parser. */
-export function announcementCitationSelectors(record: ResearchAnnouncementRecord): { titles: string[]; days: string[] } {
-  if (!announcementNoticeKind(record.subject)) return { titles: [], days: [] };
+/** Only explicit adjacent date/title citation syntax establishes a pair. */
+function announcementCitationPairs(record: ResearchAnnouncementRecord): { title: string; day: string }[] {
+  if (!announcementNoticeKind(record.subject)) return [];
   const explanation = compactTitle(record.explanation);
-  const titles = [...explanation.matchAll(/「([^」]+)」|"([^"]+)"/g)].map((match) => compactTitle(match[1] ?? match[2]!));
-  const days = [...explanation.matchAll(/(?<!\d)(\d{3,4})(?:([/-])(\d{1,2})\2(\d{1,2})|年(\d{1,2})月(\d{1,2})日?)(?!\d)/g)].map((match) => {
-    const year = Number(match[1]) + (match[1]!.length === 3 ? 1911 : 0);
-    const month = match[3] ?? match[5]!;
-    const day = match[4] ?? match[6]!;
-    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  const pairs: { title: string; day: string; token: number }[] = [];
+  const datePattern = /^(\d{3,4})(?:([/-])(\d{1,2})\2(\d{1,2})|年(\d{1,2})月(\d{1,2})日?)$/;
+  // Quoted spans are consumed whole before dates: date-like title text is never
+  // publication evidence. Adjacent tokens still need an explicit citation bridge.
+  const tokens = [...explanation.matchAll(/「[^」]*」|"[^"]*"|(?<!\d)\d{3,4}(?:([/-])\d{1,2}\1\d{1,2}|年\d{1,2}月\d{1,2}日?)(?!\d)/g)].map((token) => {
+    const quoted = token[0].startsWith("「") || token[0].startsWith('"');
+    const match = quoted ? null : datePattern.exec(token[0]);
+    let day: string | undefined;
+    if (match) {
+      const year = Number(match[1]) + (match[1]!.length === 3 ? 1911 : 0);
+      day = `${year}-${(match[3] ?? match[5]!).padStart(2, "0")}-${(match[4] ?? match[6]!).padStart(2, "0")}`;
+      if (!Number.isFinite(Date.parse(day)) || new Date(day).toISOString().slice(0, 10) !== day) day = undefined;
+    }
+    return { start: token.index, end: token.index + token[0].length, title: quoted ? token[0].slice(1, -1) : undefined, day };
   });
-  return { titles: [...new Set(titles.filter(Boolean))], days: [...new Set(days.filter((day) => Number.isFinite(Date.parse(day)) && new Date(day).toISOString().slice(0, 10) === day))] };
+  for (let index = 0; index + 1 < tokens.length; index++) {
+    const first = tokens[index]!; const second = tokens[index + 1]!;
+    const bridge = explanation.slice(first.end, second.start);
+    if (first.day && second.title && /^(?:之?公告)?$/.test(bridge)) pairs.push({ title: second.title, day: first.day, token: index });
+    else if (first.title && second.day && /^(?:[（(])?(?:公告日期|發布日期|公告於)(?:為|[:：])?$/.test(bridge)) pairs.push({ title: first.title, day: second.day, token: index });
+  }
+  // A token cannot establish competing associations (e.g. title/date/title).
+  // Discard every overlapping pair instead of choosing an inferred direction.
+  const starts = new Set(pairs.map((pair) => pair.token));
+  return pairs.filter((pair) => !starts.has(pair.token - 1) && !starts.has(pair.token + 1))
+    .map(({ title, day }) => ({ title, day }));
+}
+
+/** Coarse query projection; final relation verification retains date/title pairs. */
+export function announcementCitationSelectors(record: ResearchAnnouncementRecord): { titles: string[]; days: string[] } {
+  const pairs = announcementCitationPairs(record);
+  return { titles: [...new Set(pairs.map((pair) => pair.title))], days: [...new Set(pairs.map((pair) => pair.day))] };
 }
