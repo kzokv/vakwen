@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
-import { parseOfficialAnnouncementSnapshot } from "../../src/services/research/providers/mopsAnnouncements.js";
+import { disclosureHash, parseOfficialAnnouncementSnapshot } from "../../src/services/research/providers/mopsAnnouncements.js";
 import {
   announcementCitationSelectors, enrichOfficialAnnouncement, parseOfficialAnnouncementDetail, selectOfficialAnnouncementDetailParameters,
   MOPS_ANNOUNCEMENT_HISTORY_URL, MOPS_ANNOUNCEMENT_DETAIL_URL,
@@ -195,7 +195,7 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"]
       const results = [parseOfficialAnnouncementDetail(detail, notice, metadata, previous),
         await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), resolvePreviousRecords: async () => previous })];
       expect(results[0]!.detailStatus).toBe("available");
-      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.5");
+      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.6");
       expect(results[1]!.detailStatus).toBe("restricted");
       for (const result of results) {
         expect(result.record.relations).toEqual(targets.length === 1 ? [{ kind, targetAnnouncementId: prior.id }] : []);
@@ -339,4 +339,29 @@ it("overlapping citation tokens: ambiguous component → discarded without losin
   const { record } = fixture("TWSE");
   const notice = { ...record, subject: "更正公告", explanation: '「公告A」公告日期為2026/10/01「公告B」公告日期為2026/10/02；2026/10/03公告「公告C」。' };
   expect(announcementCitationSelectors(notice)).toEqual({ titles: ["公告C"], days: ["2026-10-03"] });
+});
+
+it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["history", "detail"] as const).map((stage) => ({ venue, stage }))))(
+  "$venue $stage JSON: malformed UTF8 → processing failure without replacement-character evidence", async ({ venue, stage }) => {
+    const { record, history, detail } = fixture(venue);
+    const fetchImpl: typeof fetch = async (url) => {
+      const isDetail = String(url).endsWith("t05st01_detail");
+      const payload = { ...(isDetail ? detail : history), utf8Marker: "marker" };
+      const bytes = Buffer.from(JSON.stringify(payload));
+      if ((stage === "detail") === isDetail) bytes[bytes.indexOf("marker")] = 0xff;
+      return new Response(bytes);
+    };
+    const result = await enrichOfficialAnnouncement(record, { fetchImpl });
+    expect(result.detailStatus).toBe("processing_failed");
+    expect(result.reasonCodes).toContain("detail_response_invalid_utf8");
+    expect(result.record.explanation).toBe(record.explanation);
+    expect(result.record.provenance).toEqual(record.provenance);
+  });
+it("detail BOM UTF8: decoded valid JSON → provenance hashes original bytes", async () => {
+  const { record, history, detail } = fixture("TWSE");
+  const bytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify(detail))]);
+  const result = await enrichOfficialAnnouncement(record, { fetchImpl: async (url) => new Response(String(url).endsWith("t05st01_detail") ? bytes : JSON.stringify(history)) });
+  expect(result.detailStatus).toBe("available");
+  expect(result.record.provenance.contentHash).toBe(disclosureHash(bytes));
+  expect(result.record.provenance.contentHash).not.toBe(disclosureHash(new TextDecoder().decode(bytes)));
 });

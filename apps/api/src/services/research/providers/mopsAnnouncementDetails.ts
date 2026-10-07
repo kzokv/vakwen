@@ -9,7 +9,7 @@ import { parseTaiwanOfficialDate } from "./twseIdentity.js";
 /** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
 export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
 export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
-export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.5";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.6";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const parametersSchema = z.object({
   marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
@@ -178,9 +178,12 @@ async function readOfficialJson(fetchImpl: typeof fetch, url: string, body: obje
       chunks.push(chunk.value);
     }
   } finally { reader.releaseLock(); }
-  const text = Buffer.concat(chunks).toString("utf8");
+  const retainedBytes = Buffer.concat(chunks);
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(retainedBytes); }
+  catch { throw new DetailAcquisitionError("processing_failed", "detail_response_invalid_utf8"); }
   if (isMopsAccessDenial(text)) throw new DetailAcquisitionError("restricted", "detail_access_restricted");
-  try { return { payload: JSON.parse(text) as unknown, hash: disclosureHash(text) }; }
+  try { return { payload: JSON.parse(text) as unknown, hash: disclosureHash(retainedBytes) }; }
   catch { throw new DetailAcquisitionError("processing_failed", "detail_response_invalid"); }
 }
 

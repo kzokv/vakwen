@@ -71,9 +71,12 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
     const artifactOwners = new Map<string, string>();
     const detailAttemptsByListing = new Map<string, NonNullable<ResearchDisclosureScan["detailAttempts"]>>();
     try {
-      const response = await officialResponse(fetchImpl, sourceUrl, options.signal); contentHash = disclosureHash(response.body);
+      const response = await officialResponse(fetchImpl, sourceUrl, options.signal); contentHash = disclosureHash(response.bytes);
       observedAt = options.retrievedAt ?? new Date().toISOString();
-      const records = parseOfficialAnnouncementSnapshot(JSON.parse(response.body), { retrievedAt: observedAt, contentHash, sourceUrl, acquisitionRunId }, venue, identities);
+      let snapshotText: string;
+      try { snapshotText = new TextDecoder("utf-8", { fatal: true }).decode(response.bytes); }
+      catch { throw new Error("disclosure_response_invalid_utf8"); }
+      const records = parseOfficialAnnouncementSnapshot(JSON.parse(snapshotText), { retrievedAt: observedAt, contentHash, sourceUrl, acquisitionRunId }, venue, identities);
       for (const sourceRecord of records) {
         options.signal?.throwIfAborted();
         let record = sourceRecord;
@@ -178,7 +181,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
       publicationStart = records.reduce((start, record) => record.publishedAt < start ? record.publishedAt : start, observedAt);
     } catch (error) {
       options.signal?.throwIfAborted();
-      status = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : (error instanceof SyntaxError || (error instanceof Error && error.message === "disclosure_source_too_large")) ? "processing_failed" : "failed";
+      status = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : (error instanceof SyntaxError || (error instanceof Error && ["disclosure_source_too_large", "disclosure_response_invalid_utf8"].includes(error.message))) ? "processing_failed" : "failed";
     }
     const completedAt = options.retrievedAt ?? new Date().toISOString();
     const checkedAt = observedAt ?? completedAt;

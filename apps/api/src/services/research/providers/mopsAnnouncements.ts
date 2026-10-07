@@ -9,9 +9,9 @@ export const OFFICIAL_ANNOUNCEMENT_SOURCES = {
   TWSE: "https://openapi.twse.com.tw/v1/opendata/t187ap04_L",
   TPEX: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O",
 } as const;
-export const DISCLOSURE_PARSER_VERSION = "mops-announcements/1.0.2";
+export const DISCLOSURE_PARSER_VERSION = "mops-announcements/1.0.3";
 export function disclosureId(prefix: string, ...parts: string[]) { return `${prefix}_${createHash("sha256").update(parts.join("\u001f")).digest("hex").slice(0, 32)}`; }
-export function disclosureHash(value: string) { return createHash("sha256").update(value).digest("hex"); }
+export function disclosureHash(value: string | Uint8Array) { return createHash("sha256").update(value).digest("hex"); }
 export function safeDisclosureUrl(value: string): boolean {
   try { const url = new URL(value); return isCredentialFreeDisclosureUrl(value)
     && ["mops.twse.com.tw", "mopsov.twse.com.tw", "mopsws.twse.com.tw", "openapi.twse.com.tw", "www.twse.com.tw", "www.tpex.org.tw"].includes(url.hostname); } catch { return false; }
@@ -51,15 +51,22 @@ export function parseOfficialAnnouncementSnapshot(payload: unknown, metadata: An
     if (candidates.length !== 1) throw new Error("announcement_identity_unresolved");
     const identity = candidates[0]!;
     if (identity.security.type !== "common_equity" || identity.eligibility.profile !== "operating_company" || identity.eligibility.state !== "eligible") return [];
-    const id = disclosureId("ann", identity.issuer.id, venue, stamp.publishedAt, row.主旨, row.說明);
     const officialUrl = typeof row.網址 === "string" && safeDisclosureUrl(row.網址) ? row.網址 : metadata.sourceUrl;
-    const attachments: ResearchAnnouncementRecord["attachments"] = [];
-    if (Array.isArray(row.附件)) for (const [index, item] of row.附件.entries()) {
-      if (typeof item !== "object" || item === null) continue;
+    const attachmentSources = Array.isArray(row.附件) ? row.附件.flatMap((item) => {
+      if (typeof item !== "object" || item === null) return [];
       const attachment = item as Record<string, unknown>;
-      if (typeof attachment.url !== "string" || !safeDisclosureUrl(attachment.url)) continue;
-      attachments.push({ id: disclosureId("att", id, String(index)), artifactId: disclosureId("art", id, attachment.url), title: typeof attachment.title === "string" ? attachment.title : "官方附件", sourceUrl: attachment.url, mediaType: typeof attachment.mediaType === "string" ? attachment.mediaType : "application/octet-stream" });
-    }
+      if (typeof attachment.url !== "string" || !safeDisclosureUrl(attachment.url)) return [];
+      return [{ title: typeof attachment.title === "string" ? attachment.title : "官方附件", sourceUrl: attachment.url,
+        mediaType: typeof attachment.mediaType === "string" ? attachment.mediaType : "application/octet-stream" }];
+    }) : [];
+    // Bind every retained source field, not merely title/text. Cached enrichment
+    // is reusable only for the same complete snapshot observation.
+    const id = disclosureId("ann", JSON.stringify({ issuerId: identity.issuer.id, listingId: identity.listing.id, ticker: identity.listing.ticker, venue,
+      publishedAt: stamp.publishedAt, publicationPrecision: stamp.precision, rawPublication: { date: row.發言日期, time: row.發言時間 },
+      subject: row.主旨, ruleClause: row.符合條款, eventDate: parseOptionalAnnouncementEventDate(row.事實發生日), rawEventDate: row.事實發生日 ?? null,
+      explanation: row.說明, sourceUrl: officialUrl, attachments: attachmentSources }));
+    const attachments: ResearchAnnouncementRecord["attachments"] = attachmentSources.map((attachment, index) => ({ ...attachment,
+      id: disclosureId("att", id, String(index)), artifactId: disclosureId("art", id, attachment.sourceUrl) }));
     // The issuer-authored explanation is also retained as bounded pages so inline
     // truncation never prevents inspection of its original contents.
     attachments.push({ id: disclosureId("att", id, "explanation"), artifactId: disclosureId("art", id, "explanation"), title: "發行人說明原文", sourceUrl: officialUrl, mediaType: "text/plain" });

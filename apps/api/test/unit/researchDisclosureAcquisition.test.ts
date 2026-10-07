@@ -410,7 +410,7 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => [false, true].map((malfor
     const metadata = { retrievedAt: at, contentHash: "a".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "mixed_identity" };
     const parsed = parseOfficialAnnouncementSnapshot(mixed, metadata, venue, [identity]);
     expect(parsed).toHaveLength(1); expect(parsed[0]!.ticker).toBe(identity.listing.ticker);
-    expect(parsed[0]!.provenance.parserVersion).toBe("mops-announcements/1.0.2");
+    expect(parsed[0]!.provenance.parserVersion).toBe("mops-announcements/1.0.3");
     const persistence = new MemoryPersistence(); await persistence.appendResearchIdentityRecords([identity]);
     const fetchImpl = vi.fn(async (url: string | URL | Request) => String(url) === OFFICIAL_ANNOUNCEMENT_SOURCES[venue]
       ? new Response(JSON.stringify(mixed)) : new Response("restricted", { status: 403 })) as unknown as typeof fetch;
@@ -569,4 +569,63 @@ it("duplicate attachment locator: one response per scan → consistent content i
       expect(attachments[0]!.contentIdentity).toEqual(attachments[1]!.contentIdentity);
     }
   } finally { spy.mockRestore(); }
+});
+
+it.each(["TWSE", "TPEX"] as const)("%s changed snapshot event/rule with failed detail → fresh source metadata replaces cached enrichment", async (venue) => {
+  const persistence = new MemoryPersistence(); const { rows, identity } = fixture(venue);
+  await persistence.appendResearchIdentityRecords([identity]);
+  const ticker = venue === "TWSE" ? "2072" : "4530";
+  const history = JSON.parse(readFileSync(new URL(`../fixtures/research/mops-history-${ticker}.json`, import.meta.url), "utf8"));
+  const detail = JSON.parse(readFileSync(new URL(`../fixtures/research/mops-detail-${ticker}.json`, import.meta.url), "utf8"));
+  let failDetail = false;
+  const fetchImpl: typeof fetch = async (url) => {
+    const source = String(url);
+    if (failDetail && source.endsWith("t05st01")) return new Response("restricted", { status: 403 });
+    return new Response(JSON.stringify(source.endsWith("t05st01_detail") ? detail : source.endsWith("t05st01") ? history : rows));
+  };
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "original" });
+  const subject = { kind: "listing_id" as const, listingId: identity.listing.id };
+  const original = (await listMaterialAnnouncements(persistence, { subject, context: { knowledgeAt: at } })).items[0]!;
+  rows[0].事實發生日 = "1151002"; rows[0].符合條款 = "第20款"; failDetail = true;
+  const next = "2026-10-04T05:15:00.000Z";
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: next, acquisitionRunId: "changed" });
+  const current = (await listMaterialAnnouncements(persistence, { subject, context: { knowledgeAt: next } })).items[0]!;
+  expect(current).toMatchObject({ eventDate: "2026-10-02", rawEventDate: "1151002", ruleClause: "第20款", detailQuality: { status: "restricted" } });
+  expect(current.collectionRecordId).not.toBe(original.collectionRecordId);
+  expect(current.relations).toContainEqual({ kind: "supersedes", targetAnnouncementId: original.id });
+  expect(current.provenance.contentHash).toBe(disclosureHash(Buffer.from(JSON.stringify(rows))));
+  expect((await listMaterialAnnouncements(persistence, { subject, context: { knowledgeAt: at } })).items[0]).toEqual(original);
+});
+
+it.each(["TWSE", "TPEX"] as const)("%s snapshot decoding: malformed UTF8 → processing failure with raw-byte hash; BOM UTF8 → valid", async (venue) => {
+  for (const malformed of [true, false]) {
+    const persistence = new MemoryPersistence(); const { rows, identity } = fixture(venue);
+    await persistence.appendResearchIdentityRecords([identity]); rows[0].說明 = "marker";
+    const json = Buffer.from(JSON.stringify(rows));
+    const bytes = malformed ? Buffer.from(json) : Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), json]);
+    if (malformed) bytes[bytes.indexOf("marker")] = 0xff;
+    const fetchImpl: typeof fetch = async (url) => String(url).includes("t05st01") ? new Response("restricted", { status: 403 }) : new Response(bytes);
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+    const result = await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at });
+    expect(result.outcomes[0]!.status).toBe(malformed ? "processing_failed" : "success");
+    const query = { issuerId: identity.issuer.id, knowledgeAt: at, effectiveAt: at };
+    const records = await persistence.listResearchAnnouncements(query);
+    expect(records).toHaveLength(malformed ? 0 : 1);
+    expect((await persistence.listResearchDisclosureScans(query))[0]!.provenance.contentHash).toBe(disclosureHash(bytes));
+    expect(disclosureHash(bytes)).not.toBe(disclosureHash(new TextDecoder().decode(bytes)));
+    if (!malformed) expect(records[0]!.explanation).toBe("marker");
+  }
+});
+
+it("snapshot semantic identity: each retained field changes → distinct observation; unrelated feed metadata stays stable", () => {
+  const { rows, identity } = fixture("TWSE");
+  const metadata = { retrievedAt: at, contentHash: "a".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES.TWSE, acquisitionRunId: "identity" };
+  const parse = (row: Record<string, unknown>) => parseOfficialAnnouncementSnapshot([row], metadata, "TWSE", [identity])[0]!;
+  const original = parse(rows[0]);
+  for (const patch of [{ 事實發生日: "1151002" }, { 事實發生日: "不適用" }, { 符合條款: "第20款" },
+    { 發言時間: "07:00:04" }, { 網址: "https://mops.twse.com.tw/source" }, { 附件: [{ url: "https://mops.twse.com.tw/new.txt", title: "attachment" }] }]) {
+    expect(parse({ ...rows[0], ...patch }).id).not.toBe(original.id);
+  }
+  expect(parse({ ...rows[0], 出表日期: "1151005", unrelated: "value" }).id).toBe(original.id);
 });
