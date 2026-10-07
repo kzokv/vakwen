@@ -1740,6 +1740,13 @@ export async function getResearchManifest(
             }
           : { id, status: "unavailable" as const, reasonCode: "no_authoritative_price_history" as const };
       }
+      if (id === "material_announcements") {
+        if (identity.identity.security.type !== "common_equity" || identity.identity.eligibility.profile !== "operating_company" || identity.identity.eligibility.state !== "eligible") return { id, status: "unavailable" as const, reasonCode: "not_applicable_subject" as const };
+        const scans = await persistence.listLatestResearchDisclosureScans({ issuerId: identity.identity.issuer.id, listingId: identity.selector.listingId, venue: identity.identity.listing.venue, effectiveAt: identity.context.effectiveAt, knowledgeAt: identity.context.knowledgeAt });
+        return scans.some((scan) => scan.listingId === identity.selector.listingId && scan.venue === identity.identity.listing.venue && scan.status === "success")
+          ? { id, status: "available" as const, capabilities: { pageDefault: 25, pageMax: 100, maxSpanYears: 2, purposeIds: ["factual_use", "current_assessment", "exhaustive_conclusion"] as const, purposeRegistryVersion: "disclosure-purposes/1.0.0" as const, evidenceViews: ["selected_with_conflicts", "all_observations"] as const } }
+          : { id, status: "unavailable" as const, reasonCode: "not_acquired" as const };
+      }
       if (id === "monthly_revenue") {
         return await hasMonthlyRevenueAvailable(
           persistence,

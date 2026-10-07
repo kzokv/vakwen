@@ -1,4 +1,4 @@
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AiConnectorScope } from "@vakwen/shared-types";
@@ -160,6 +160,25 @@ import type {
   ResearchPriceSeriesQuery,
   ResearchQuery,
 } from "../services/research/contracts.js";
+import {
+  researchAnnouncementsInitialQuerySchema,
+  researchDisclosureArtifactInitialQuerySchema,
+} from "../services/research/contracts.js";
+import { getDisclosureArtifact, listMaterialAnnouncements } from "../services/research/disclosures.js";
+
+function disclosureAuthorizationBinding(auth: McpAuthContext, toolName: McpToolName): string {
+  return createHash("sha256").update(JSON.stringify({
+    sessionUserId: auth.sessionUserId,
+    clientId: auth.clientId,
+    connectionId: auth.connection?.id ?? null,
+    scopes: [...auth.scopes].sort(),
+    toolName,
+  })).digest("hex");
+}
+
+function isDisclosureTool(toolName: McpToolName): boolean {
+  return toolName === "list_material_announcements" || toolName === "get_disclosure_artifact";
+}
 
 interface RegisterMcpRoutesOptions {
   authService?: McpAuthService;
@@ -372,6 +391,11 @@ function unwrapFinancialStatementsCursor(
 }
 
 function researchToolSummary(toolName: McpToolName, value: Record<string, unknown>): string | undefined {
+  if (isDisclosureTool(toolName)) {
+    const selector = value.selector as { listingId?: string } | undefined;
+    const quality = value.quality as { status?: string } | undefined;
+    return `Retained disclosure evidence for ${selector?.listingId ?? "the selected listing"}; quality ${quality?.status ?? "unknown"}. See structuredContent for evidence and limits.`;
+  }
   if (toolName === "get_research_manifest") {
     const selector = value.selector as { listingId?: string } | undefined;
     const datasets = Array.isArray(value.datasets) ? value.datasets as Array<{ status?: string }> : [];
@@ -712,6 +736,18 @@ export async function registerMcpRoutes(
       };
       let result: unknown;
       switch (toolName) {
+        case "list_material_announcements":
+          result = await listMaterialAnnouncements(app.persistence, args as Parameters<typeof listMaterialAnnouncements>[1], {
+            authorizationBinding: disclosureAuthorizationBinding(auth, toolName),
+            cursorSecret: app.oauthConfig?.sessionSecret ?? Env.SESSION_SECRET,
+          });
+          break;
+        case "get_disclosure_artifact":
+          result = await getDisclosureArtifact(app.persistence, args as Parameters<typeof getDisclosureArtifact>[1], {
+            authorizationBinding: disclosureAuthorizationBinding(auth, toolName),
+            cursorSecret: app.oauthConfig?.sessionSecret ?? Env.SESSION_SECRET,
+          });
+          break;
         case "get_research_manifest":
           result = await getResearchManifest(app.persistence, args as ResearchQuery);
           break;
@@ -1329,13 +1365,17 @@ export async function registerMcpRoutes(
         || toolName === "get_research_identity"
         || toolName === "get_price_series"
         || toolName === "get_monthly_revenue"
-        || toolName === "get_financial_statements";
+        || toolName === "get_financial_statements"
+        || isDisclosureTool(toolName);
       return buildToolResult(
         isResearchTool ? { result: adapted } : adapted,
         researchToolSummary(toolName, adapted),
       );
     } catch (error) {
-      const denialReason = error instanceof Error && "code" in error
+      const disclosureStoreFailure = isDisclosureTool(toolName)
+        && !(error instanceof Error && "statusCode" in error && Number(error.statusCode) < 500);
+      const disclosureFailureCode = error instanceof z.ZodError ? "evaluation_failed" : "research_store_unavailable";
+      const denialReason = disclosureStoreFailure ? disclosureFailureCode : error instanceof Error && "code" in error
         ? String((error as { code?: unknown }).code)
         : error instanceof Error
           ? error.message
@@ -1343,7 +1383,14 @@ export async function registerMcpRoutes(
       const result = error instanceof Error && "statusCode" in error && Number((error as { statusCode?: unknown }).statusCode) < 500
         ? "denied"
         : "error";
-      await logAccess(result, denialReason);
+      try {
+        await logAccess(result, denialReason);
+      } catch (auditError) {
+        if (!isDisclosureTool(toolName)) throw auditError;
+        // A shared persistence outage must not replace the safe disclosure
+        // failure with an unsanitized audit-store exception.
+        pending.req.log.warn({ toolName, code: "disclosure_audit_unavailable" }, "Disclosure access audit could not be persisted");
+      }
       if (shouldReturnToolAuthChallenge(error)) {
         const description = error instanceof Error ? error.message : "MCP authorization failed.";
         return buildToolAuthChallengeResult({
@@ -1362,8 +1409,14 @@ export async function registerMcpRoutes(
             || toolName === "get_research_identity"
             || toolName === "get_price_series"
             || toolName === "get_monthly_revenue"
-            || toolName === "get_financial_statements",
+            || toolName === "get_financial_statements"
+            || isDisclosureTool(toolName),
         );
+      }
+      if (isDisclosureTool(toolName)) {
+        return buildToolErrorResult(routeError(503, disclosureFailureCode, disclosureFailureCode === "evaluation_failed"
+          ? "Retained disclosure evidence could not be evaluated; the system must repair the evidence before retry."
+          : "Retained disclosure evidence is temporarily unavailable; retry the store read."), true);
       }
       throw error;
     }
@@ -1387,11 +1440,18 @@ export async function registerMcpRoutes(
     registerOpenAiAppsResource(server);
 
     for (const tool of listedTools) {
-      server.registerTool(
+      const registered = server.registerTool(
         tool.name,
         {
           description: tool.description,
-          inputSchema: unwrapZodObjectShape(tool.inputSchema),
+          inputSchema: isDisclosureTool(tool.name)
+            ? z.object(Object.fromEntries(Object.entries(
+              tool.name === "list_material_announcements"
+                ? researchAnnouncementsInitialQuerySchema.shape
+                : researchDisclosureArtifactInitialQuerySchema.shape,
+            ).map(([key, schema]) => [key, key === "subject" ? schema : schema.optional()])))
+              .extend({ cursor: z.string().min(1).max(12000).optional() }).strict()
+            : unwrapZodObjectShape(tool.inputSchema),
           outputSchema: tool.outputSchema,
           annotations: tool.annotations,
           _meta: tool._meta
@@ -1407,6 +1467,7 @@ export async function registerMcpRoutes(
         },
         async (args: unknown, extra: unknown) => executeTool(tool.name, args, extra),
       );
+      if (isDisclosureTool(tool.name)) registered.execution = { taskSupport: "forbidden" };
     }
     attachOpenAiAppsToolMetadata(server);
     return server;

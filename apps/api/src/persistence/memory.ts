@@ -1,3 +1,14 @@
+import { disclosureAcquisitionContinuationSchema, disclosureAcquisitionContinuationQuerySchema, type DisclosureAcquisitionContinuation, type DisclosureAcquisitionContinuationQuery } from "../services/research/disclosureContracts.js";
+import { disclosureNoticeMayAffectPublication } from "../services/research/disclosureContracts.js";
+import { validateResearchDisclosureReferenceQuery, validateResearchAnnouncementWindowQuery, validateResearchAnnouncementIdsQuery, validateResearchAnnouncementCandidateQuery, validateResearchSuccessfulDetailQuery } from "../services/research/disclosureContracts.js";
+import { validateDisclosureReadScope } from "../services/research/disclosureContracts.js";
+import { disclosureMetadata } from "../services/research/disclosureContracts.js";
+import type { ResearchAnnouncementMetadata, ResearchAnnouncementWindowQuery, ResearchAnnouncementCandidateQuery, ResearchDisclosureReferenceQuery } from "../services/research/disclosureContracts.js";
+import { validateResearchDisclosureScanLookup } from "../services/research/disclosureContracts.js";
+import type { ResearchDisclosureScanLookup, ResearchDisclosureArtifactAttempt } from "../services/research/disclosureContracts.js";
+import { validateResearchDisclosureStoreQuery, validateResearchDisclosureArtifactStoreQuery } from "../services/research/disclosureContracts.js";
+import { researchDisclosureMaterialReferenceSchema, type ResearchDisclosureMaterialReference } from "../services/research/disclosureContracts.js";
+import { researchAnnouncementRecordSchema, researchDisclosureArtifactSchema, researchDisclosureScanSchema, type ResearchAnnouncementRecord, type ResearchDisclosureArtifact, type ResearchDisclosureScan, type ResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
 import { randomUUID } from "node:crypto";
 import {
   allocateSellLots,
@@ -1066,6 +1077,188 @@ export class MemoryPersistence implements Persistence {
     return [...dates].sort((left, right) => left.localeCompare(right));
   }
 
+  private readonly retainedDisclosureMaterialReferences = new Map<string, ResearchDisclosureMaterialReference>();
+  async appendResearchDisclosureMaterialReferences(records: readonly ResearchDisclosureMaterialReference[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureMaterialReferenceSchema.parse(record));
+    const staged = new Map(this.retainedDisclosureMaterialReferences);
+    for (const record of parsed) {
+      const previous = staged.get(record.id);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(record)) throw new Error("research_disclosure_immutable_conflict");
+      staged.set(record.id, record);
+    }
+    for (const record of parsed) this.retainedDisclosureMaterialReferences.set(record.id, structuredClone(record));
+  }
+  async listResearchDisclosureMaterialReferences(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureMaterialReference[]> {
+    validateResearchDisclosureStoreQuery(query);
+    return [...this.retainedDisclosureMaterialReferences.values()].filter((record) => record.issuerId === query.issuerId
+      && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.publishedAt) <= Date.parse(query.effectiveAt))
+      .map((record) => structuredClone(record));
+  }
+  private readonly retainedAnnouncements = new Map<string, ResearchAnnouncementRecord>();
+  async appendResearchAnnouncements(records: readonly ResearchAnnouncementRecord[]): Promise<void> {
+    const parsed = records.map((record) => researchAnnouncementRecordSchema.parse(record));
+    const staged = new Map(this.retainedAnnouncements);
+    for (const record of parsed) {
+      const previous = staged.get(record.id);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(record)) throw new Error("research_disclosure_immutable_conflict");
+      staged.set(record.id, record);
+    }
+    for (const record of parsed) this.retainedAnnouncements.set(record.id, structuredClone(record));
+  }
+  async listResearchAnnouncements(query: ResearchDisclosureStoreQuery): Promise<ResearchAnnouncementRecord[]> {
+    validateResearchDisclosureStoreQuery(query);
+    return [...this.retainedAnnouncements.values()].filter((record) => record.issuerId === query.issuerId
+      && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.publishedAt) <= Date.parse(query.effectiveAt))
+      .map((record) => structuredClone(record));
+  }
+  private readonly retainedDisclosureArtifacts = new Map<string, ResearchDisclosureArtifact>();
+  async appendResearchDisclosureArtifacts(records: readonly ResearchDisclosureArtifact[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureArtifactSchema.parse(record));
+    const staged = new Map(this.retainedDisclosureArtifacts);
+    for (const record of parsed) {
+      const previous = staged.get(record.id);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(record)) throw new Error("research_disclosure_immutable_conflict");
+      staged.set(record.id, record);
+    }
+    for (const record of parsed) this.retainedDisclosureArtifacts.set(record.id, structuredClone(record));
+  }
+  async listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery & { artifactId?: string }): Promise<ResearchDisclosureArtifact[]> {
+    validateResearchDisclosureArtifactStoreQuery(query);
+    const candidates = query.artifactId === undefined ? [...this.retainedDisclosureArtifacts.values()] : [this.retainedDisclosureArtifacts.get(query.artifactId)].filter((record): record is ResearchDisclosureArtifact => record !== undefined);
+    return candidates.filter((record) => record.issuerId === query.issuerId
+      && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.publishedAt) <= Date.parse(query.effectiveAt))
+      .map((record) => structuredClone(record));
+  }
+  private readonly retainedDisclosureScans = new Map<string, ResearchDisclosureScan>();
+  async appendResearchDisclosureScans(records: readonly ResearchDisclosureScan[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureScanSchema.parse(record));
+    const staged = new Map(this.retainedDisclosureScans);
+    for (const record of parsed) {
+      const previous = staged.get(record.id);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(record)) throw new Error("research_disclosure_immutable_conflict");
+      staged.set(record.id, record);
+    }
+    for (const record of parsed) this.retainedDisclosureScans.set(record.id, structuredClone(record));
+  }
+  async listResearchDisclosureScans(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureScan[]> {
+    validateResearchDisclosureStoreQuery(query);
+    return [...this.retainedDisclosureScans.values()].filter((record) => record.issuerId === query.issuerId
+      && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.checkedAt) <= Date.parse(query.effectiveAt) && Date.parse(record.knowledgeAt) <= Date.parse(query.knowledgeAt))
+      .map((record) => structuredClone(record));
+  }
+  private matchingDisclosureAnnouncements(query: ResearchDisclosureScanLookup): ResearchAnnouncementRecord[] {
+    validateDisclosureReadScope(query);
+    return [...this.retainedAnnouncements.values()].filter((record) => record.issuerId === query.issuerId && record.listingId === query.listingId && record.venue === query.venue
+      && Date.parse(record.publishedAt) <= Date.parse(query.effectiveAt) && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt) && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt));
+  }
+  async hasResearchDisclosureArtifactReference(query: ResearchDisclosureReferenceQuery): Promise<boolean> {
+    validateResearchDisclosureReferenceQuery(query);
+    validateDisclosureReadScope(query);
+    if (!query.reference || query.reference.kind === "investor_material") {
+      const references = query.reference ? [this.retainedDisclosureMaterialReferences.get(query.reference.id)].filter((reference): reference is ResearchDisclosureMaterialReference => !!reference) : [...this.retainedDisclosureMaterialReferences.values()];
+      const found = references.some((reference) => reference.issuerId === query.issuerId && reference.listingId === query.listingId && reference.venue === query.venue
+        && reference.artifactIds.includes(query.artifactId) && Date.parse(reference.publishedAt) <= Date.parse(query.effectiveAt)
+        && Date.parse(reference.provenance.retrievedAt) <= Date.parse(query.knowledgeAt) && Date.parse(reference.provenance.processedAt) <= Date.parse(query.knowledgeAt));
+      if (found || query.reference) return found;
+    }
+    return this.matchingDisclosureAnnouncements(query).some((record) => (!query.reference || record.id === query.reference.id) && record.attachments.some((attachment) => attachment.artifactId === query.artifactId));
+  }
+  async listResearchAnnouncementSelectionMetadata(query: ResearchAnnouncementWindowQuery): Promise<ResearchAnnouncementMetadata[]> {
+    validateResearchAnnouncementWindowQuery(query);
+    const all = this.matchingDisclosureAnnouncements(query);
+    const window = all.filter((record) => Date.parse(record.publishedAt) >= Date.parse(query.publishedFrom) && Date.parse(record.publishedAt) <= Date.parse(query.publishedTo)
+      && (!query.eventFrom || (record.eventDate !== null && record.eventDate >= query.eventFrom)) && (!query.eventTo || (record.eventDate !== null && record.eventDate <= query.eventTo)));
+    const collections = new Map<string, Set<string | undefined>>();
+    for (const record of window) if (record.collectionRecordId) {
+      const publisherIds = collections.get(record.collectionRecordId) ?? new Set<string | undefined>();
+      publisherIds.add(record.publisherRecordId); collections.set(record.collectionRecordId, publisherIds);
+    }
+    const publisherRecords = new Set(window.map((record) => record.publisherRecordId).filter(Boolean));
+    const candidates = new Set([...window.map((record) => record.id), ...all.filter((record) => (record.collectionRecordId && collections.has(record.collectionRecordId)
+      && (!record.publisherRecordId || collections.get(record.collectionRecordId)!.has(undefined) || collections.get(record.collectionRecordId)!.has(record.publisherRecordId)))
+      || (record.publisherRecordId && publisherRecords.has(record.publisherRecordId))).map((record) => record.id)]);
+    for (const record of all) if (record.unknownRelationTargets?.length && window.some((target) => disclosureNoticeMayAffectPublication(record, target.publishedAt))) candidates.add(record.id);
+    // Traverse incoming lineage through notices too: a later resolved revision
+    // can supersede an out-of-window ambiguous notice rather than its target.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const record of all) {
+        if (!candidates.has(record.id) && (record.relations.some((relation) => candidates.has(relation.targetAnnouncementId))
+          || (record.unresolvedRelations ?? []).some((relation) => relation.candidateAnnouncementIds.some((id) => candidates.has(id))))) {
+          candidates.add(record.id); changed = true;
+        }
+      }
+    }
+    return all.filter((record) => candidates.has(record.id)).map(disclosureMetadata);
+  }
+  async getResearchAnnouncementsByIds(query: ResearchDisclosureScanLookup & { ids: string[] }): Promise<ResearchAnnouncementRecord[]> {
+    validateResearchAnnouncementIdsQuery(query);
+    validateDisclosureReadScope(query);
+    if (query.ids.length > 100) throw new Error("research_announcement_page_limit");
+    const ids = new Set(query.ids);
+    return this.matchingDisclosureAnnouncements(query).filter((record) => ids.has(record.id)).map((record) => structuredClone(record));
+  }
+  async findResearchAnnouncementCandidates(query: ResearchAnnouncementCandidateQuery): Promise<ResearchAnnouncementMetadata[]> {
+    validateResearchAnnouncementCandidateQuery(query);
+    const scoped = this.matchingDisclosureAnnouncements(query);
+    if (query.kind === "revision") return scoped.filter((record) => (query.publisherRecordId !== undefined && record.publisherRecordId === query.publisherRecordId)
+      || (record.collectionRecordId === query.collectionRecordId && (!query.publisherRecordId || !record.publisherRecordId || record.publisherRecordId === query.publisherRecordId))).map(disclosureMetadata);
+    const before = scoped.filter((record) => Date.parse(record.publishedAt) < Date.parse(query.before));
+    const wanted = new Set(before.filter((record) => query.titles.includes(record.subject.replace(/\s+/g, ""))
+      && query.days.includes(new Date(Date.parse(record.publishedAt) + 8 * 3_600_000).toISOString().slice(0, 10))).map((record) => record.id));
+    const incoming = new Map<string, string[]>();
+    for (const record of before.filter((record) => record.quality === "available")) for (const relation of record.relations) if (relation.kind === "supersedes") {
+      const sources = incoming.get(relation.targetAnnouncementId) ?? []; sources.push(record.id); incoming.set(relation.targetAnnouncementId, sources);
+    }
+    const pending = [...wanted];
+    for (let index = 0; index < pending.length; index++) for (const source of incoming.get(pending[index]!) ?? []) if (!wanted.has(source)) { wanted.add(source); pending.push(source); }
+    return before.filter((record) => wanted.has(record.id)).map(disclosureMetadata);
+  }
+  async getLatestSuccessfulDisclosureDetail(query: ResearchDisclosureScanLookup & { collectionRecordId: string }): Promise<ResearchAnnouncementRecord | null> {
+    validateResearchSuccessfulDetailQuery(query);
+    const record = this.matchingDisclosureAnnouncements(query).filter((record) => record.collectionRecordId === query.collectionRecordId && record.detailQuality?.status === "available")
+      .sort((a, b) => Date.parse(b.provenance.processedAt) - Date.parse(a.provenance.processedAt) || b.id.localeCompare(a.id))[0];
+    return record ? structuredClone(record) : null;
+  }
+  private matchingDisclosureScans(query: ResearchDisclosureScanLookup): ResearchDisclosureScan[] {
+    return [...this.retainedDisclosureScans.values()].filter((record) => record.issuerId === query.issuerId && record.listingId === query.listingId && record.venue === query.venue
+      && Date.parse(record.provenance.retrievedAt) <= Date.parse(query.knowledgeAt) && Date.parse(record.provenance.processedAt) <= Date.parse(query.knowledgeAt)
+      && Date.parse(record.checkedAt) <= Date.parse(query.effectiveAt) && Date.parse(record.knowledgeAt) <= Date.parse(query.knowledgeAt));
+  }
+  async getLatestDisclosureAcquisitionContinuation(query: DisclosureAcquisitionContinuationQuery): Promise<DisclosureAcquisitionContinuation | null> {
+    disclosureAcquisitionContinuationQuerySchema.parse(query);
+    let latest: ResearchDisclosureScan | undefined;
+    for (const scan of this.retainedDisclosureScans.values()) {
+      if (!scan.acquisitionContinuation || scan.venue !== query.venue || Date.parse(scan.checkedAt) > Date.parse(query.effectiveAt)
+        || Date.parse(scan.knowledgeAt) > Date.parse(query.knowledgeAt) || Date.parse(scan.provenance.retrievedAt) > Date.parse(query.knowledgeAt)
+        || Date.parse(scan.provenance.processedAt) > Date.parse(query.knowledgeAt)) continue;
+      if (!latest || Date.parse(scan.provenance.processedAt) > Date.parse(latest.provenance.processedAt) || (Date.parse(scan.provenance.processedAt) === Date.parse(latest.provenance.processedAt) && scan.id > latest.id)) latest = scan;
+    }
+    return latest ? disclosureAcquisitionContinuationSchema.parse(latest.acquisitionContinuation) : null;
+  }
+  async listLatestResearchDisclosureScans(query: ResearchDisclosureScanLookup): Promise<ResearchDisclosureScan[]> {
+    validateResearchDisclosureScanLookup(query);
+    const scans = this.matchingDisclosureScans(query).sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt) || b.id.localeCompare(a.id));
+    const latest = scans[0];
+    const success = scans.find((scan) => scan.status === "success");
+    return [latest, ...(success?.id !== latest?.id ? [success] : [])].filter((scan): scan is ResearchDisclosureScan => scan !== undefined).map((scan) => structuredClone(scan));
+  }
+  async getLatestResearchDisclosureArtifactAttempt(query: ResearchDisclosureScanLookup & { artifactId: string }): Promise<ResearchDisclosureArtifactAttempt | null> {
+    validateResearchDisclosureScanLookup(query, true);
+    const attempts = this.matchingDisclosureScans(query).flatMap((scan) => (scan.artifactAttempts ?? []).map((attempt, position) => ({ scan, attempt, position })))
+      .filter(({ attempt }) => attempt.artifactId === query.artifactId && Date.parse(attempt.attemptedAt) <= Date.parse(query.knowledgeAt))
+      .sort((a, b) => Date.parse(b.attempt.attemptedAt) - Date.parse(a.attempt.attemptedAt) || Date.parse(b.scan.checkedAt) - Date.parse(a.scan.checkedAt) || b.scan.id.localeCompare(a.scan.id) || b.position - a.position);
+    return attempts[0] ? structuredClone(attempts[0].attempt) : null;
+  }
   async appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void> {
     for (const record of records) {
       const key = researchMonthlyRevenueRecordKey(record);

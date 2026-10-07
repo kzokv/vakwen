@@ -17,6 +17,7 @@
 - [Web Frontend](001-architecture/web-frontend.md) — component layering, auth middleware, session resolution
 - [Canonical Accounting Model](001-architecture/canonical-accounting-model.md) — entities, terminology, invariants
 - [Glossary](001-architecture/glossary.md) — domain terms, project conventions, system concepts
+- [Research Disclosures](001-architecture/research-disclosures.md) — official announcements, retained artifact reads, report gates and operator recovery
 
 ## Operations (`002-operations/`)
 

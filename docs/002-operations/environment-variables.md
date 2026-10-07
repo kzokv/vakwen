@@ -134,9 +134,11 @@ In addition to the configurable session cookie, the API emits two other cookies 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MCP_RESEARCH_ACQUISITION_ENABLED` | `false` | Registers the official Taiwan research acquisition workers for identity, price series, and monthly revenue, and allows new OAuth consents and bearer connectors to acquire `research:read`. Existing connectors are not upgraded silently. |
-| `MCP_RESEARCH_MCP_ENABLED` | `false` | Exposes `get_research_manifest`, `get_research_identity`, `get_price_series`, `get_monthly_revenue`, and the additive research authorization/search path in MCP discovery. |
-| `MCP_RESEARCH_SKILL_ENABLED` | `false` | Allows the public `taiwan-stock-research` Skill to continue after its manifest check and render the identity-only, focused-market, or monthly-revenue report artifact when the requested dataset is available. When false, the manifest reports disabled and the Skill fails closed. |
+| `MCP_RESEARCH_ACQUISITION_ENABLED` | `false` | Registers the official Taiwan research acquisition workers for identity, price series, monthly revenue, financial statements, and announcements, and allows new OAuth consents and bearer connectors to acquire `research:read`. Existing connectors are not upgraded silently. |
+| `MCP_RESEARCH_ANNOUNCEMENTS_TWSE_ENABLED` | `false` | Enables the TWSE official announcement snapshot/detail acquisition route only when global research acquisition is enabled. Does not disable retained reads when false. |
+| `MCP_RESEARCH_ANNOUNCEMENTS_TPEX_ENABLED` | `false` | Enables the TPEx official announcement snapshot/detail acquisition route only when global research acquisition is enabled. Does not disable retained reads when false. |
+| `MCP_RESEARCH_MCP_ENABLED` | `false` | Exposes `get_research_manifest`, `get_research_identity`, `get_price_series`, `get_monthly_revenue`, `get_financial_statements`, `list_material_announcements`, `get_disclosure_artifact`, and the additive research authorization/search path in MCP discovery. |
+| `MCP_RESEARCH_SKILL_ENABLED` | `false` | Allows the public `taiwan-stock-research` Skill to continue after its manifest check and render the identity-only, focused-market, monthly-revenue, financial-statement, or focused-disclosure report artifact when the requested dataset is available. When false, the manifest reports disabled and the Skill fails closed. |
 
 These gates are intentionally independent and default-off. Connector scope acquisition and research tool exposure require both the acquisition and MCP gates; Skill orchestration additionally requires the Skill gate. Safe rollback is to turn the gates back off without mutating canonical history or existing connector rows. OAuth and bearer connectors that need `research:read` must reconnect or be recreated after acquisition is enabled.
 

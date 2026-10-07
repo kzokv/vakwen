@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
+import { researchAnnouncementsQuerySchema, researchDisclosureArtifactQuerySchema } from "../services/research/contracts.js";
 import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { AiConnectorScope } from "@vakwen/shared-types";
 import {
@@ -250,6 +252,27 @@ function withToolSecurityMetadata(tool: McpToolListResult["tools"][number]) {
   const securitySchemes = Array.isArray(tool.securitySchemes)
     ? tool.securitySchemes as McpOAuthSecurityScheme[]
     : getToolSecuritySchemes(tool.name as McpToolName);
+  if (tool.name === "list_material_announcements" || tool.name === "get_disclosure_artifact") {
+    const canonicalInput = tool.name === "list_material_announcements"
+      ? researchAnnouncementsQuerySchema : researchDisclosureArtifactQuerySchema;
+    // The SDK registers a root object; discovery additionally carries the same
+    // strict initial/continuation branches enforced by execution. Resolve each
+    // branch's local references before nesting it under the root object.
+    const inputSchema = {
+      ...tool.inputSchema,
+      anyOf: canonicalInput.options.map((branch) => sanitizeOpenAiAppsJsonSchema(
+        toJsonSchemaCompat(branch, { pipeStrategy: "input" }),
+      )),
+    };
+    return {
+      ...tool,
+      title: tool.title ?? toToolTitle(tool.name),
+      inputSchema: sanitizeOpenAiAppsJsonSchema(inputSchema),
+      outputSchema: sanitizeOpenAiAppsJsonSchema(tool.outputSchema),
+      securitySchemes,
+      _meta: { securitySchemes },
+    };
+  }
   const openAiMeta = getToolOpenAiMeta(tool);
   const chatGptTool = { ...tool };
   delete chatGptTool.execution;

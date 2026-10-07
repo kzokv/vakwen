@@ -1,3 +1,13 @@
+import { disclosureAcquisitionContinuationSchema, disclosureAcquisitionContinuationQuerySchema, type DisclosureAcquisitionContinuation, type DisclosureAcquisitionContinuationQuery } from "../services/research/disclosureContracts.js";
+import { validateResearchDisclosureReferenceQuery, validateResearchAnnouncementWindowQuery, validateResearchAnnouncementIdsQuery, validateResearchAnnouncementCandidateQuery, validateResearchSuccessfulDetailQuery } from "../services/research/disclosureContracts.js";
+import { validateDisclosureReadScope, disclosureWhitespacePattern } from "../services/research/disclosureContracts.js";
+import { researchAnnouncementMetadataSchema } from "../services/research/disclosureContracts.js";
+import type { ResearchAnnouncementMetadata, ResearchAnnouncementWindowQuery, ResearchAnnouncementCandidateQuery, ResearchDisclosureReferenceQuery } from "../services/research/disclosureContracts.js";
+import { validateResearchDisclosureScanLookup } from "../services/research/disclosureContracts.js";
+import type { ResearchDisclosureScanLookup, ResearchDisclosureArtifactAttempt } from "../services/research/disclosureContracts.js";
+import { validateResearchDisclosureStoreQuery, validateResearchDisclosureArtifactStoreQuery } from "../services/research/disclosureContracts.js";
+import { researchDisclosureMaterialReferenceSchema, type ResearchDisclosureMaterialReference } from "../services/research/disclosureContracts.js";
+import { researchAnnouncementRecordSchema, researchDisclosureArtifactSchema, researchDisclosureScanSchema, type ResearchAnnouncementRecord, type ResearchDisclosureArtifact, type ResearchDisclosureScan, type ResearchDisclosureStoreQuery } from "../services/research/disclosureContracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -1496,6 +1506,193 @@ export class PostgresPersistence implements Persistence {
     }
   }
 
+  async appendResearchDisclosureMaterialReferences(records: readonly ResearchDisclosureMaterialReference[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureMaterialReferenceSchema.parse(record));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of parsed) {
+        const inserted = await client.query(`INSERT INTO research.disclosure_material_references (id, issuer_id, published_at, retrieved_at, processed_at, record)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+          WHERE research.disclosure_material_references.record = EXCLUDED.record RETURNING id`,
+          [record.id, record.issuerId, record.publishedAt, record.provenance.retrievedAt, record.provenance.processedAt, JSON.stringify(record)]);
+        if (inserted.rowCount !== 1) throw new Error("research_disclosure_immutable_conflict");
+      }
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async listResearchDisclosureMaterialReferences(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureMaterialReference[]> {
+    validateResearchDisclosureStoreQuery(query);
+    const result = await this.pool.query<{record: ResearchDisclosureMaterialReference}>(
+      `SELECT record FROM research.disclosure_material_references WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt]);
+    return result.rows.map((row) => researchDisclosureMaterialReferenceSchema.parse(row.record));
+  }
+  async appendResearchAnnouncements(records: readonly ResearchAnnouncementRecord[]): Promise<void> {
+    const parsed = records.map((record) => researchAnnouncementRecordSchema.parse(record));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of parsed) {
+        const inserted = await client.query(`INSERT INTO research.announcements (id, issuer_id, published_at, retrieved_at, processed_at, record)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+          WHERE research.announcements.record = EXCLUDED.record RETURNING id`,
+          [record.id, record.issuerId, record.publishedAt, record.provenance.retrievedAt, record.provenance.processedAt, JSON.stringify(record)]);
+        if (inserted.rowCount !== 1) throw new Error("research_disclosure_immutable_conflict");
+      }
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async listResearchAnnouncements(query: ResearchDisclosureStoreQuery): Promise<ResearchAnnouncementRecord[]> {
+    validateResearchDisclosureStoreQuery(query);
+    const result = await this.pool.query<{record: ResearchAnnouncementRecord}>(
+      `SELECT record FROM research.announcements WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt]);
+    return result.rows.map((row) => researchAnnouncementRecordSchema.parse(row.record));
+  }
+  async appendResearchDisclosureArtifacts(records: readonly ResearchDisclosureArtifact[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureArtifactSchema.parse(record));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of parsed) {
+        const inserted = await client.query(`INSERT INTO research.disclosure_artifacts (id, issuer_id, published_at, retrieved_at, processed_at, record)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+          WHERE research.disclosure_artifacts.record = EXCLUDED.record RETURNING id`,
+          [record.id, record.issuerId, record.publishedAt, record.provenance.retrievedAt, record.provenance.processedAt, JSON.stringify(record)]);
+        if (inserted.rowCount !== 1) throw new Error("research_disclosure_immutable_conflict");
+      }
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async listResearchDisclosureArtifacts(query: ResearchDisclosureStoreQuery & { artifactId?: string }): Promise<ResearchDisclosureArtifact[]> {
+    validateResearchDisclosureArtifactStoreQuery(query);
+    const result = await this.pool.query<{record: ResearchDisclosureArtifact}>(
+      `SELECT record FROM research.disclosure_artifacts WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz${query.artifactId === undefined ? "" : " AND id=$4"}`,
+      query.artifactId === undefined ? [query.issuerId, query.effectiveAt, query.knowledgeAt] : [query.issuerId, query.effectiveAt, query.knowledgeAt, query.artifactId]);
+    return result.rows.map((row) => researchDisclosureArtifactSchema.parse(row.record));
+  }
+  async appendResearchDisclosureScans(records: readonly ResearchDisclosureScan[]): Promise<void> {
+    const parsed = records.map((record) => researchDisclosureScanSchema.parse(record));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of parsed) {
+        const inserted = await client.query(`INSERT INTO research.disclosure_scans (id, issuer_id, published_at, retrieved_at, processed_at, record)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+          WHERE research.disclosure_scans.record = EXCLUDED.record RETURNING id`,
+          [record.id, record.issuerId, record.checkedAt, record.provenance.retrievedAt, record.provenance.processedAt, JSON.stringify(record)]);
+        if (inserted.rowCount !== 1) throw new Error("research_disclosure_immutable_conflict");
+      }
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async listResearchDisclosureScans(query: ResearchDisclosureStoreQuery): Promise<ResearchDisclosureScan[]> {
+    validateResearchDisclosureStoreQuery(query);
+    const result = await this.pool.query<{record: ResearchDisclosureScan}>(
+      `SELECT record FROM research.disclosure_scans WHERE issuer_id=$1 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz AND (record->>'knowledgeAt')::timestamptz <= $3::timestamptz`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt]);
+    return result.rows.map((row) => researchDisclosureScanSchema.parse(row.record));
+  }
+  private disclosureAnnouncementScope() {
+    return `issuer_id=$1 AND record->>'listingId'=$4 AND record->>'venue'=$5 AND published_at <= $2::timestamptz AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz`;
+  }
+  private disclosureScopeParameters(query: ResearchDisclosureScanLookup): unknown[] { validateDisclosureReadScope(query); return [query.issuerId, query.effectiveAt, query.knowledgeAt, query.listingId, query.venue]; }
+  async hasResearchDisclosureArtifactReference(query: ResearchDisclosureReferenceQuery): Promise<boolean> {
+    validateResearchDisclosureReferenceQuery(query);
+    const stores = query.reference ? [query.reference.kind] : ["announcement_attachment", "investor_material"];
+    const predicates = stores.map((kind) => `EXISTS (SELECT 1 FROM research.${kind === "investor_material" ? "disclosure_material_references" : "announcements"}
+      WHERE ${this.disclosureAnnouncementScope()} ${query.reference ? "AND id=$7" : ""}
+      AND ${kind === "investor_material" ? "record->'artifactIds' @> jsonb_build_array($6::text)" : "record->'attachments' @> jsonb_build_array(jsonb_build_object('artifactId', $6::text))"})`);
+    const result = await this.pool.query<{ found: boolean }>(`SELECT (${predicates.join(" OR ")}) AS found`,
+      [...this.disclosureScopeParameters(query), query.artifactId, ...(query.reference ? [query.reference.id] : [])]);
+    return result.rows[0]?.found === true;
+  }
+  async listResearchAnnouncementSelectionMetadata(query: ResearchAnnouncementWindowQuery): Promise<ResearchAnnouncementMetadata[]> {
+    validateResearchAnnouncementWindowQuery(query);
+    const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`WITH RECURSIVE scoped AS NOT MATERIALIZED (SELECT id, record, published_at FROM research.announcements WHERE ${this.disclosureAnnouncementScope()}),
+      window_rows AS (SELECT id, published_at, record->>'collectionRecordId' AS collection, record->>'publisherRecordId' AS publisher_record FROM scoped WHERE published_at >= $6::timestamptz AND published_at <= $7::timestamptz
+        AND ($8::text IS NULL OR record->>'eventDate' >= $8) AND ($9::text IS NULL OR record->>'eventDate' <= $9)),
+      candidates AS (SELECT id FROM window_rows UNION SELECT id FROM scoped WHERE EXISTS (SELECT 1 FROM window_rows WHERE collection=record->>'collectionRecordId'
+          AND (publisher_record IS NULL OR record->>'publisherRecordId' IS NULL OR publisher_record=record->>'publisherRecordId'))
+        OR record->>'publisherRecordId' IN (SELECT publisher_record FROM window_rows WHERE publisher_record IS NOT NULL)
+        UNION SELECT id FROM scoped WHERE jsonb_array_length(COALESCE(record->'unknownRelationTargets', '[]'::jsonb)) > 0 AND CASE record->>'publicationPrecision'
+          WHEN 'date' THEN ((date_trunc('day', published_at AT TIME ZONE 'Asia/Taipei') + interval '1 day') AT TIME ZONE 'Asia/Taipei') > (SELECT min(published_at) FROM window_rows)
+          WHEN 'minute' THEN published_at + interval '1 minute' > (SELECT min(published_at) FROM window_rows)
+          ELSE published_at >= (SELECT min(published_at) FROM window_rows) END),
+      wanted AS (SELECT id FROM candidates UNION SELECT scoped.id FROM wanted JOIN scoped ON
+        scoped.record->'relations' @> jsonb_build_array(jsonb_build_object('targetAnnouncementId', wanted.id))
+        OR scoped.record->'unresolvedRelations' @> jsonb_build_array(jsonb_build_object('candidateAnnouncementIds', jsonb_build_array(wanted.id))))
+      SELECT record - 'explanation' - 'attachments' AS record FROM scoped WHERE id IN (SELECT id FROM wanted)`,
+      [...this.disclosureScopeParameters(query), query.publishedFrom, query.publishedTo, query.eventFrom ?? null, query.eventTo ?? null]);
+    return result.rows.map((row) => researchAnnouncementMetadataSchema.parse(row.record));
+  }
+  async getResearchAnnouncementsByIds(query: ResearchDisclosureScanLookup & { ids: string[] }): Promise<ResearchAnnouncementRecord[]> {
+    validateResearchAnnouncementIdsQuery(query);
+    validateDisclosureReadScope(query);
+    if (query.ids.length > 100) throw new Error("research_announcement_page_limit");
+    if (query.ids.length === 0) return [];
+    const result = await this.pool.query<{ record: ResearchAnnouncementRecord }>(`SELECT record FROM research.announcements WHERE ${this.disclosureAnnouncementScope()} AND id=ANY($6::text[])`, [...this.disclosureScopeParameters(query), query.ids]);
+    return result.rows.map((row) => researchAnnouncementRecordSchema.parse(row.record));
+  }
+  async findResearchAnnouncementCandidates(query: ResearchAnnouncementCandidateQuery): Promise<ResearchAnnouncementMetadata[]> {
+    validateResearchAnnouncementCandidateQuery(query);
+    if (query.kind === "citation") {
+      const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`WITH RECURSIVE scoped AS NOT MATERIALIZED (
+        SELECT id, record - 'explanation' - 'attachments' AS record, published_at FROM research.announcements
+        WHERE ${this.disclosureAnnouncementScope()} AND published_at < $6::timestamptz),
+        wanted AS (SELECT id FROM scoped WHERE regexp_replace(record->>'subject', $9, '', 'g')=ANY($7::text[])
+          AND to_char(published_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD')=ANY($8::text[])
+          UNION SELECT scoped.id FROM wanted JOIN scoped ON scoped.record->>'quality'='available' AND scoped.record->'relations' @>
+            jsonb_build_array(jsonb_build_object('kind', 'supersedes', 'targetAnnouncementId', wanted.id)))
+        SELECT record FROM scoped WHERE id IN (SELECT id FROM wanted)`,
+        [...this.disclosureScopeParameters(query), query.before, query.titles, query.days, disclosureWhitespacePattern]);
+      return result.rows.map((row) => researchAnnouncementMetadataSchema.parse(row.record));
+    }
+    const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`SELECT record - 'explanation' - 'attachments' AS record FROM research.announcements WHERE ${this.disclosureAnnouncementScope()}
+      AND (($7::text IS NOT NULL AND record->>'publisherRecordId'=$7)
+        OR (record->>'collectionRecordId'=$6 AND ($7::text IS NULL OR record->>'publisherRecordId' IS NULL OR record->>'publisherRecordId'=$7)))`,
+      [...this.disclosureScopeParameters(query), query.collectionRecordId, query.publisherRecordId ?? null]);
+    return result.rows.map((row) => researchAnnouncementMetadataSchema.parse(row.record));
+  }
+  async getLatestSuccessfulDisclosureDetail(query: ResearchDisclosureScanLookup & { collectionRecordId: string }): Promise<ResearchAnnouncementRecord | null> {
+    validateResearchSuccessfulDetailQuery(query);
+    const result = await this.pool.query<{ record: ResearchAnnouncementRecord }>(`SELECT record FROM research.announcements WHERE ${this.disclosureAnnouncementScope()} AND record->>'collectionRecordId'=$6 AND record->'detailQuality'->>'status'='available' ORDER BY processed_at DESC, id DESC LIMIT 1`, [...this.disclosureScopeParameters(query), query.collectionRecordId]);
+    return result.rows[0] ? researchAnnouncementRecordSchema.parse(result.rows[0].record) : null;
+  }
+  async getLatestDisclosureAcquisitionContinuation(query: DisclosureAcquisitionContinuationQuery): Promise<DisclosureAcquisitionContinuation | null> {
+    disclosureAcquisitionContinuationQuerySchema.parse(query);
+    const result = await this.pool.query<{ continuation: DisclosureAcquisitionContinuation }>(
+      `SELECT record->'acquisitionContinuation' AS continuation FROM research.disclosure_scans
+       WHERE record->>'venue'=$1 AND record ? 'acquisitionContinuation' AND published_at <= $2::timestamptz
+         AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz AND (record->>'knowledgeAt')::timestamptz <= $3::timestamptz
+       ORDER BY processed_at DESC, id DESC LIMIT 1`, [query.venue, query.effectiveAt, query.knowledgeAt]);
+    return result.rows[0] ? disclosureAcquisitionContinuationSchema.parse(result.rows[0].continuation) : null;
+  }
+  async listLatestResearchDisclosureScans(query: ResearchDisclosureScanLookup): Promise<ResearchDisclosureScan[]> {
+    validateResearchDisclosureScanLookup(query);
+    const where = `issuer_id=$1 AND record->>'listingId'=$4 AND record->>'venue'=$5 AND published_at <= $2::timestamptz
+      AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz AND (record->>'knowledgeAt')::timestamptz <= $3::timestamptz`;
+    const result = await this.pool.query<{ record: ResearchDisclosureScan }>(
+      `(SELECT record FROM research.disclosure_scans WHERE ${where} ORDER BY published_at DESC, id DESC LIMIT 1)
+       UNION
+       (SELECT record FROM research.disclosure_scans WHERE ${where} AND record->>'status'='success' ORDER BY published_at DESC, id DESC LIMIT 1)`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt, query.listingId, query.venue]);
+    return result.rows.map((row) => researchDisclosureScanSchema.parse(row.record)).sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt) || b.id.localeCompare(a.id));
+  }
+  async getLatestResearchDisclosureArtifactAttempt(query: ResearchDisclosureScanLookup & { artifactId: string }): Promise<ResearchDisclosureArtifactAttempt | null> {
+    validateResearchDisclosureScanLookup(query, true);
+    const result = await this.pool.query<{ attempt: ResearchDisclosureArtifactAttempt }>(
+      `SELECT attempt.value AS attempt FROM research.disclosure_scans AS scan
+       CROSS JOIN LATERAL jsonb_array_elements(COALESCE(scan.record->'artifactAttempts', '[]'::jsonb)) WITH ORDINALITY AS attempt(value, position)
+       WHERE issuer_id=$1 AND scan.record->>'listingId'=$4 AND scan.record->>'venue'=$5 AND published_at <= $2::timestamptz
+       AND retrieved_at <= $3::timestamptz AND processed_at <= $3::timestamptz AND (scan.record->>'knowledgeAt')::timestamptz <= $3::timestamptz
+       AND scan.record->'artifactAttempts' @> jsonb_build_array(jsonb_build_object('artifactId', $6::text))
+       AND attempt.value->>'artifactId'=$6 AND (attempt.value->>'attemptedAt')::timestamptz <= $3::timestamptz
+       ORDER BY (attempt.value->>'attemptedAt')::timestamptz DESC, published_at DESC, scan.id DESC, attempt.position DESC LIMIT 1`,
+      [query.issuerId, query.effectiveAt, query.knowledgeAt, query.listingId, query.venue, query.artifactId]);
+    return result.rows[0] ? researchDisclosureScanSchema.shape.artifactAttempts.unwrap().element.parse(result.rows[0].attempt) : null;
+  }
   async appendResearchMonthlyRevenueRecords(records: ResearchMonthlyRevenueRecord[]): Promise<void> {
     if (records.length === 0) return;
     const client = await this.pool.connect();

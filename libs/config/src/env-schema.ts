@@ -39,6 +39,8 @@ export const envSchema = z.object({
   // (ANONYMOUS_SHARE_TOKEN_RETENTION_MS in days) to preserve the UI visibility guarantee.
   ANONYMOUS_SHARE_TOKEN_PURGE_DAYS: z.coerce.number().int().min(30).default(90),
   MCP_RESEARCH_ACQUISITION_ENABLED: envBool,
+  MCP_RESEARCH_ANNOUNCEMENTS_TWSE_ENABLED: envBool,
+  MCP_RESEARCH_ANNOUNCEMENTS_TPEX_ENABLED: envBool,
   MCP_RESEARCH_MCP_ENABLED: envBool,
   MCP_RESEARCH_SKILL_ENABLED: envBool,
   // Fallback default (minutes) used when `app_config.repair_cooldown_minutes` is NULL or

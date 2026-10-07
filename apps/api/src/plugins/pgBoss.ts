@@ -1,3 +1,4 @@
+import { registerResearchDisclosureAcquisitionWorker } from "../services/research/registerDisclosureAcquisitionWorker.js";
 import { PgBoss } from "pg-boss";
 import pg from "pg";
 import { createClient, type RedisClientType } from "redis";
@@ -218,6 +219,7 @@ export async function registerPgBoss(app: AppInstance, persistenceOverride?: str
   await boss.send(CATALOG_SYNC_QUEUE, {}, { singletonKey: CATALOG_SYNC_QUEUE });
 
   if (researchAcquisitionEnabled()) {
+    await registerResearchDisclosureAcquisitionWorker(boss, { persistence: app.persistence, log: app.log });
     await registerResearchIdentityAcquisitionWorker(boss, {
       persistence: app.persistence,
       log: app.log,
