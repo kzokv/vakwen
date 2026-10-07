@@ -17,6 +17,7 @@ const evidenceReferenceSchema = z.discriminatedUnion("kind", [
 function hasTradingAdvice(text: string): boolean {
   const object = String.raw`(?:(?:the|this|these|those|your|more|some|all|its|company)\s+)?(?:[A-Za-z0-9][\w.-]*(?:['’]s)?\s+){0,2}(?:stock|stocks|shares?|securit(?:y|ies)|holdings?|position)\b`;
   const baseVerb = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|add\s+to)`;
+  const participle = String.raw`(?:bought|sold|held|purchased|accumulated|shorted|reduced|exited|liquidated|added\s+to)\b`;
   const inflectedVerb = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to)`;
   const imperative = String.raw`${baseVerb}\s+${object}`;
   const inflected = String.raw`${inflectedVerb}\s+${object}`;
@@ -31,12 +32,25 @@ function hasTradingAdvice(text: string): boolean {
   const avoidance = String.raw`(?:avoid|refrain\s+from)\s+`;
   const negative = String.raw`(?:(?:not|never)\s+)?`;
   const directivePrefix = String.raw`(?:please\s+)?(?:(?:do\s+not|don['’]t|never)\s+)?(?:please\s+)?`;
-  const modal = String.raw`(?:(?:should|must|can|could)\s+${negative}|(?:shouldn['’]t|mustn['’]t|can['’]t|couldn['’]t|cannot)\s+|ought\s+${negative}to\s+|need\s+${negative}to\s+)`;
-  const advisory = String.raw`(?:(?:do\s+not|don['’]t)\s+)?(?:recommend(?:ed|ing)?|advis(?:e|ed|ing)|suggest(?:ed|ing)?)\s+(?:(?:that\s+)?(?:you|investors?|traders?)\s+)?(?:${modal})?(?:against\s+)?${negative}(?:to\s+)?${negative}`;
+  const modal = String.raw`(?:(?:should|must|can|could)\s+${negative}|(?:shouldn['’]t|mustn['’]t|can['’]t|couldn['’]t|cannot)\s+|ought\s+${negative}to\s+|needs?\s+${negative}to\s+)`;
+  const advisoryVerb = String.raw`(?:(?:do\s+not|don['’]t)\s+)?(?:recommend(?:ed|ing)?|advis(?:e|ed|ing)|suggest(?:ed|ing)?)`;
+  const advisory = String.raw`${advisoryVerb}\s+(?:(?:that\s+)?(?:you|investors?|traders?)\s+)?(?:${modal})?(?:against\s+)?${negative}(?:to\s+)?${negative}`;
+  // Passive advice keeps the same modal/negation grammar, with bounded subjects
+  // at directive boundaries so ordinary issuer transaction descriptions survive.
+  const passiveSubject = String.raw`(?:${object}|(?!that\b|${operationalObject}|(?:(?:the|our)\s+)?(?:issuer|company)\s)[\p{L}\p{N}$][\p{L}\p{N}$.'’_-]*(?:\s+[\p{L}\p{N}$][\p{L}\p{N}$.'’_-]*){0,3})`;
+  const passiveAction = String.raw`be\s+${negative}${participle}`;
+  const passiveModal = String.raw`${passiveSubject}\s+${modal}${passiveAction}`;
+  const passiveAdvisory = String.raw`${advisoryVerb}\s+(?:that\s+)?${passiveSubject}\s+(?:${modal})?${negative}${passiveAction}`;
+  const recommendedPassive = String.raw`${passiveSubject}\s+(?:is|are)\s+${negative}(?:recommended|advised)\s+${negative}to\s+${negative}${passiveAction}`;
   const chineseNegative = String.raw`(?:不要|不應該|不應|不宜|不必|不得|勿|別)?`;
   const chineseDirectivePrefix = String.raw`(?:請)?(?:立即|現在)?(?:應該|應當)?${chineseNegative}`;
   const chineseVerb = String.raw`(?:買進|買入|賣出|持有|加碼|減碼|放空)`;
-  if (new RegExp(String.raw`${directiveStart}${directivePrefix}(?:${bareNamedAction}|${avoidance}${bareNamedInflection})`, "iu").test(text)
+  const chinesePassiveSubject = String.raw`(?:[\p{Script=Han}A-Za-z0-9]{0,12}(?:股票|股份|持股|證券)|(?!(?:公司|發行人|庫存|設備|機器|資產|企業|原料|貨物))[\p{Script=Han}A-Za-z0-9]{1,12})`;
+  const chinesePassive = String.raw`${chinesePassiveSubject}(?:應該|應當|應|必須|務必|不應該|不應|不宜|不得|不要)${chineseNegative}(?:被)?${chineseVerb}`;
+  if (new RegExp(String.raw`${directiveStart}${chinesePassive}`, "u").test(text)
+    || new RegExp(String.raw`${directiveStart}(?:${passiveModal}|${recommendedPassive})`, "iu").test(text)
+    || new RegExp(String.raw`(?:${directiveStart}|\b(?:I|we)\s+)${passiveAdvisory}`, "iu").test(text)
+    || new RegExp(String.raw`${directiveStart}${directivePrefix}(?:${bareNamedAction}|${avoidance}${bareNamedInflection})`, "iu").test(text)
     || new RegExp(String.raw`(?:${directiveStart}|\b(?:I|we)\s+)${advisory}${namedInflection}`, "iu").test(text)
     || new RegExp(String.raw`\b(?:you|investors?|traders?)\s+(?:${modal})?${directivePrefix}(?:${namedAction}|${avoidance}${namedInflection})`, "iu").test(text)
     || new RegExp(String.raw`${directiveStart}(?:my\s+advice\s+is\s+${negative}to\s+${negative}|${modal})(?:${namedAction}|${avoidance}${namedInflection})`, "iu").test(text)
@@ -45,7 +59,7 @@ function hasTradingAdvice(text: string): boolean {
     || new RegExp(String.raw`\b(?:${advisory}|advice\s+is\s+${negative}(?:to\s+)?${negative}|${modal})${inflected}`, "i").test(text)
     || new RegExp(String.raw`\b(?:you|investors?|traders?)\s+(?:${modal})?${directivePrefix}${imperative}`, "i").test(text)
     || new RegExp(String.raw`${directiveStart}${chineseDirectivePrefix}${chineseVerb}(?:這檔|該公司|這些|你的|手中)?[\p{Script=Han}A-Za-z0-9]{0,12}(?:股票|股份|持股|證券)`, "u").test(text)
-    || new RegExp(String.raw`(?:建議|推薦|應該|應當|務必)(?:投資人|投資者|你|您)?${chineseNegative}${chineseVerb}`).test(text);
+    || new RegExp(String.raw`(?:(?:建議|推薦)|${directiveStart}(?:應該|應當|務必))(?:投資人|投資者|你|您)?${chineseNegative}${chineseVerb}`, "u").test(text);
 }
 
 /** Analytical judgments belong to this report seam, never the canonical dataset tool. */
