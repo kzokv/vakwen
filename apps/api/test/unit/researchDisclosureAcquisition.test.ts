@@ -480,3 +480,40 @@ it.each(["reconcile", "restricted", "over_limit", "cycle"] as const)("revision t
   }
   if (state === "reconcile") expect(results[1]).toEqual(results[0]);
 });
+
+it.each([
+  ["text/html; charset=big5", "adaba46ab054aea7", "retained"],
+  ["application/octet-stream; charset=big5", "adaba46ab054aea7", "retained"],
+  ["text/html; charset=unknown-encoding", "adaba46ab054aea7", "processing_failed"],
+  ["text/html; charset=big5", "a4", "processing_failed"],
+  ["text/html; charset=big5", "a65dacb0a677a5fea9caa6d2b671a141b17aa9d2b0f5a6e6aabaadb6adb1b54caa6ba765b27ba143", "restricted"],
+] as const)("declared attachment encoding %s: strict acquisition → %s %s", async (mediaType, hex, expected) => {
+  const bytes = Buffer.concat([Buffer.from("<html><body>"), Buffer.from(hex, "hex"), Buffer.from("</body></html>")]);
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  const persistence = new MemoryPersistence(); const { rows, identity } = fixture("TWSE");
+  await persistence.appendResearchIdentityRecords([identity]);
+  const history = JSON.parse(readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8"));
+  const detail = JSON.parse(readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8"));
+  detail.result.titles.push({ main: "附件", sub: [] }); detail.result.data[0].push({ url: "https://mops.twse.com.tw/download", fileName: "official.html" });
+  const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+    const source = String(url);
+    if (source.endsWith("/download")) return new Response(bytes, { headers: { "content-type": mediaType } });
+    return new Response(JSON.stringify(source.endsWith("t05st01_detail") ? detail : source.endsWith("t05st01") ? history : rows));
+  }) as unknown as typeof fetch;
+  await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at });
+  const query = { issuerId: identity.issuer.id, knowledgeAt: at, effectiveAt: at };
+  const attempt = (await persistence.listResearchDisclosureScans(query))[0]!.artifactAttempts![0]!;
+  expect(attempt.status).toBe(expected);
+  const artifacts = await persistence.listResearchDisclosureArtifacts(query);
+  expect(artifacts).toHaveLength(expected === "retained" ? 2 : 1);
+  if (expected === "retained") {
+    const artifact = artifacts.find((item) => item.id === attempt.artifactId)!;
+    expect(artifact.mediaType).toBe("text/html");
+    expect(artifact.sourceMediaType).toBe(mediaType);
+    expect(artifact.retainedBytesBase64).toBe(bytes.toString("base64"));
+    expect(artifact.blocks[0]?.text).toBe("重大訊息");
+    expect(artifact.verifiedClaims).toEqual([]);
+    const read = await getDisclosureArtifact(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: at }, artifactId: artifact.id });
+    expect(read.artifact?.blocks[0]?.text).toBe("重大訊息");
+  }
+});

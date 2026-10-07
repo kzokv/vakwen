@@ -134,7 +134,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
             const artifactObservedAt = options.retrievedAt ?? new Date().toISOString();
             fetched = true;
             const mediaType = resolveDisclosureMediaType(retained.bytes, retained.mediaType, attachment.mediaType);
-            const extracted = await extractDisclosureContent(retained.bytes, mediaType, record.issuerId, attachment.artifactId!);
+            const extracted = await extractDisclosureContent(retained.bytes, `${mediaType}${retained.mediaType.includes(";") ? retained.mediaType.slice(retained.mediaType.indexOf(";")) : ""}`, record.issuerId, attachment.artifactId!);
             artifact = { ...explanation, ...extracted, id: attachment.artifactId!, sourceUrl: attachment.sourceUrl,
               contentHash: createHash("sha256").update(retained.bytes).digest("hex"), retainedBytesBase64: Buffer.from(retained.bytes).toString("base64"), mediaType, sourceMediaType: retained.mediaType, state: "available", verifiedClaims: [],
               parentProvenance: record.provenance,

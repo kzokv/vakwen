@@ -16,9 +16,9 @@ const evidenceReferenceSchema = z.discriminatedUnion("kind", [
 // Scope trading commands to imperative/advisory contexts, not ordinary issuer operations.
 function hasTradingAdvice(text: string): boolean {
   const object = String.raw`(?:(?:the|this|these|those|your|more|some|all|its|company)\s+)?(?:[A-Za-z0-9][\w.-]*(?:['’]s)?\s+){0,2}(?:stock|stocks|shares?|securit(?:y|ies)|holdings?|position)\b`;
-  const baseVerb = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|add\s+to)`;
-  const participle = String.raw`(?:bought|sold|held|purchased|accumulated|shorted|reduced|exited|liquidated|added\s+to)\b`;
-  const inflectedVerb = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to)`;
+  const baseVerb = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|add\s+to|invest\s+in|divest(?:\s+(?:from|of))?)`;
+  const participle = String.raw`(?:bought|sold|held|purchased|accumulated|shorted|reduced|exited|liquidated|added\s+to|invested\s+in|divested)\b`;
+  const inflectedVerb = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to|invest(?:ing)?\s+in|divest(?:ing)?(?:\s+(?:from|of))?)`;
   const imperative = String.raw`${baseVerb}\s+${object}`;
   const inflected = String.raw`${inflectedVerb}\s+${object}`;
   // Direct commands do not need a security suffix: names/tickers are open-ended.
@@ -26,9 +26,9 @@ function hasTradingAdvice(text: string): boolean {
   const directiveStart = String.raw`(?:^|[.!?;:。！？；：\n])\s*(?:(?:[-*+>]|\d+[.)])\s*)?["'“‘「]*`;
   const namedAction = String.raw`${baseVerb}\s+[\p{L}\p{N}$]`;
   const operationalObject = String.raw`(?:(?:the|our|its|their)\s+)?(?:inventory|shipments?|equipment|machinery|assets?|business(?:es)?|subsidiar(?:y|ies)|supplies|materials?)\b`;
-  const bareNamedAction = String.raw`${baseVerb}\s+(?!${operationalObject})[\p{L}\p{N}$]`;
+  const bareNamedAction = String.raw`${baseVerb}\s+(?!(?:from|of)\b|${operationalObject})[\p{L}\p{N}$]`;
   const namedInflection = String.raw`${inflectedVerb}\s+[\p{L}\p{N}$]`;
-  const bareNamedInflection = String.raw`${inflectedVerb}\s+(?!${operationalObject})[\p{L}\p{N}$]`;
+  const bareNamedInflection = String.raw`${inflectedVerb}\s+(?!(?:from|of)\b|${operationalObject})[\p{L}\p{N}$]`;
   const avoidance = String.raw`(?:avoid|refrain\s+from)\s+`;
   const negative = String.raw`(?:(?:not|never)\s+)?`;
   const directivePrefix = String.raw`(?:please\s+)?(?:(?:do\s+not|don['’]t|never)\s+)?(?:please\s+)?`;
@@ -44,7 +44,7 @@ function hasTradingAdvice(text: string): boolean {
   const recommendedPassive = String.raw`${passiveSubject}\s+(?:is|are)\s+${negative}(?:recommended|advised)\s+${negative}to\s+${negative}${passiveAction}`;
   const chineseNegative = String.raw`(?:不要|不應該|不應|不宜|不必|不得|勿|別)?`;
   const chineseDirectivePrefix = String.raw`(?:請)?(?:立即|現在)?(?:應該|應當)?${chineseNegative}`;
-  const chineseVerb = String.raw`(?:買進|買入|賣出|持有|加碼|減碼|放空)`;
+  const chineseVerb = String.raw`(?:買進|買入|賣出|持有|加碼|減碼|放空|投資(?!人|者)|撤資|出清)`;
   const chinesePassiveSubject = String.raw`(?:[\p{Script=Han}A-Za-z0-9]{0,12}(?:股票|股份|持股|證券)|(?!(?:公司|發行人|庫存|設備|機器|資產|企業|原料|貨物))[\p{Script=Han}A-Za-z0-9]{1,12})`;
   const chinesePassive = String.raw`${chinesePassiveSubject}(?:應該|應當|應|必須|務必|不應該|不應|不宜|不得|不要)${chineseNegative}(?:被)?${chineseVerb}`;
   if (new RegExp(String.raw`${directiveStart}${chinesePassive}`, "u").test(text)

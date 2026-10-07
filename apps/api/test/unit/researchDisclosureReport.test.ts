@@ -21,6 +21,18 @@ const candidate = {
 } satisfies z.input<typeof disclosureCandidateSchema>;
 
 const analyticalFields = ["materialMechanism", "affectedMetricOrAssumption", "horizon", "condition", "confirmationCondition", "disconfirmationCondition"] as const;
+const investmentTradingAdvice = [
+  "建議投資台積電", "請撤資2330", "出清聯發科", "不要投資台積電", "請勿撤資2330", "別出清聯發科",
+  "推薦投資人投資台積電", "建議投資人不要撤資2330", "台積電應該出清", "2330應被撤資", "聯發科不應被投資",
+  "投資股票", "請撤資股份", "出清持股",
+  "You should invest in TSMC", "I recommend investing in 2330", "Divest AAPL now",
+  "Invest in 2330", "Divest from TSMC", "Divest of AAPL", "I recommend divesting of TSMC", "You must divest AAPL", "We advise divesting from AAPL",
+  "I recommend divesting 2330", "Invest in the stock", "I suggest investing in shares", "Divest your holdings",
+  "Do not invest in TSMC", "Don't divest AAPL", "Investors should not invest in 2330", "You shouldn't divest from AAPL",
+  "I recommend not investing in TSMC", "We advise against divesting AAPL", "Avoid investing in TSMC", "Refrain from divesting 2330",
+  "TSMC should be invested in", "AAPL must be divested", "TSMC should not be invested in", "AAPL shouldn't be divested",
+  "I recommend that TSMC be invested in", "We advise that AAPL not be divested", "TSMC is recommended to be invested in",
+];
 const passiveTradingAdvice = [
   ...["bought", "sold", "held", "purchased", "accumulated", "shorted", "reduced", "exited", "liquidated", "added to"].map((verb) => `TSMC should be ${verb}`),
   "TSMC ought to be held", "TSMC should never be sold", "I recommend TSMC be sold",
@@ -67,7 +79,7 @@ describe("disclosure specialist candidate contract", () => {
     expect(disclosureCandidateSchema.safeParse({ ...candidate, materialMechanism: "Bullish investor sentiment." }).success).toBe(false);
   });
   it.each(analyticalFields)("analytical %s: action or sentiment in either language → reject the specific field", (field) => {
-    for (const text of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, "Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲",
+    for (const text of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, "Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲",
       "Buy TSMC", "Sell AAPL now", "Hold 2330", "I recommend buying TSMC", "We advise selling AAPL", "I recommend that you buy TSMC",
       "You should buy NVDA", "Hold shipments. Buy TSMC now.", "Investors should buy equipment.", "My advice is to buy 2330", "買進台積電", "賣出2330", "請持有聯發科", "確認：買進台積電", "條件成立。賣出2330",
       "- Buy TSMC", '"Sell AAPL now"', "推薦買入台積電",
@@ -82,7 +94,7 @@ describe("disclosure specialist candidate contract", () => {
     }
   });
   it("publisher quote: exact source trading instruction → preserve literal evidence separately from analyst prose", () => {
-    for (const excerpt of ["Buy the stock now", "建議買入股票", ...negativeTradingAdvice, ...passiveTradingAdvice]) expect(disclosureCandidateSchema.safeParse({ ...candidate,
+    for (const excerpt of ["Buy the stock now", "建議買入股票", ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice]) expect(disclosureCandidateSchema.safeParse({ ...candidate,
       statement: excerpt, statusEvidence: { ...candidate.statusEvidence, excerpt } }).success).toBe(true);
   });
   it("candidate identifier: prose or Markdown instruction → reject identifier misuse", () => {
@@ -217,6 +229,15 @@ describe("focused disclosure report", () => {
       "The equipment must not be sold before commissioning.", "The issuer should be bought by its parent company.",
       "The company could be sold after regulatory approval.", "I recommend that inventory be sold before expiry.",
       "Equipment is recommended to be purchased after approval.",
+      "投資人持股比率下降影響融資假設。", "投資者關係團隊將公布廠房擴建進度。",
+      "公司計畫投資台積電以整合產能。", "公司已撤資聯發科以支應廠房擴建。", "公司不會出清台積電持股。",
+      "投資設備以擴充產能。", "請出清庫存以降低倉儲成本。", "不要投資機器。", "設備應該被投資。", "庫存應該出清。",
+      "The issuer will invest in TSMC to integrate production.", "The company is divesting AAPL to fund its factory expansion.",
+      "The issuer will not invest in shares of its subsidiary before approval.", "The company did not divest its holdings in TSMC.",
+      "Divest from the subsidiary after regulatory approval.", "Divest of equipment after replacement.", "Avoid divesting from the business before approval.",
+      "Invest in equipment to expand capacity.", "Divest the subsidiary after regulatory approval.", "Do not invest in machinery before approval.",
+      "Equipment should be invested in after commissioning.", "The subsidiary should not be divested before approval.",
+      "TSMC was invested in by the issuer last year.", "AAPL was divested by the company to fund production.",
       "公司已賣出台積電股份。", "台積電股份已被賣出。", "庫存應該賣出。", "設備不應被賣出。", "公司應該買進設備。",
       "The issuer will not buy TSMC shares after the board rejected the acquisition.",
       "The issuer has not advised buying TSMC.", "The company did not sell its subsidiary shares.", "公司不會買進台積電股份。", "公司未賣出庫藏股。",
@@ -273,7 +294,7 @@ describe("focused disclosure report", () => {
   it.each(analyticalFields)("rendered analytical %s: injected trading advice → reject revalidation", async (field) => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [candidate], readBudget: 10 });
-    for (const advice of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, "Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票", "Buy TSMC", "Sell AAPL now", "I recommend buying TSMC", "買進台積電", "賣出2330"]) {
+    for (const advice of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, "Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票", "Buy TSMC", "Sell AAPL now", "I recommend buying TSMC", "買進台積電", "賣出2330"]) {
       const mutated = structuredClone(report);
       mutated.assessments[0]!.candidate[field] = advice;
       for (const locale of ["en", "zh-TW"] as const) expect(() => renderFocusedDisclosureResearchReportMarkdown(mutated, locale)).toThrow();

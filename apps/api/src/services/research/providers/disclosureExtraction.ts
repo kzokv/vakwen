@@ -1,11 +1,45 @@
 import { createHash } from "node:crypto";
-import { loadBuffer } from "cheerio";
+import { load } from "cheerio";
+import { isMopsAccessDenial } from "./mopsAccessDenial.js";
 import type { ResearchDisclosureArtifact } from "../disclosureContracts.js";
 
 const MAX_BYTES = 20 * 1024 * 1024;
 const MAX_PAGES = 1_000;
 const MAX_CHARACTERS = 5_000_000;
 type Block = ResearchDisclosureArtifact["blocks"][number];
+
+/** Decode retained text strictly; never silently replace malformed source bytes. */
+export function decodeDisclosureText(bytes: Uint8Array, mediaType: string): string {
+  const parameters = mediaType.split(";").slice(1);
+  const charsets = parameters.filter((part) => /^\s*charset\b/i.test(part));
+  if (charsets.length > 1) throw new Error("disclosure_extraction_invalid_charset");
+  const match = charsets[0]?.match(/^\s*charset\s*=\s*(?:"([A-Za-z0-9._:-]+)"|([A-Za-z0-9._:-]+))\s*$/i);
+  if (charsets.length && !match) throw new Error("disclosure_extraction_invalid_charset");
+  let encoding = match?.[1] ?? match?.[2];
+  // Validate declarations even when a BOM would otherwise override them.
+  if (encoding) new TextDecoder(encoding, { fatal: true });
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) encoding = "utf-8";
+  else if (bytes[0] === 0xff && bytes[1] === 0xfe) encoding = "utf-16le";
+  else if (bytes[0] === 0xfe && bytes[1] === 0xff) encoding = "utf-16be";
+  if (!encoding && /^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i.test(mediaType)) {
+    // Attribute syntax is ASCII in HTML-compatible encodings; parse only the
+    // bounded prescan, then decode the original bytes with the selected label.
+    const prescan = Buffer.from(bytes.subarray(0, 1024)).toString("latin1");
+    const xmlEncoding = /^\s*<\?xml\s[^?]*\bencoding\s*=\s*["']([^"']+)["']/i.exec(prescan)?.[1];
+    if (/^application\/xhtml\+xml(?:;|$)/i.test(mediaType) && xmlEncoding && new TextDecoder(xmlEncoding).encoding !== "utf-8") throw new Error("disclosure_extraction_unsupported_xml_encoding");
+    const head = load(prescan);
+    for (const meta of head("meta").toArray()) {
+      const element = head(meta);
+      const label = element.attr("charset") ?? (element.attr("http-equiv")?.toLowerCase() === "content-type"
+        ? element.attr("content")?.match(/charset\s*=\s*["']?([^\s;"']+)/i)?.[1] : undefined);
+      if (label !== undefined) { encoding = label.trim(); if (!encoding) throw new Error("disclosure_extraction_invalid_charset");
+        // HTML prescan treats UTF-16 labels as UTF-8 without a BOM.
+        if (["utf-16le", "utf-16be"].includes(new TextDecoder(encoding).encoding)) encoding = "utf-8";
+        break; }
+    }
+  }
+  return new TextDecoder(encoding ?? "utf-8", { fatal: true }).decode(bytes);
+}
 
 /** Resolve only generic transport MIME; never guess arbitrary binary content is text. */
 export function resolveDisclosureMediaType(bytes: Uint8Array, declared: string, attachmentType?: string): string {
@@ -14,7 +48,7 @@ export function resolveDisclosureMediaType(bytes: Uint8Array, declared: string, 
   if (Buffer.from(bytes.subarray(0, 5)).equals(Buffer.from("%PDF-"))) return "application/pdf";
   if (attachmentType === "application/pdf") return "application/pdf"; // PDF.js validates the retained bytes.
   if (attachmentType === "text/plain" || attachmentType === "text/html" || attachmentType === "application/xhtml+xml") {
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const text = decodeDisclosureText(bytes, `${attachmentType}${declared.includes(";") ? declared.slice(declared.indexOf(";")) : ""}`);
     for (const character of text) {
       const code = character.charCodeAt(0);
       if (code < 32 && ![9, 10, 12, 13].includes(code)) throw new Error("disclosure_extraction_binary_text_mismatch");
@@ -63,17 +97,20 @@ export async function extractDisclosureContent(
     blocks.push({ id, page, table, text, extractionState: "retained_text", subject, period: null, unit: null });
   }
   if (type === "text/plain") {
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const text = decodeDisclosureText(bytes, mediaType);
+    if (isMopsAccessDenial(text)) throw new Error("disclosure_access_restricted");
     // Logical pages preserve every Unicode character without pretending to be
     // physical PDF locations. Their kind is clear from the artifact media type.
     const chars = Array.from(text);
     const totalPages = Math.max(1, Math.ceil(chars.length / 10_000));
     if (totalPages > MAX_PAGES) throw new Error("disclosure_extraction_page_limit");
     for (let page = 0; page < totalPages; page++) append(chars.slice(page * 10_000, (page + 1) * 10_000).join(""), page + 1, null, true);
-    return { blocks, totalPages, extractionVersion: "disclosure-plain-text/1.0.0" };
+    return { blocks, totalPages, extractionVersion: "disclosure-plain-text/1.0.1" };
   }
   if (type === "text/html" || type === "application/xhtml+xml") {
-    const $ = loadBuffer(Buffer.from(bytes), { encoding: { defaultEncoding: "utf-8" } });
+    const text = decodeDisclosureText(bytes, mediaType);
+    if (isMopsAccessDenial(text)) throw new Error("disclosure_access_restricted");
+    const $ = load(text);
     $("script,style,noscript,template,iframe,object,embed,head").remove();
     $("br").replaceWith("\n");
     $("p,h1,h2,h3,h4,h5,h6,li,div,section,article").append("\n");
@@ -128,7 +165,7 @@ export async function extractDisclosureContent(
       }
     }
     if (!blocks.length) throw new Error("disclosure_extraction_no_text");
-    return { blocks, totalPages: logicalPage, extractionVersion: "disclosure-html-cheerio/2.0.0" };
+    return { blocks, totalPages: logicalPage, extractionVersion: "disclosure-html-cheerio/2.0.1" };
   }
   if (type !== "application/pdf") throw new Error("disclosure_extraction_unsupported_media_type");
   const { getDocument, version, OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");

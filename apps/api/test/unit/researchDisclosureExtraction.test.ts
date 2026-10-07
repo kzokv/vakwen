@@ -45,7 +45,7 @@ it("large HTML: Unicode paragraphs and oversized table row → bounded exact log
   for (let page = 1; page <= extracted.totalPages; page++) {
     expect(extracted.blocks.filter((block) => block.page === page).reduce((sum, block) => sum + Array.from(block.text).length, 0)).toBeLessThanOrEqual(50_000);
   }
-  expect(extracted.extractionVersion).toBe("disclosure-html-cheerio/2.0.0");
+  expect(extracted.extractionVersion).toBe("disclosure-html-cheerio/2.0.1");
 });
 it("PDF blank versus vector page: successful parsing → only proven blank gets explicit coverage", async () => {
   const text = "BT /F1 12 Tf 40 700 Td (Evidence) Tj ET";
@@ -86,4 +86,35 @@ it("PDF operator safety: empty text extraction → painting/compositing and unkn
     OPS.paintInlineImageXObject, OPS.paintImageMaskXObject, OPS.paintFormXObjectBegin, OPS.endGroup, OPS.endAnnotation, 999_999]) {
     expect(hasOnlyNonPaintingPdfOperations([OPS.beginText, OPS.setFont, operation, OPS.endText], OPS)).toBe(false);
   }
+});
+
+const big5Html = (head = "", content = "adaba46ab054aea7") => Buffer.concat([
+  Buffer.from(`<html><head>${head}</head><body><p>`), Buffer.from(content, "hex"), Buffer.from("</p></body></html>"),
+]);
+it.each([
+  ["text/html; charset=big5", ""],
+  ['text/html; CHARSET="Big5"', '<meta charset="utf-8">'],
+  ["text/html", '<meta charset="big5">'],
+  ["text/html", '<meta content="text/html; charset=big5" http-equiv="Content-Type">'],
+] as const)("HTML %s %s: Big5 source → exact Chinese Unicode", async (mediaType, head) => {
+  const result = await extractDisclosureContent(big5Html(head), mediaType, "issuer", "big5");
+  expect(result.blocks.map((block) => block.text).join("")).toBe("重大訊息");
+});
+it.each(["text/html; charset=unknown-encoding", "text/html; charset=", "text/html; charset=big5; charset=utf-8"])("invalid charset %s → fail closed", async (mediaType) => {
+  await expect(extractDisclosureContent(big5Html(), mediaType, "issuer", "bad")).rejects.toThrow();
+});
+it("text encoding: invalid bytes and unsupported meta → fail closed; BOM and UTF8 defaults preserved", async () => {
+  for (const [bytes, media] of [[Buffer.from([0xa4]), "text/html; charset=big5"], [Buffer.from([0xff]), "text/html"], [big5Html('<meta charset="unknown-encoding">'), "text/html"]] as const) {
+    await expect(extractDisclosureContent(bytes, media, "issuer", "bad")).rejects.toThrow();
+  }
+  const bytes = Buffer.from('\ufeff<html><head><meta charset="big5"></head><body>重大訊息</body></html>');
+  expect((await extractDisclosureContent(bytes, "text/html; charset=big5", "issuer", "bom")).blocks[0]?.text).toBe("重大訊息");
+  expect((await extractDisclosureContent(Buffer.from("重大訊息"), "text/plain", "issuer", "utf8")).blocks[0]?.text).toBe("重大訊息");
+  expect((await extractDisclosureContent(Buffer.from('<html><head><!-- <meta charset="big5"> --><script>"<meta charset=big5>"</script></head><body>重大訊息</body></html>'), "text/html", "issuer", "utf8")).blocks[0]?.text).toBe("重大訊息");
+});
+
+it("HTML wide meta versus XHTML declaration: normalize HTML label and reject unsupported XML encoding", async () => {
+  const html = Buffer.from('<html><head><meta charset="utf-16"></head><body>重大訊息</body></html>');
+  expect((await extractDisclosureContent(html, "text/html", "issuer", "meta")).blocks[0]?.text).toBe("重大訊息");
+  await expect(extractDisclosureContent(Buffer.from('<?xml version="1.0" encoding="big5"?><html><body>text</body></html>'), "application/xhtml+xml", "issuer", "xml")).rejects.toThrow("unsupported_xml_encoding");
 });
