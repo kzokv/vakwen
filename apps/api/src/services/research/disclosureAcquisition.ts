@@ -69,6 +69,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
     let observedAt: string | undefined;
     const artifactAttempts: NonNullable<ResearchDisclosureScan["artifactAttempts"]> = [];
     const artifactOwners = new Map<string, string>();
+    const lineageFailuresByListing = new Set<string>();
     const detailAttemptsByListing = new Map<string, NonNullable<ResearchDisclosureScan["detailAttempts"]>>();
     try {
       const response = await officialResponse(fetchImpl, sourceUrl, options.signal); contentHash = disclosureHash(response.bytes);
@@ -93,16 +94,23 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         const detailAttempts = detailAttemptsByListing.get(listingKey) ?? [];
         detailAttempts.push({ announcementId: sourceRecord.id, attemptedAt: detailCompletedAt, status: enriched.detailStatus, reasonCodes: enriched.reasonCodes });
         detailAttemptsByListing.set(listingKey, detailAttempts);
+        const markLineageFailure = () => {
+          lineageFailuresByListing.add(listingKey);
+          const attempt = detailAttempts[detailAttempts.length - 1]!;
+          attempt.status = "processing_failed";
+          attempt.reasonCodes = [...new Set([...attempt.reasonCodes, "disclosure_revision_lineage_unresolved"])];
+        };
         const collectionRecordId = sourceRecord.id;
         const previous = await persistence.findResearchAnnouncementCandidates({ ...scope, kind: "revision", collectionRecordId, publisherRecordId: enriched.record.publisherRecordId,
           publishedAt: enriched.record.publishedAt, subject: enriched.record.subject });
         const superseded = new Set(previous.flatMap((prior) => prior.relations.filter((relation) => relation.kind === "supersedes").map((relation) => relation.targetAnnouncementId)));
         const tips = previous.filter((prior) => !superseded.has(prior.id)).sort((a, b) => a.id.localeCompare(b.id));
         if ((previous.length > 0 && tips.length === 0) || tips.length > 100 || (enriched.detailStatus !== "available" && tips.length > 1)) {
-          throw new Error("disclosure_revision_lineage_unresolved");
+          markLineageFailure();
+          continue;
         }
         const activeRecords = tips.length ? await persistence.getResearchAnnouncementsByIds({ ...scope, ids: tips.map((tip) => tip.id) }) : [];
-        if (activeRecords.length !== tips.length) throw new Error("disclosure_revision_lineage_unresolved");
+        if (activeRecords.length !== tips.length) { markLineageFailure(); continue; }
         const current = activeRecords.length === 1 ? activeRecords[0] : undefined;
         const priorSuccessfulDetail = enriched.detailStatus !== "available" && current?.collectionRecordId === collectionRecordId && current.detailQuality?.status === "available" ? current : undefined;
         // Refresh every external attachment before deciding whether this observation
@@ -186,14 +194,14 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
     const completedAt = options.retrievedAt ?? new Date().toISOString();
     const checkedAt = observedAt ?? completedAt;
     const scans: ResearchDisclosureScan[] = eligibleIdentities.map((identity) => ({
-      id: disclosureId("scan", acquisitionRunId, checkedAt, completedAt, venue, identity.listing.id), listingId: identity.listing.id, issuerId: identity.issuer.id, venue, checkedAt, publicationStart, publicationEnd: checkedAt, knowledgeAt: completedAt, status,
+      id: disclosureId("scan", acquisitionRunId, checkedAt, completedAt, venue, identity.listing.id), listingId: identity.listing.id, issuerId: identity.issuer.id, venue, checkedAt, publicationStart, publicationEnd: checkedAt, knowledgeAt: completedAt, status: status === "success" && lineageFailuresByListing.has(JSON.stringify([identity.issuer.id, identity.listing.id, venue])) ? "failed" : status,
       // Daily snapshots are not historical collection coverage or a guarantee
       // that attachment discovery is exhaustive.
       exhaustive: false, detailAttempts: detailAttemptsByListing.get(JSON.stringify([identity.issuer.id, identity.listing.id, venue])) ?? [], artifactAttempts: artifactAttempts.filter((attempt) => artifactOwners.get(attempt.artifactId) === JSON.stringify([identity.issuer.id, identity.listing.id, venue])), provenance: { id: disclosureId("pr", acquisitionRunId, checkedAt, completedAt, venue, contentHash ?? "no_retained_response"), publisher: "MOPS", accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI", authorityRole: "authoritative", sourceUrl, contentHash, retrievedAt: checkedAt, processedAt: completedAt, acquisitionRunId, parserVersion: DISCLOSURE_PARSER_VERSION, usagePolicyVersion: "taiwan-open-data/1.0.0" },
     }));
     options.signal?.throwIfAborted();
     await persistence.appendResearchDisclosureScans(scans);
-    outcomes.push({ venue, status, announcementCount: count });
+    outcomes.push({ venue, status: status === "success" && lineageFailuresByListing.size > 0 ? "failed" : status, announcementCount: count });
   }
   return { outcomes };
 }

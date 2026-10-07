@@ -676,3 +676,45 @@ it.each(["TWSE", "TPEX"] as const)("%s verified publisher identity: same row acr
     else { expect(page.items[0]!.publisherRecordId).toBe(first.publisherRecordId); expect(page.items[0]!.relations).toEqual([{ kind: "supersedes", targetAnnouncementId: first.id }]); }
   }
 });
+
+it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["cycle", "over_limit", "multiple_detail_failure", "missing_payload"] as const).map((failure) => ({ venue, failure }))))(
+  "$venue $failure: affected listing fails → other rows continue and later success cannot clear failure", async ({ venue, failure }) => {
+    for (const reverse of [false, true]) {
+      const persistence = new MemoryPersistence(); const { rows, identity } = fixture(venue);
+      const unrelated = canonicalizeOfficialIdentityRow({ venue, snapshotDate: "2026-10-03", retrievedAt: "2026-10-03T00:00:00.000Z",
+        artifact: { sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], contentHash: "unrelated_identity" },
+        row: { kind: "company", ticker: "9997", legalName: "其他公司", displayName: "其他公司", unifiedBusinessNumber: "99999997", industryCode: "24", listedAt: "2000-01-01" } });
+      await persistence.appendResearchIdentityRecords([identity, unrelated]);
+      const source = parseOfficialAnnouncementSnapshot(rows, { retrievedAt: at, contentHash: "a".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "prior" }, venue, [identity])[0]!;
+      const ids = Array.from({ length: failure === "over_limit" ? 101 : failure === "missing_payload" ? 1 : 2 }, (_, index) => `blocked_tip_${index}`);
+      const prior = ids.map((id) => ({ ...source, id, collectionRecordId: source.id,
+        relations: failure === "cycle" ? [{ kind: "supersedes" as const, targetAnnouncementId: ids.find((other) => other !== id)! }] : [] }));
+      await persistence.appendResearchAnnouncements(prior);
+      if (failure === "missing_payload") {
+        const read = persistence.getResearchAnnouncementsByIds.bind(persistence);
+        vi.spyOn(persistence, "getResearchAnnouncementsByIds").mockImplementation((query) => query.ids.some((id) => ids.includes(id)) ? Promise.resolve([]) : read(query));
+      }
+      const goodSameListing = { ...rows[0], 主旨: "獨立可用公告", 說明: "Independent available source facts." };
+      const goodOtherListing = { ...rows[0], 公司代號: "9997", SecuritiesCompanyCode: "9997", 說明: "Other issuer source facts." };
+      const mixed = [rows[0], goodSameListing, goodOtherListing]; if (reverse) mixed.reverse();
+      setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+      const result = await runOfficialDisclosureAcquisition(persistence, { retrievedAt: at, fetchImpl: async (url) => String(url) === OFFICIAL_ANNOUNCEMENT_SOURCES[venue]
+        ? new Response(JSON.stringify(mixed)) : new Response("restricted", { status: 403 }) });
+      expect(result.outcomes).toEqual([{ venue, status: "failed", announcementCount: 2 }]);
+      const query = { effectiveAt: at, knowledgeAt: at };
+      const affectedRecords = await persistence.listResearchAnnouncements({ ...query, issuerId: identity.issuer.id });
+      expect(affectedRecords).toHaveLength(prior.length + 1);
+      expect(affectedRecords.filter((record) => ids.includes(record.id))).toEqual(prior);
+      expect(affectedRecords.find((record) => record.subject === "獨立可用公告")?.explanation).toBe("Independent available source facts.");
+      const affectedScan = (await persistence.listResearchDisclosureScans({ ...query, issuerId: identity.issuer.id }))[0]!;
+      expect(affectedScan.status).toBe("failed");
+      expect(affectedScan.detailAttempts).toHaveLength(2);
+      expect(affectedScan.detailAttempts!.find((attempt) => attempt.reasonCodes.includes("disclosure_revision_lineage_unresolved"))?.status).toBe("processing_failed");
+      const unaffectedPage = await listMaterialAnnouncements(persistence, { subject: { kind: "listing_id", listingId: unrelated.listing.id }, context: { knowledgeAt: at } });
+      expect(unaffectedPage.scan.status).toBe("current");
+      expect(unaffectedPage.scan.record?.status).toBe("success");
+      expect(unaffectedPage.items).toHaveLength(1);
+      expect(unaffectedPage.items[0]!.explanation.text).toBe("Other issuer source facts.");
+      expect(unaffectedPage.scan.record!.detailAttempts!.every((attempt) => !attempt.reasonCodes.includes("disclosure_revision_lineage_unresolved"))).toBe(true);
+    }
+  });
