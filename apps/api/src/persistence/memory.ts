@@ -1201,9 +1201,19 @@ export class MemoryPersistence implements Persistence {
   }
   async findResearchAnnouncementCandidates(query: ResearchAnnouncementCandidateQuery): Promise<ResearchAnnouncementMetadata[]> {
     validateResearchAnnouncementCandidateQuery(query);
-    return this.matchingDisclosureAnnouncements(query).filter((record) => query.kind === "revision"
-      ? Date.parse(record.publishedAt) === Date.parse(query.publishedAt) && (record.collectionRecordId === query.collectionRecordId || record.subject === query.subject)
-      : Date.parse(record.publishedAt) < Date.parse(query.before) && query.titles.includes(record.subject.replace(/\s+/g, "")) && query.days.includes(new Date(Date.parse(record.publishedAt) + 8 * 3_600_000).toISOString().slice(0, 10))).map(disclosureMetadata);
+    const scoped = this.matchingDisclosureAnnouncements(query);
+    if (query.kind === "revision") return scoped.filter((record) => Date.parse(record.publishedAt) === Date.parse(query.publishedAt)
+      && (record.collectionRecordId === query.collectionRecordId || record.subject === query.subject)).map(disclosureMetadata);
+    const before = scoped.filter((record) => Date.parse(record.publishedAt) < Date.parse(query.before));
+    const wanted = new Set(before.filter((record) => query.titles.includes(record.subject.replace(/\s+/g, ""))
+      && query.days.includes(new Date(Date.parse(record.publishedAt) + 8 * 3_600_000).toISOString().slice(0, 10))).map((record) => record.id));
+    const incoming = new Map<string, string[]>();
+    for (const record of before.filter((record) => record.quality === "available")) for (const relation of record.relations) if (relation.kind === "supersedes") {
+      const sources = incoming.get(relation.targetAnnouncementId) ?? []; sources.push(record.id); incoming.set(relation.targetAnnouncementId, sources);
+    }
+    const pending = [...wanted];
+    for (let index = 0; index < pending.length; index++) for (const source of incoming.get(pending[index]!) ?? []) if (!wanted.has(source)) { wanted.add(source); pending.push(source); }
+    return before.filter((record) => wanted.has(record.id)).map(disclosureMetadata);
   }
   async getLatestSuccessfulDisclosureDetail(query: ResearchDisclosureScanLookup & { collectionRecordId: string }): Promise<ResearchAnnouncementRecord | null> {
     validateResearchSuccessfulDetailQuery(query);

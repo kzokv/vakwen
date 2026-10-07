@@ -1,3 +1,4 @@
+import { disclosureCitationLineageScenario } from "../fixtures/research/disclosureCitationLineageScenario.js";
 import { disclosureAttachmentRevisionScenario } from "../fixtures/research/disclosureAttachmentRevisionScenario.js";
 import { disclosureReversionScenario } from "../fixtures/research/disclosureRevisionScenario.js";
 import { Client, Pool } from "pg";
@@ -258,6 +259,17 @@ describePostgres("disclosure memory/Postgres conformance", () => {
     expect(results[1]).toEqual(results[0]);
   });
 
+
+  it.each(["TWSE", "TPEX"] as const)("%s citation metadata: recursive changed-title superseders → bounded temporal lineage", async (venue) => {
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const f = await disclosureFixture(persistence, venue);
+      const result = await disclosureCitationLineageScenario(persistence, f.announcement, f.context.knowledgeAt);
+      expect(result.current.map((record) => record.id).sort()).toEqual(["citation_next", "citation_seed", "citation_tip"]);
+      expect(result.historical.map((record) => record.id)).toEqual(["citation_seed"]);
+      expect(result.cycle.map((record) => record.id).sort()).toEqual(["citation_cycle_a", "citation_cycle_b"]);
+      expect([...result.current, ...result.historical, ...result.cycle].every((record) => !("explanation" in record) && !("attachments" in record))).toBe(true);
+    }
+  });
   it("bounded announcement SQL: window companions, exact references, page IDs and Unicode candidates → memory parity", async () => {
     const results = [];
     for (const persistence of [new MemoryPersistence(), postgres]) {

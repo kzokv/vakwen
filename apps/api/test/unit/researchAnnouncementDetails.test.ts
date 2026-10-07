@@ -195,7 +195,7 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"]
       const results = [parseOfficialAnnouncementDetail(detail, notice, metadata, previous),
         await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), resolvePreviousRecords: async () => previous })];
       expect(results[0]!.detailStatus).toBe("available");
-      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.6");
+      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.7");
       expect(results[1]!.detailStatus).toBe("restricted");
       for (const result of results) {
         expect(result.record.relations).toEqual(targets.length === 1 ? [{ kind, targetAnnouncementId: prior.id }] : []);
@@ -365,3 +365,38 @@ it("detail BOM UTF8: decoded valid JSON → provenance hashes original bytes", a
   expect(result.record.provenance.contentHash).toBe(disclosureHash(bytes));
   expect(result.record.provenance.contentHash).not.toBe(disclosureHash(new TextDecoder().decode(bytes)));
 });
+
+it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"] as const).map((kind) => ({ venue, kind }))))(
+  "$venue $kind citation revisions: explicit lineage → active exact target without collapsing independent tips", async ({ venue, kind }) => {
+    const { record, detail } = fixture(venue);
+    const notice = { ...record, subject: `${kind === "corrects" ? "更正" : "撤回"}本公司公告`, explanation: '原115/10/02公告「公司資本支出公告」內容变更。' };
+    const a = { ...record, id: "revision_a", subject: "公司資本支出公告", publishedAt: "2026-10-02T01:00:00.000Z", relations: [] };
+    const b = { ...a, id: "revision_b", relations: [{ kind: "supersedes" as const, targetAnnouncementId: a.id }] };
+    const c = { ...a, id: "revision_c", relations: [{ kind: "supersedes" as const, targetAnnouncementId: b.id }] };
+    const independent = { ...a, id: "independent" };
+    const cases = [
+      { previous: [a, b, c], targets: [c.id] },
+      { previous: [a, b, c, independent], targets: [independent.id, c.id].sort() },
+      { previous: [a, { ...b, subject: "不同公告" }], targets: [] },
+      { previous: [a, { ...b, publishedAt: "2026-10-01T01:00:00.000Z" }], targets: [] },
+      { previous: [a, { ...b, quality: "restricted" as const }], targets: [a.id] },
+      { previous: [a, { ...b, listingId: "other_listing" }], targets: [a.id] },
+      { previous: [a, { ...b, issuerId: "other_issuer" }], targets: [a.id] },
+      { previous: [a, { ...b, venue: venue === "TWSE" ? "TPEX" as const : "TWSE" as const }], targets: [a.id] },
+      { previous: [a, { ...b, publishedAt: notice.publishedAt }], targets: [a.id] },
+      { previous: [a, { ...b, provenance: { ...b.provenance, processedAt: "2099-01-01T00:00:00.000Z" } }], targets: [a.id] },
+      { previous: [{ ...a, relations: [{ kind: "supersedes" as const, targetAnnouncementId: b.id }] }, b], targets: [] },
+      { previous: [a, { ...b, id: "unrelated_x", subject: "另一公告", relations: [{ kind: "supersedes" as const, targetAnnouncementId: "unrelated_y" }] },
+        { ...c, id: "unrelated_y", subject: "另一公告", relations: [{ kind: "supersedes" as const, targetAnnouncementId: "unrelated_x" }] }], targets: [a.id] },
+    ];
+    for (const field of ["主旨", "說明"]) detail.result.data[0][detail.result.titles.findIndex((title: { main: string }) => title.main.trim() === field)] = field === "主旨" ? notice.subject : notice.explanation;
+    for (const { previous, targets } of cases) {
+      const results = [parseOfficialAnnouncementDetail(detail, notice, metadata, previous),
+        await enrichOfficialAnnouncement(notice, { retrievedAt: metadata.retrievedAt, fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), previousRecords: previous })];
+      for (const result of results) {
+        expect(result.record.relations).toEqual(targets.length === 1 ? [{ kind, targetAnnouncementId: targets[0] }] : []);
+        expect(result.record.unresolvedRelations).toEqual(targets.length > 1 ? [{ kind, candidateAnnouncementIds: targets }] : []);
+        expect(result.record.unknownRelationTargets).toEqual(targets.length === 0 ? [{ kind }] : []);
+      }
+    }
+  });

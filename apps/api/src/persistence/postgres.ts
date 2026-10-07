@@ -1634,10 +1634,21 @@ export class PostgresPersistence implements Persistence {
   }
   async findResearchAnnouncementCandidates(query: ResearchAnnouncementCandidateQuery): Promise<ResearchAnnouncementMetadata[]> {
     validateResearchAnnouncementCandidateQuery(query);
-    const revision = query.kind === "revision";
+    if (query.kind === "citation") {
+      const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`WITH RECURSIVE scoped AS NOT MATERIALIZED (
+        SELECT id, record - 'explanation' - 'attachments' AS record, published_at FROM research.announcements
+        WHERE ${this.disclosureAnnouncementScope()} AND published_at < $6::timestamptz),
+        wanted AS (SELECT id FROM scoped WHERE regexp_replace(record->>'subject', $9, '', 'g')=ANY($7::text[])
+          AND to_char(published_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD')=ANY($8::text[])
+          UNION SELECT scoped.id FROM wanted JOIN scoped ON scoped.record->>'quality'='available' AND scoped.record->'relations' @>
+            jsonb_build_array(jsonb_build_object('kind', 'supersedes', 'targetAnnouncementId', wanted.id)))
+        SELECT record FROM scoped WHERE id IN (SELECT id FROM wanted)`,
+        [...this.disclosureScopeParameters(query), query.before, query.titles, query.days, disclosureWhitespacePattern]);
+      return result.rows.map((row) => researchAnnouncementMetadataSchema.parse(row.record));
+    }
     const result = await this.pool.query<{ record: ResearchAnnouncementMetadata }>(`SELECT record - 'explanation' - 'attachments' AS record FROM research.announcements WHERE ${this.disclosureAnnouncementScope()}
-      AND ${revision ? "published_at=$6::timestamptz AND (record->>'collectionRecordId'=$7 OR record->>'subject'=$8)" : "published_at < $6::timestamptz AND regexp_replace(record->>'subject', $9, '', 'g')=ANY($7::text[]) AND to_char(published_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD')=ANY($8::text[])"}`,
-      [...this.disclosureScopeParameters(query), ...(revision ? [query.publishedAt, query.collectionRecordId, query.subject] : [query.before, query.titles, query.days, disclosureWhitespacePattern])]);
+      AND published_at=$6::timestamptz AND (record->>'collectionRecordId'=$7 OR record->>'subject'=$8)`,
+      [...this.disclosureScopeParameters(query), query.publishedAt, query.collectionRecordId, query.subject]);
     return result.rows.map((row) => researchAnnouncementMetadataSchema.parse(row.record));
   }
   async getLatestSuccessfulDisclosureDetail(query: ResearchDisclosureScanLookup & { collectionRecordId: string }): Promise<ResearchAnnouncementRecord | null> {

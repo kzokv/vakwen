@@ -9,7 +9,7 @@ import { parseTaiwanOfficialDate } from "./twseIdentity.js";
 /** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
 export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
 export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
-export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.6";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.7";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const parametersSchema = z.object({
   marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
@@ -84,16 +84,39 @@ function announcementNoticeKind(subject: string): "corrects" | "retracts" | null
   return notice ? notice[1] === "更正" ? "corrects" : "retracts" : null;
 }
 
-function relationFromPublisherText(record: ResearchAnnouncementRecord, previousRecords: readonly ResearchAnnouncementMetadata[]) {
+function relationFromPublisherText(record: ResearchAnnouncementRecord, previousRecords: readonly ResearchAnnouncementMetadata[], knowledgeAt: string) {
   // Require an explicit correction/retraction notice plus both a complete cited title
   // and its publication date. Shared keywords or coincident event dates never link facts.
   const kind = announcementNoticeKind(record.subject);
   if (!kind) return { relations: record.relations, unresolved: false, unresolvedRelations: record.unresolvedRelations ?? [], unknownRelationTargets: record.unknownRelationTargets ?? [] };
   const citations = announcementCitationPairs(record);
-  const matches = previousRecords.filter((prior) => {
-    if (prior.id === record.id || prior.issuerId !== record.issuerId || prior.listingId !== record.listingId || prior.venue !== record.venue || prior.publishedAt >= record.publishedAt) return false;
-    return citations.some((citation) => citation.title === compactTitle(prior.subject) && citation.day === localStamp(prior).day);
-  });
+  const scoped = previousRecords.filter((prior) => prior.id !== record.id && prior.issuerId === record.issuerId && prior.listingId === record.listingId
+    && prior.venue === record.venue && prior.quality === "available" && Date.parse(prior.publishedAt) < Date.parse(record.publishedAt)
+    && Date.parse(prior.provenance.retrievedAt) <= Date.parse(knowledgeAt) && Date.parse(prior.provenance.processedAt) <= Date.parse(knowledgeAt));
+  const cited = scoped.filter((prior) => citations.some((citation) => citation.title === compactTitle(prior.subject) && citation.day === localStamp(prior).day));
+  const incoming = new Map<string, Set<string>>();
+  for (const prior of scoped) for (const relation of prior.relations) if (relation.kind === "supersedes") {
+    const sources = incoming.get(relation.targetAnnouncementId) ?? new Set<string>();
+    sources.add(prior.id); incoming.set(relation.targetAnnouncementId, sources);
+  }
+  const relevant = new Set(cited.map((prior) => prior.id));
+  const pending = [...relevant];
+  for (let index = 0; index < pending.length; index++) for (const source of incoming.get(pending[index]!) ?? []) {
+    if (!relevant.has(source)) { relevant.add(source); pending.push(source); }
+  }
+  // Topological elimination detects cycles in the relevant lineage only. A
+  // changed-title successor retires the old match but is never silently cited.
+  const degrees = new Map([...relevant].map((id) => [id, 0]));
+  for (const [target, sources] of incoming) if (relevant.has(target)) for (const source of sources) if (relevant.has(source)) degrees.set(source, degrees.get(source)! + 1);
+  const roots = [...degrees].filter(([, degree]) => degree === 0).map(([id]) => id);
+  let visited = 0;
+  for (let index = 0; index < roots.length; index++) {
+    visited++;
+    for (const source of incoming.get(roots[index]!) ?? []) if (relevant.has(source)) {
+      const degree = degrees.get(source)! - 1; degrees.set(source, degree); if (degree === 0) roots.push(source);
+    }
+  }
+  const matches = visited !== relevant.size ? [] : cited.filter((prior) => !incoming.has(prior.id));
   const unresolvedRelations = (record.unresolvedRelations ?? []).filter((relation) => relation.kind !== kind);
   const unknownRelationTargets = (record.unknownRelationTargets ?? []).filter((relation) => relation.kind !== kind);
   if (matches.length !== 1) return { relations: record.relations, unresolved: true, unresolvedRelations: matches.length > 1
@@ -137,7 +160,7 @@ export function parseOfficialAnnouncementDetail(
   const rawEventDate = typeof values.get("事實發生日") === "string" ? values.get("事實發生日") as string : undefined;
   const enriched = { ...record, rawEventDate, subject: field("主旨"), ruleClause: field("符合條款"), eventDate: parseOptionalAnnouncementEventDate(rawEventDate?.replaceAll("/", "")),
     explanation: field("說明"), attachments };
-  const relation = relationFromPublisherText(enriched, previousRecords);
+  const relation = relationFromPublisherText(enriched, previousRecords, metadata.retrievedAt);
   const reasons = relation.unresolved ? ["unresolved_correction_reference"] : [];
   const output = researchAnnouncementRecordSchema.parse({ ...enriched, relations: relation.relations, unresolvedRelations: relation.unresolvedRelations, unknownRelationTargets: relation.unknownRelationTargets,
     collectionProvenance: record.collectionProvenance ?? record.provenance,
@@ -215,7 +238,7 @@ export async function enrichOfficialAnnouncement(record: ResearchAnnouncementRec
     // A failed detail request cannot erase an exact correction citation in it.
     const previousRecords = options.resolvePreviousRecords ? await options.resolvePreviousRecords(record) : options.previousRecords ?? [];
     options.signal?.throwIfAborted();
-    const relation = relationFromPublisherText(record, previousRecords);
+    const relation = relationFromPublisherText(record, previousRecords, retrievedAt);
     const reasonCodes = [reason, ...(relation.unresolved ? ["unresolved_correction_reference"] : [])];
     return { record: { ...record, relations: relation.relations, unresolvedRelations: relation.unresolvedRelations, unknownRelationTargets: relation.unknownRelationTargets, detailQuality: { status, reasonCodes } }, detailStatus: status, reasonCodes };
   }

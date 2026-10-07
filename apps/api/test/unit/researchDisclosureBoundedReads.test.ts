@@ -1,3 +1,4 @@
+import { disclosureCitationLineageScenario } from "../fixtures/research/disclosureCitationLineageScenario.js";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
 import { canonicalizeOfficialIdentityRow } from "../../src/services/research/identity.js";
@@ -206,4 +207,13 @@ describe("bounded disclosure reads", () => {
     for (const spy of broadReads) expect(spy).not.toHaveBeenCalled();
   });
 
+});
+
+it.each(["TWSE", "TPEX"] as const)("%s citation metadata: recursive changed-title superseders → bounded temporal lineage", async (venue) => {
+  const f = await fixture(venue); const persistence = f.persistence;
+  const result = await disclosureCitationLineageScenario(persistence, f.announcement, f.context.knowledgeAt);
+  expect(result.current.map((record) => record.id).sort()).toEqual(["citation_next", "citation_seed", "citation_tip"]);
+  expect(result.historical.map((record) => record.id)).toEqual(["citation_seed"]);
+  expect(result.cycle.map((record) => record.id).sort()).toEqual(["citation_cycle_a", "citation_cycle_b"]);
+  expect([...result.current, ...result.historical, ...result.cycle].every((record) => !("explanation" in record) && !("attachments" in record))).toBe(true);
 });
