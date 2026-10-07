@@ -22,6 +22,13 @@ const candidate = {
 } satisfies z.input<typeof disclosureCandidateSchema>;
 
 const analyticalFields = ["materialMechanism", "affectedMetricOrAssumption", "horizon", "condition", "confirmationCondition", "disconfirmationCondition"] as const;
+const avoidanceTradingAdvice = [
+  "Avoid TSMC", "Avoid 2330", "Refrain from AAPL", "Avoid the stock", "Refrain from shares",
+  "Investors should avoid TSMC", "You must refrain from 2330", "I recommend avoiding AAPL", "We advise refraining from TSMC",
+  "Do not avoid 2330", "Don't refrain from AAPL", "Investors should not avoid TSMC", "I recommend not avoiding AAPL",
+  "You shouldn't refrain from TSMC", "TSMC should be avoided", "AAPL must not be avoided", "I recommend that 2330 be avoided",
+  "TSMC is recommended to be avoided", "Please avoid Nvidia", "- Avoid TSMC",
+];
 const positionTradingAdvice = [
   "Go long TSMC", "Investors should go short 2330", "Take a long position in AAPL", "Go long on TSMC",
   "I recommend going long TSMC", "We advise going short on 2330", "Do not go long TSMC", "You shouldn't go short AAPL",
@@ -93,7 +100,7 @@ describe("disclosure specialist candidate contract", () => {
     expect(disclosureCandidateSchema.safeParse({ ...candidate, materialMechanism: "Bullish investor sentiment." }).success).toBe(false);
   });
   it.each(analyticalFields)("analytical %s: action or sentiment in either language → reject the specific field", (field) => {
-    for (const text of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, "Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲",
+    for (const text of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, ...avoidanceTradingAdvice, "Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲",
       "Buy TSMC", "Sell AAPL now", "Hold 2330", "I recommend buying TSMC", "We advise selling AAPL", "I recommend that you buy TSMC",
       "You should buy NVDA", "Hold shipments. Buy TSMC now.", "Investors should buy equipment.", "My advice is to buy 2330", "買進台積電", "賣出2330", "請持有聯發科", "確認：買進台積電", "條件成立。賣出2330",
       "- Buy TSMC", '"Sell AAPL now"', "推薦買入台積電",
@@ -108,7 +115,7 @@ describe("disclosure specialist candidate contract", () => {
     }
   });
   it("publisher quote: exact source trading instruction → preserve literal evidence separately from analyst prose", () => {
-    for (const excerpt of ["Buy the stock now", "建議買入股票", ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice]) expect(disclosureCandidateSchema.safeParse({ ...candidate,
+    for (const excerpt of ["Buy the stock now", "建議買入股票", ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, ...avoidanceTradingAdvice]) expect(disclosureCandidateSchema.safeParse({ ...candidate,
       statement: excerpt, statusEvidence: { ...candidate.statusEvidence, excerpt } }).success).toBe(true);
   });
   it("candidate identifier: prose or Markdown instruction → reject identifier misuse", () => {
@@ -244,6 +251,9 @@ describe("focused disclosure report", () => {
       "The equipment must not be sold before commissioning.", "The issuer should be bought by its parent company.",
       "The company could be sold after regulatory approval.", "I recommend that inventory be sold before expiry.",
       "Equipment is recommended to be purchased after approval.",
+      "Avoid delays in commissioning.", "Avoid unnecessary costs.", "Refrain from speculation.",
+      "Unnecessary costs should be avoided.", "Delays must not be avoided by skipping inspections.",
+      "The issuer avoids TSMC to diversify its supplier base.", "The company refrains from speculation about its new plant.",
       "The issuer opened a long position to hedge its input costs.", "The company will close its position after the subsidiary sale.",
       "Open the factory after commissioning.", "Close the business after liquidation.", "Go short of supplies during the outage.",
       "The issuer is going long TSMC to hedge its supply exposure.", "Long positions were reduced by the issuer last year.",
@@ -313,7 +323,7 @@ describe("focused disclosure report", () => {
   it.each(analyticalFields)("rendered analytical %s: injected trading advice → reject revalidation", async (field) => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [candidate], readBudget: 10 });
-    for (const advice of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, "Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票", "Buy TSMC", "Sell AAPL now", "I recommend buying TSMC", "買進台積電", "賣出2330"]) {
+    for (const advice of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, ...avoidanceTradingAdvice, "Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票", "Buy TSMC", "Sell AAPL now", "I recommend buying TSMC", "買進台積電", "賣出2330"]) {
       const mutated = structuredClone(report);
       mutated.assessments[0]!.candidate[field] = advice;
       for (const locale of ["en", "zh-TW"] as const) expect(() => renderFocusedDisclosureResearchReportMarkdown(mutated, locale)).toThrow();
@@ -759,6 +769,8 @@ describe("focused disclosure report", () => {
     }
   });
   it.each([
+    "The meeting is set for 2026/11/01.", "The meetings are set for 2026/11/01.",
+    "The meeting is to be held on 2026/11/01.", "The meetings are to be held on 2026/11/01.",
     "The board meeting will be held on 2026/11/01.", "The company shall hold its board meeting on 2026/11/01.",
     "The project will be completed on 2026/11/01.", "The project shall be completed on 2026/11/01.",
     "董事會將於2026/11/01召開。", "工程將於2026/11/01完成。",
@@ -781,6 +793,8 @@ describe("focused disclosure report", () => {
     }
   });
   it.each([
+    ["The meeting is expected to be set for 2027/01/01.", false],
+    ["We expect the meeting is to be held on 2027/01/01.", false],
     ["The transaction is expected to close on 2027/01/01.", false],
     ["The transaction is anticipated to close on 2027/01/01.", false],
     ["The transaction is projected to close on 2027/01/01.", false],
@@ -915,6 +929,8 @@ describe("focused disclosure report", () => {
     ["scheduled", "尚未預定", "2027-01-01"], ["scheduled", "取消原訂於", "2027-01-01"],
     ["scheduled", "not scheduled", "2027-01-01"], ["scheduled", "no longer planned", "2027-01-01"],
     ["scheduled", "scheduled but cancelled", "2027-01-01"],
+    ["scheduled", "is not set for the date", "2027-01-01"], ["scheduled", "is not to be held on that date", "2027-01-01"],
+    ["scheduled", "is set for that date if approved", "2027-01-01"], ["scheduled", "is to be held on that date subject to approval", "2027-01-01"],
     ["scheduled", "will not be held", "2027-01-01"], ["scheduled", "shall never be held", "2027-01-01"],
     ["scheduled", "will be held if approved", "2027-01-01"], ["scheduled", "shall be held subject to approval", "2027-01-01"],
     ["scheduled", "will probably be held", "2027-01-01"], ["scheduled", "will possibly be held", "2027-01-01"],
