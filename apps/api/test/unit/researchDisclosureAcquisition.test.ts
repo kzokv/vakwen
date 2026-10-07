@@ -733,3 +733,72 @@ it.each(["TWSE", "TPEX"] as const)("%s source clocks: explicit minute/second for
     expect(() => parseOfficialAnnouncementSnapshot([{ ...rows[0], 發言時間: value }], metadata, venue, [identity])).toThrow("announcement_publication_time_invalid");
   }
 });
+
+
+it.each((["TWSE", "TPEX"] as const).flatMap((venue) => [false, true].map((fixedMetadataClock) => ({ venue, fixedMetadataClock })) ))(
+  "$venue board work deadline (fixed metadata $fixedMetadataClock): completed and empty listings → current; unfinished listings → failed", async ({ venue, fixedMetadataClock }) => {
+    const { rows, identity } = fixture(venue); const persistence = new MemoryPersistence();
+    const others = ["9997", "9998", "9999"].map((ticker) => canonicalizeOfficialIdentityRow({ venue, snapshotDate: "2026-10-03", retrievedAt: "2026-10-03T00:00:00.000Z",
+      artifact: { sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], contentHash: ticker },
+      row: { kind: "company", ticker, legalName: ticker, displayName: ticker, unifiedBusinessNumber: `9999${ticker}`, industryCode: "24", listedAt: "2000-01-01" } }));
+    await persistence.appendResearchIdentityRecords([identity, ...others]);
+    const mixed = [rows[0], { ...rows[0], 公司代號: "9997", SecuritiesCompanyCode: "9997" },
+      { ...rows[0], 說明: "Deferred second row for the first listing." }, { ...rows[0], 公司代號: "9998", SecuritiesCompanyCode: "9998" }];
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+    vi.useFakeTimers({ toFake: ["Date", "performance"] }); vi.setSystemTime(new Date(at));
+    let details = 0;
+    try {
+      const fetchImpl: typeof fetch = async (url, init) => {
+        if (String(url) === OFFICIAL_ANNOUNCEMENT_SOURCES[venue]) return new Response(JSON.stringify(mixed));
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        if (++details === 3) vi.advanceTimersByTime(20 * 60 * 1000);
+        return new Response("restricted", { status: 403 });
+      };
+      const result = await runOfficialDisclosureAcquisition(persistence, { fetchImpl, ...(fixedMetadataClock ? { retrievedAt: at } : {}) });
+      expect(result.outcomes).toEqual([{ venue, status: "failed", announcementCount: 2 }]); expect(details).toBe(3);
+      const completedAt = fixedMetadataClock ? at : "2026-10-04T05:20:00.000Z";
+      for (const [index, subject] of [identity, ...others].entries()) {
+        const scan = (await persistence.listResearchDisclosureScans({ issuerId: subject.issuer.id, effectiveAt: completedAt, knowledgeAt: completedAt }))[0]!;
+        expect(scan).toMatchObject({ checkedAt: at, publicationEnd: at, knowledgeAt: completedAt, status: index === 0 || index === 2 ? "failed" : "success", exhaustive: false });
+        expect(scan.provenance).toMatchObject({ retrievedAt: at, processedAt: completedAt });
+        const deferred = scan.detailAttempts!.filter((attempt) => attempt.reasonCodes.includes("disclosure_board_work_budget_exhausted"));
+        expect(deferred).toHaveLength(index === 0 || index === 2 ? 1 : 0);
+        if (index === 1 || index === 3) {
+          const page = await listMaterialAnnouncements(persistence, { subject: { kind: "listing_id", listingId: subject.listing.id }, context: { knowledgeAt: completedAt } });
+          expect(page.scan.status).toBe("current");
+        }
+      }
+      expect(await persistence.listResearchAnnouncements({ issuerId: identity.issuer.id, effectiveAt: completedAt, knowledgeAt: completedAt })).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+
+it.each(["history", "detail", "attachment"] as const)("internal board deadline during %s: combined request abort → unfinished failure without failing empty listings", async (stage) => {
+  const { rows, identity } = fixture("TWSE"); const persistence = new MemoryPersistence();
+  const empty = canonicalizeOfficialIdentityRow({ venue: "TWSE", snapshotDate: "2026-10-03", retrievedAt: "2026-10-03T00:00:00.000Z",
+    artifact: { sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES.TWSE, contentHash: "empty" }, row: { kind: "company", ticker: "9997", legalName: "empty", displayName: "empty", unifiedBusinessNumber: "99999997", industryCode: "24", listedAt: "2000-01-01" } });
+  await persistence.appendResearchIdentityRecords([identity, empty]);
+  const history = JSON.parse(readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8"));
+  const detail = JSON.parse(readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8"));
+  detail.result.titles.push({ main: "附件", sub: [] }); detail.result.data[0].push({ url: "https://mops.twse.com.tw/budget.txt", fileName: "budget.txt" });
+  const controller = new AbortController(); const external = new AbortController();
+  const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => milliseconds === 20 * 60 * 1000 ? controller.signal : originalTimeout(milliseconds));
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  try {
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const source = String(url);
+      const stop = stage === "history" ? source.endsWith("t05st01") : stage === "detail" ? source.endsWith("t05st01_detail") : source.endsWith("budget.txt");
+      if (stop) { controller.abort(new DOMException("Board work deadline", "TimeoutError")); expect(init?.signal?.aborted).toBe(true); throw init?.signal?.reason; }
+      return new Response(JSON.stringify(source.endsWith("t05st01_detail") ? detail : source.endsWith("t05st01") ? history : rows));
+    };
+    await runOfficialDisclosureAcquisition(persistence, { fetchImpl, signal: external.signal, retrievedAt: at });
+    expect(external.signal.aborted).toBe(false);
+    const scope = { effectiveAt: at, knowledgeAt: at };
+    const failed = (await persistence.listResearchDisclosureScans({ ...scope, issuerId: identity.issuer.id }))[0]!;
+    expect(failed.status).toBe("failed");
+    expect(failed.detailAttempts!.some((attempt) => attempt.reasonCodes.includes("disclosure_board_work_budget_exhausted"))).toBe(true);
+    expect((await persistence.listResearchDisclosureScans({ ...scope, issuerId: empty.issuer.id }))[0]!.status).toBe("success");
+    expect(await persistence.listResearchAnnouncements({ ...scope, issuerId: identity.issuer.id })).toEqual([]);
+  } finally { timeout.mockRestore(); }
+});

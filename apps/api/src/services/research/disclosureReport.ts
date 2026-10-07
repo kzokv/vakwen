@@ -21,19 +21,20 @@ function hasTradingAdvice(text: string): boolean {
   const positionAction = String.raw`(?:take|open|close|reduce|increase|build|establish)\s+${positionObject}`;
   const positionInflection = String.raw`(?:tak(?:e|ing)|open(?:ing)?|clos(?:e|ing)|reduc(?:e|ing)|increas(?:e|ing)|build(?:ing)?|establish(?:ing)?)\s+${positionObject}`;
   const positionParticiple = String.raw`(?:taken|opened|closed|reduced|increased|built|established)\b`;
+  const exposureObject = String.raw`(?:(?:your|the|our|its|their)\s+)?(?:allocation|exposure|weight)(?:\s+by\s+\d+(?:\.\d+)?\s*%)?\s+(?:to|in)\s+`;
   const baseVerb = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|(?:be\s+)?(?:overweight|underweight)|add\s+to|invest\s+in|divest(?:\s+(?:from|of))?|go\s+(?:long|short)(?:\s+on)?(?!\s+of\b))`;
   const participle = String.raw`(?:bought|sold|held|purchased|accumulated|shorted|reduced|exited|liquidated|added\s+to|invested\s+in|divested|overweighted|underweighted)\b`;
   const inflectedVerb = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to|invest(?:ing)?\s+in|(?:be\s+)?(?:overweight|underweight)(?:ing)?|divest(?:ing)?(?:\s+(?:from|of))?|go(?:ing)?\s+(?:long|short)(?:\s+on)?(?!\s+of\b))`;
-  const imperative = String.raw`(?:${baseVerb}\s+${object}|${positionAction})`;
-  const inflected = String.raw`(?:${inflectedVerb}\s+${object}|${positionInflection})`;
+  const imperative = String.raw`(?:${baseVerb}\s+(?!${exposureObject})${object}|${positionAction})`;
+  const inflected = String.raw`(?:${inflectedVerb}\s+(?!${exposureObject})${object}|${positionInflection})`;
   // Direct commands do not need a security suffix: names/tickers are open-ended.
   // Keep this broader object rule in directive contexts so issuer descriptions survive.
   const directiveStart = String.raw`(?:^|[.!?;:。！？；：\n])\s*(?:(?:[-*+>]|\d+[.)])\s*)?["'“‘「]*`;
-  const namedAction = String.raw`(?:${baseVerb}\s+[\p{L}\p{N}$]|${positionAction})`;
+  const namedAction = String.raw`(?:${baseVerb}\s+(?!${exposureObject})[\p{L}\p{N}$]|${positionAction})`;
   const operationalObject = String.raw`(?:(?:the|our|its|their)\s+)?(?:inventory|shipments?|equipment|machinery|assets?|business(?:es)?|subsidiar(?:y|ies)|supplies|materials?)\b`;
-  const bareNamedAction = String.raw`(?:${baseVerb}\s+(?!(?:from|of|on)\b|${inflectedVerb}\s|${operationalObject})[\p{L}\p{N}$]|${positionAction})`;
-  const namedInflection = String.raw`(?:${inflectedVerb}\s+[\p{L}\p{N}$]|${positionInflection})`;
-  const bareNamedInflection = String.raw`(?:${inflectedVerb}\s+(?!(?:from|of|on)\b|${inflectedVerb}\s|${operationalObject})[\p{L}\p{N}$]|${positionInflection})`;
+  const bareNamedAction = String.raw`(?:${baseVerb}\s+(?!(?:from|of|on)\b|${exposureObject}|${inflectedVerb}\s|${operationalObject})[\p{L}\p{N}$]|${positionAction})`;
+  const namedInflection = String.raw`(?:${inflectedVerb}\s+(?!${exposureObject})[\p{L}\p{N}$]|${positionInflection})`;
+  const bareNamedInflection = String.raw`(?:${inflectedVerb}\s+(?!(?:from|of|on)\b|${exposureObject}|${inflectedVerb}\s|${operationalObject})[\p{L}\p{N}$]|${positionInflection})`;
   const avoidance = String.raw`(?:avoid|refrain\s+from)\s+`;
   const negative = String.raw`(?:(?:not|never)\s+)?`;
   const directivePrefix = String.raw`(?:please\s+)?(?:(?:do\s+not|don['’]t|never)\s+)?(?:please\s+)?`;
@@ -45,28 +46,39 @@ function hasTradingAdvice(text: string): boolean {
   const passiveSubject = String.raw`(?:${object}|(?!that\b|${operationalObject}|(?:(?:the|our)\s+)?(?:issuer|company)\s)[\p{L}\p{N}$][\p{L}\p{N}$.'’_-]*(?:\s+[\p{L}\p{N}$][\p{L}\p{N}$.'’_-]*){0,3})`;
   const passiveAction = String.raw`be\s+${negative}${participle}`;
   const passivePositionAction = String.raw`be\s+${negative}${positionParticiple}`;
-  const passiveModal = String.raw`(?:${passiveSubject}\s+${modal}${passiveAction}|${positionObject}\s+${modal}${passivePositionAction})`;
-  const passiveAdvisory = String.raw`${advisoryVerb}\s+(?:that\s+)?(?:${passiveSubject}\s+(?:${modal})?${negative}${passiveAction}|${positionObject}\s+(?:${modal})?${negative}${passivePositionAction})`;
+  const passiveModal = String.raw`(?:(?!${exposureObject})${passiveSubject}\s+${modal}${passiveAction}|${positionObject}\s+${modal}${passivePositionAction})`;
+  const passiveAdvisory = String.raw`${advisoryVerb}\s+(?:that\s+)?(?:(?!${exposureObject})${passiveSubject}\s+(?:${modal})?${negative}${passiveAction}|${positionObject}\s+(?:${modal})?${negative}${passivePositionAction})`;
   const passiveRecommendation = String.raw`(?:is|are)\s+${negative}(?:recommended|advised)\s+${negative}to\s+${negative}`;
-  const recommendedPassive = String.raw`(?:${passiveSubject}\s+${passiveRecommendation}${passiveAction}|${positionObject}\s+${passiveRecommendation}${passivePositionAction})`;
+  const recommendedPassive = String.raw`(?:(?!${exposureObject})${passiveSubject}\s+${passiveRecommendation}${passiveAction}|${positionObject}\s+${passiveRecommendation}${passivePositionAction})`;
   // Bare avoidance is also normal risk analysis. Require positive security
   // indicators, preserving captured case; arbitrary names need a security noun.
   const identifiesSecurity = (target: string): boolean => new RegExp(String.raw`^${object}`, "iu").test(target)
     || /^(?:\$[A-Za-z][A-Za-z0-9.-]{0,9}|[A-Z]{2,5}(?:[.-][A-Z]{1,2})?|\d{4,6})(?![\p{L}\p{N}_.-])/u.test(target);
   const avoidanceInflection = String.raw`(?:avoid(?:ing)?|refrain(?:ing)?\s+from)\s+`;
-  const avoidancePrefixes = [
-    String.raw`${directiveStart}${directivePrefix}${avoidance}`,
-    String.raw`(?:${directiveStart}|\b(?:I|we)\s+)${advisory}${avoidanceInflection}`,
-    String.raw`\b(?:you|investors?|traders?)\s+(?:${modal})?${directivePrefix}${avoidance}`,
-    String.raw`${directiveStart}(?:my\s+advice\s+is\s+${negative}to\s+${negative}|${modal})${avoidance}`,
+  const targetedActionPrefixes = (active: string, inflectedAction: string): string[] => [
+    String.raw`${directiveStart}${directivePrefix}${active}`,
+    String.raw`(?:${directiveStart}|\b(?:I|we)\s+)${advisory}${inflectedAction}`,
+    String.raw`\b(?:you|investors?|traders?)\s+(?:${modal})?${directivePrefix}${active}`,
+    String.raw`${directiveStart}(?:my\s+advice\s+is\s+${negative}to\s+${negative}|${modal})${active}`,
   ];
+  const allocationAmount = String.raw`(?:\d+(?:\.\d+)?\s*%(?:\s+of\s+(?:your|the|our)\s+(?:portfolio|capital|funds))?|(?:more|less)(?:\s+(?:capital|funds|money))?|(?:your|the|our)\s+(?:capital|funds|money)|capital|funds|money)`;
+  const allocationAction = String.raw`(?:allocate\s+(?:${allocationAmount}\s+)?to\s+|(?:${baseVerb}|increase|decrease|raise|lower|maintain|limit|cut)\s+${exposureObject})`;
+  const allocationInflection = String.raw`(?:allocat(?:e|ing)\s+(?:${allocationAmount}\s+)?to\s+|(?:${inflectedVerb}|increas(?:e|ing)|decreas(?:e|ing)|rais(?:e|ing)|lower(?:ing)?|maintain(?:ing)?|limit(?:ing)?|cut(?:ting)?)\s+${exposureObject})`;
+  const allocationParticiple = String.raw`(?:${participle}|increased|decreased|raised|lowered|maintained|limited|cut)\b`;
+  const allocationSubject = String.raw`${exposureObject}(?<securityTarget>${passiveSubject})`;
   const passiveAvoidance = String.raw`be\s+${negative}avoided\b`;
   const avoidancePatterns = [
-    ...avoidancePrefixes.map((prefix) => String.raw`${prefix}(?<securityTarget>[^\n;!?.。！？]+)`),
-    String.raw`${directiveStart}(?<securityTarget>${passiveSubject})\s+(?:${modal}|${passiveRecommendation})${passiveAvoidance}`,
+    ...targetedActionPrefixes(avoidance, avoidanceInflection).map((prefix) => String.raw`${prefix}(?<securityTarget>[^\n;!?.。！？]+)`),
+    String.raw`${directiveStart}(?<securityTarget>(?!${exposureObject})${passiveSubject})\s+(?:${modal}|${passiveRecommendation})${passiveAvoidance}`,
     String.raw`(?:${directiveStart}|\b(?:I|we)\s+)${advisoryVerb}\s+(?:that\s+)?(?<securityTarget>${passiveSubject})\s+(?:${modal})?${negative}${passiveAvoidance}`,
   ];
-  if (avoidancePatterns.some((pattern) => [...text.matchAll(new RegExp(pattern, "giu"))]
+  const allocationPatterns = [
+    ...targetedActionPrefixes(String.raw`(?:${allocationAction}|${avoidance}${allocationInflection})`, String.raw`(?:${allocationInflection}|${avoidanceInflection}${allocationInflection})`).map((prefix) => String.raw`${prefix}(?<securityTarget>[^\n;!?.。！？]+)`),
+    String.raw`${directiveStart}${allocationSubject}\s+(?:${modal}|${passiveRecommendation})be\s+${negative}${allocationParticiple}`,
+    String.raw`(?:${directiveStart}|\b(?:I|we)\s+)${advisoryVerb}\s+(?:that\s+)?${allocationSubject}\s+(?:${modal})?${negative}be\s+${negative}${allocationParticiple}`,
+    String.raw`${directiveStart}${allocationAmount}\s+${modal}be\s+${negative}allocated\s+to\s+(?<securityTarget>[^\n;!?.。！？]+)`,
+  ];
+  if ([...avoidancePatterns, ...allocationPatterns].some((pattern) => [...text.matchAll(new RegExp(pattern, "giu"))]
     .some((match) => identifiesSecurity(match.groups!.securityTarget!)))) return true;
   const chineseNegative = String.raw`(?:不要|不應該|不應|不宜|不必|不得|勿|別)?`;
   const chineseDirectivePrefix = String.raw`(?:請)?(?:立即|現在)?(?:應該|應當)?${chineseNegative}`;

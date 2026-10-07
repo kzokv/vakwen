@@ -23,6 +23,19 @@ const candidate = {
 
 const analyticalFields = ["materialMechanism", "affectedMetricOrAssumption", "horizon", "condition", "confirmationCondition", "disconfirmationCondition"] as const;
 const allocationTradingAdvice = [
+  "Buy exposure to TSMC", "Sell your allocation to 2330", "Hold your exposure to AAPL",
+  "Investors should buy exposure to TSMC", "I recommend selling your allocation to 2330", "Do not buy exposure to AAPL",
+  "Avoid buying exposure to TSMC", "I recommend avoiding selling your allocation to 2330",
+  "Your exposure to TSMC should be bought", "I recommend that your allocation to 2330 be sold",
+  "Allocate more to TSMC", "Increase your allocation to 2330", "I recommend allocating 20% to AAPL",
+  "Allocate 12.5% of your portfolio to TSMC", "Allocate more capital to AAPL", "Reduce your exposure to 2330",
+  "Increase the weight in TSMC", "Decrease your allocation by 20% to AAPL", "Investors should allocate less to TSMC",
+  "We advise increasing your allocation to AAPL", "I suggest reducing your exposure to 2330", "My advice is to allocate funds to the stock",
+  "Allocate funds to Nvidia shares", "Allocate capital to $nvda", "Do not allocate more to TSMC", "You shouldn't increase your allocation to 2330",
+  "I recommend not allocating 20% to AAPL", "We advise against reducing your exposure to TSMC", "Investors must not cut their exposure to AAPL",
+  "Your allocation to TSMC should be increased", "The exposure to 2330 must not be reduced", "I recommend that your weight in AAPL be lowered",
+  "Your allocation to TSMC is recommended to be increased", "20% of your portfolio should be allocated to AAPL",
+
   "You should be overweight TSMC", "Investors should be underweight 2330", "You should not be overweight AAPL",
   "I recommend that you be underweight TSMC", "Be overweight AAPL",
   "Overweight TSMC", "Underweight 2330", "Investors should underweight 2330", "I recommend overweighting AAPL",
@@ -264,6 +277,10 @@ describe("focused disclosure report", () => {
       "The issuer reported that its pension portfolio was overweight TSMC last quarter.",
       "The portfolio was underweighted in AAPL before the reporting date.", "The company described the broker's overweight rating in its investor presentation.",
       "Overweight shipments incur additional freight charges.", "Underweight inventory requires a quantity reconciliation.",
+      "Allocate capital to machinery.", "Allocate more funds to factory maintenance.", "Reduce exposure to currency risk.",
+      "Increase your allocation to production capacity.", "I recommend allocating 20% to maintenance.",
+      "You should reduce exposure to currency risk.", "Your allocation to maintenance should be increased.",
+      "The company allocated funds to TSMC for contracted manufacturing.", "The issuer reduced its exposure to AAPL last year.",
       "The financing structure should avoid dilution.", "Avoid covenant default.", "Avoid Dilution.", "Avoid Covenant Default.",
       "You should avoid covenant default.", "I recommend avoiding dilution.", "Covenant Default should be avoided.",
       "I recommend that dilution be avoided.", "Dilution is recommended to be avoided.", "Refrain from market manipulation.",

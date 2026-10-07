@@ -8,6 +8,11 @@ import { ResearchAcquisitionDisabledError } from "./acquisition.js";
 import { researchAcquisitionEnabled, researchDisclosureAcquisitionEnabled } from "./rollout.js";
 import { DISCLOSURE_PARSER_VERSION, OFFICIAL_ANNOUNCEMENT_SOURCES, disclosureHash, disclosureId, parseOfficialAnnouncementSnapshot, retainAnnouncementExplanation, safeDisclosureUrl } from "./providers/mopsAnnouncements.js";
 
+// Leave headroom inside the 30-minute scan freshness window for persistence.
+// Deferred rows remain explicit failures; this is not a scheduling fairness policy.
+const BOARD_WORK_BUDGET_MS = 20 * 60 * 1000;
+class DisclosureBoardBudgetExhausted extends Error {}
+
 interface AcquisitionOptions { signal?: AbortSignal; fetchImpl?: typeof fetch; retrievedAt?: string; acquisitionRunId?: string }
 // Source requests are bounded and redirects are rejected so attachment locations
 // cannot turn internal ingestion into a generic URL fetcher.
@@ -69,33 +74,46 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
     let observedAt: string | undefined;
     const artifactAttempts: NonNullable<ResearchDisclosureScan["artifactAttempts"]> = [];
     const artifactOwners = new Map<string, string>();
-    const lineageFailuresByListing = new Set<string>();
+    const failedListings = new Set<string>();
     const detailAttemptsByListing = new Map<string, NonNullable<ResearchDisclosureScan["detailAttempts"]>>();
+    const pendingRecords = new Set<ResearchAnnouncementRecord>();
+    let deadline = Infinity;
+    let budgetSignal: AbortSignal | undefined;
+    let workSignal = options.signal;
+    const checkWorkBudget = () => {
+      options.signal?.throwIfAborted();
+      if (performance.now() >= deadline || budgetSignal?.aborted) throw new DisclosureBoardBudgetExhausted();
+    };
     try {
       const response = await officialResponse(fetchImpl, sourceUrl, options.signal); contentHash = disclosureHash(response.bytes);
       observedAt = options.retrievedAt ?? new Date().toISOString();
+      deadline = performance.now() + BOARD_WORK_BUDGET_MS;
+      budgetSignal = AbortSignal.timeout(BOARD_WORK_BUDGET_MS);
+      workSignal = options.signal ? AbortSignal.any([options.signal, budgetSignal]) : budgetSignal;
       let snapshotText: string;
       try { snapshotText = new TextDecoder("utf-8", { fatal: true }).decode(response.bytes); }
       catch { throw new Error("disclosure_response_invalid_utf8"); }
       const records = parseOfficialAnnouncementSnapshot(JSON.parse(snapshotText), { retrievedAt: observedAt, contentHash, sourceUrl, acquisitionRunId }, venue, identities);
+      publicationStart = records.reduce((start, record) => record.publishedAt < start ? record.publishedAt : start, observedAt);
+      for (const record of records) pendingRecords.add(record);
       for (const sourceRecord of records) {
-        options.signal?.throwIfAborted();
+        checkWorkBudget();
         let record = sourceRecord;
         const listingKey = JSON.stringify([record.issuerId, record.listingId, record.venue]);
         const readAt = options.retrievedAt ?? new Date().toISOString();
         const scope = { issuerId: record.issuerId, listingId: record.listingId, venue: record.venue, effectiveAt: readAt, knowledgeAt: readAt };
-        const enriched = await enrichOfficialAnnouncement(record, { fetchImpl, signal: options.signal, retrievedAt: readAt, resolvePreviousRecords: async (detailRecord) => {
+        const enriched = await enrichOfficialAnnouncement(record, { fetchImpl, signal: workSignal, retrievedAt: readAt, resolvePreviousRecords: async (detailRecord) => {
           const selectors = announcementCitationSelectors(detailRecord);
           return selectors.titles.length && selectors.days.length ? persistence.findResearchAnnouncementCandidates({ ...scope, kind: "citation", before: detailRecord.publishedAt, ...selectors }) : [];
         } });
-        options.signal?.throwIfAborted();
+        checkWorkBudget();
         const detailCompletedAt = options.retrievedAt ?? new Date().toISOString();
         enriched.record = { ...enriched.record, provenance: { ...enriched.record.provenance, processedAt: detailCompletedAt, ...(enriched.detailStatus === "available" ? { retrievedAt: detailCompletedAt } : {}) } };
         const detailAttempts = detailAttemptsByListing.get(listingKey) ?? [];
         detailAttempts.push({ announcementId: sourceRecord.id, attemptedAt: detailCompletedAt, status: enriched.detailStatus, reasonCodes: enriched.reasonCodes });
         detailAttemptsByListing.set(listingKey, detailAttempts);
         const markLineageFailure = () => {
-          lineageFailuresByListing.add(listingKey);
+          failedListings.add(listingKey);
           const attempt = detailAttempts[detailAttempts.length - 1]!;
           attempt.status = "processing_failed";
           attempt.reasonCodes = [...new Set([...attempt.reasonCodes, "disclosure_revision_lineage_unresolved"])];
@@ -107,10 +125,12 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         const tips = previous.filter((prior) => !superseded.has(prior.id)).sort((a, b) => a.id.localeCompare(b.id));
         if ((previous.length > 0 && tips.length === 0) || tips.length > 100 || (enriched.detailStatus !== "available" && tips.length > 1)) {
           markLineageFailure();
+          pendingRecords.delete(sourceRecord);
           continue;
         }
+        checkWorkBudget();
         const activeRecords = tips.length ? await persistence.getResearchAnnouncementsByIds({ ...scope, ids: tips.map((tip) => tip.id) }) : [];
-        if (activeRecords.length !== tips.length) { markLineageFailure(); continue; }
+        if (activeRecords.length !== tips.length) { markLineageFailure(); pendingRecords.delete(sourceRecord); continue; }
         const current = activeRecords.length === 1 ? activeRecords[0] : undefined;
         const priorSuccessfulDetail = enriched.detailStatus !== "available" && current?.collectionRecordId === collectionRecordId && current.detailQuality?.status === "available" ? current : undefined;
         // Refresh every external attachment before deciding whether this observation
@@ -125,9 +145,11 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         for (const attachment of candidate.attachments.filter((item) => item.artifactId !== candidateExplanationId && item.artifactId !== null)) {
           const alreadyFetched = fetchedAttachments.get(attachment.sourceUrl);
           if (alreadyFetched) { attachment.contentIdentity = alreadyFetched.identity; continue; }
+          checkWorkBudget();
           let fetched = false;
           try {
-            const retained = await officialResponse(fetchImpl, attachment.sourceUrl, options.signal);
+            const retained = await officialResponse(fetchImpl, attachment.sourceUrl, workSignal);
+            checkWorkBudget();
             const artifactObservedAt = options.retrievedAt ?? new Date().toISOString();
             fetched = true;
             const mediaType = resolveDisclosureMediaType(retained.bytes, retained.mediaType, attachment.mediaType);
@@ -137,13 +159,14 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
             fetchedAttachments.set(attachment.sourceUrl, { bytes: retained.bytes, extracted, observedAt: artifactObservedAt,
               processedAt: options.retrievedAt ?? new Date().toISOString(), identity: attachment.contentIdentity });
           } catch (error) {
-            options.signal?.throwIfAborted();
+            checkWorkBudget();
             const reasonCode = error instanceof Error && (error.message === "disclosure_source_too_large" || error.message === "disclosure_extraction_physical_page_limit") ? error.message : undefined;
             const status = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : fetched || reasonCode ? "processing_failed" : "unavailable";
             attachment.contentIdentity = { status, ...(reasonCode ? { reasonCode } : {}) };
             fetchedAttachments.set(attachment.sourceUrl, { processedAt: options.retrievedAt ?? new Date().toISOString(), identity: attachment.contentIdentity });
           }
         }
+        checkWorkBudget();
         const variant = announcementContentVariant(candidate);
         const retainedRecord = current?.collectionRecordId === collectionRecordId && announcementContentVariant(current) === variant ? current : undefined;
         record = retainedRecord ? structuredClone(retainedRecord) : { ...candidate, collectionRecordId,
@@ -159,13 +182,15 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
           for (const prior of tips) record.relations.push({ kind: "supersedes", targetAnnouncementId: prior.id });
         }
         detailAttempts[detailAttempts.length - 1]!.announcementId = record.id;
-        options.signal?.throwIfAborted();
+        checkWorkBudget();
         if (!retainedRecord) await persistence.appendResearchAnnouncements([record]);
+        checkWorkBudget();
         const explanation = retainAnnouncementExplanation(record);
         const artifactReadAt = options.retrievedAt ?? new Date().toISOString();
         const artifactQuery = { issuerId: record.issuerId, effectiveAt: artifactReadAt, knowledgeAt: artifactReadAt };
-        if ((await persistence.listResearchDisclosureArtifacts({ ...artifactQuery, artifactId: explanation.id })).length === 0) await persistence.appendResearchDisclosureArtifacts([explanation]);
+        if ((await persistence.listResearchDisclosureArtifacts({ ...artifactQuery, artifactId: explanation.id })).length === 0) { checkWorkBudget(); await persistence.appendResearchDisclosureArtifacts([explanation]); }
         for (const attachment of record.attachments.filter((item) => item.artifactId !== explanation.id && item.artifactId !== null)) {
+          checkWorkBudget();
           const retained = fetchedAttachments.get(attachment.sourceUrl)!;
           const identity = retained.identity;
           artifactOwners.set(attachment.artifactId!, listingKey);
@@ -176,7 +201,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
               parentProvenance: record.provenance,
               provenance: { ...record.provenance, id: disclosureId("pr", attachment.artifactId!, identity.contentHash), sourceUrl: attachment.sourceUrl, contentHash: identity.contentHash,
                 parserVersion: identity.extractionVersion, retrievedAt: retained.observedAt!, processedAt: retained.processedAt, acquisitionRunId } };
-            options.signal?.throwIfAborted();
+            checkWorkBudget();
             await persistence.appendResearchDisclosureArtifacts([artifact]);
           }
           // Failure gets an unresolved reference in its own immutable observation,
@@ -184,24 +209,33 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
           artifactAttempts.push({ artifactId: attachment.artifactId!, sourceUrl: attachment.sourceUrl, attemptedAt: retained.processedAt, status: identity.status,
             ...(identity.status !== "retained" && identity.reasonCode ? { reasonCode: identity.reasonCode } : {}) });
         }
+        checkWorkBudget();
+        pendingRecords.delete(sourceRecord);
         if (!retainedRecord) count++;
       }
-      publicationStart = records.reduce((start, record) => record.publishedAt < start ? record.publishedAt : start, observedAt);
     } catch (error) {
       options.signal?.throwIfAborted();
-      status = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : (error instanceof SyntaxError || (error instanceof Error && ["disclosure_source_too_large", "disclosure_response_invalid_utf8"].includes(error.message))) ? "processing_failed" : "failed";
+      if (error instanceof DisclosureBoardBudgetExhausted || (budgetSignal?.aborted && error === budgetSignal.reason)) {
+        for (const record of pendingRecords) {
+          const key = JSON.stringify([record.issuerId, record.listingId, record.venue]);
+          failedListings.add(key);
+          const attempts = detailAttemptsByListing.get(key) ?? [];
+          attempts.push({ announcementId: record.id, attemptedAt: options.retrievedAt ?? new Date().toISOString(), status: "processing_failed", reasonCodes: ["disclosure_board_work_budget_exhausted"] });
+          detailAttemptsByListing.set(key, attempts);
+        }
+      } else status = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : (error instanceof SyntaxError || (error instanceof Error && ["disclosure_source_too_large", "disclosure_response_invalid_utf8"].includes(error.message))) ? "processing_failed" : "failed";
     }
     const completedAt = options.retrievedAt ?? new Date().toISOString();
     const checkedAt = observedAt ?? completedAt;
     const scans: ResearchDisclosureScan[] = eligibleIdentities.map((identity) => ({
-      id: disclosureId("scan", acquisitionRunId, checkedAt, completedAt, venue, identity.listing.id), listingId: identity.listing.id, issuerId: identity.issuer.id, venue, checkedAt, publicationStart, publicationEnd: checkedAt, knowledgeAt: completedAt, status: status === "success" && lineageFailuresByListing.has(JSON.stringify([identity.issuer.id, identity.listing.id, venue])) ? "failed" : status,
+      id: disclosureId("scan", acquisitionRunId, checkedAt, completedAt, venue, identity.listing.id), listingId: identity.listing.id, issuerId: identity.issuer.id, venue, checkedAt, publicationStart, publicationEnd: checkedAt, knowledgeAt: completedAt, status: status === "success" && failedListings.has(JSON.stringify([identity.issuer.id, identity.listing.id, venue])) ? "failed" : status,
       // Daily snapshots are not historical collection coverage or a guarantee
       // that attachment discovery is exhaustive.
       exhaustive: false, detailAttempts: detailAttemptsByListing.get(JSON.stringify([identity.issuer.id, identity.listing.id, venue])) ?? [], artifactAttempts: artifactAttempts.filter((attempt) => artifactOwners.get(attempt.artifactId) === JSON.stringify([identity.issuer.id, identity.listing.id, venue])), provenance: { id: disclosureId("pr", acquisitionRunId, checkedAt, completedAt, venue, contentHash ?? "no_retained_response"), publisher: "MOPS", accessProvider: venue === "TWSE" ? "TWSE_OPENAPI" : "TPEX_OPENAPI", authorityRole: "authoritative", sourceUrl, contentHash, retrievedAt: checkedAt, processedAt: completedAt, acquisitionRunId, parserVersion: DISCLOSURE_PARSER_VERSION, usagePolicyVersion: "taiwan-open-data/1.0.0" },
     }));
     options.signal?.throwIfAborted();
     await persistence.appendResearchDisclosureScans(scans);
-    outcomes.push({ venue, status: status === "success" && lineageFailuresByListing.size > 0 ? "failed" : status, announcementCount: count });
+    outcomes.push({ venue, status: status === "success" && failedListings.size > 0 ? "failed" : status, announcementCount: count });
   }
   return { outcomes };
 }
