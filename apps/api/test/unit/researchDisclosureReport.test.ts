@@ -27,7 +27,7 @@ const avoidanceTradingAdvice = [
   "Investors should avoid TSMC", "You must refrain from 2330", "I recommend avoiding AAPL", "We advise refraining from TSMC",
   "Do not avoid 2330", "Don't refrain from AAPL", "Investors should not avoid TSMC", "I recommend not avoiding AAPL",
   "You shouldn't refrain from TSMC", "TSMC should be avoided", "AAPL must not be avoided", "I recommend that 2330 be avoided",
-  "TSMC is recommended to be avoided", "Please avoid Nvidia", "- Avoid TSMC",
+  "TSMC is recommended to be avoided", "Avoid dilution. Avoid TSMC", "Please avoid Nvidia shares", "Avoid $nvda", "Avoid BRK.B", "- Avoid TSMC",
 ];
 const positionTradingAdvice = [
   "Go long TSMC", "Investors should go short 2330", "Take a long position in AAPL", "Go long on TSMC",
@@ -251,6 +251,9 @@ describe("focused disclosure report", () => {
       "The equipment must not be sold before commissioning.", "The issuer should be bought by its parent company.",
       "The company could be sold after regulatory approval.", "I recommend that inventory be sold before expiry.",
       "Equipment is recommended to be purchased after approval.",
+      "The financing structure should avoid dilution.", "Avoid covenant default.", "Avoid Dilution.", "Avoid Covenant Default.",
+      "You should avoid covenant default.", "I recommend avoiding dilution.", "Covenant Default should be avoided.",
+      "I recommend that dilution be avoided.", "Dilution is recommended to be avoided.", "Refrain from market manipulation.",
       "Avoid delays in commissioning.", "Avoid unnecessary costs.", "Refrain from speculation.",
       "Unnecessary costs should be avoided.", "Delays must not be avoided by skipping inspections.",
       "The issuer avoids TSMC to diversify its supplier base.", "The company refrains from speculation about its new plant.",
@@ -769,6 +772,9 @@ describe("focused disclosure report", () => {
     }
   });
   it.each([
+    "The meeting was set for 2026/11/01.", "The meetings were set for 2026/11/01.",
+    "The meeting has been set for 2026/11/01.", "The meetings have been set for 2026/11/01.",
+    "The meeting had been set for 2026/11/01.", "The meeting was to be held on 2026/11/01.", "The meetings were to be held on 2026/11/01.",
     "The meeting is set for 2026/11/01.", "The meetings are set for 2026/11/01.",
     "The meeting is to be held on 2026/11/01.", "The meetings are to be held on 2026/11/01.",
     "The board meeting will be held on 2026/11/01.", "The company shall hold its board meeting on 2026/11/01.",
@@ -793,6 +799,8 @@ describe("focused disclosure report", () => {
     }
   });
   it.each([
+    ["The meeting was expected to be set for 2027/01/01.", false],
+    ["We expect the meeting has been set for 2027/01/01.", false],
     ["The meeting is expected to be set for 2027/01/01.", false],
     ["We expect the meeting is to be held on 2027/01/01.", false],
     ["The transaction is expected to close on 2027/01/01.", false],
@@ -929,6 +937,8 @@ describe("focused disclosure report", () => {
     ["scheduled", "尚未預定", "2027-01-01"], ["scheduled", "取消原訂於", "2027-01-01"],
     ["scheduled", "not scheduled", "2027-01-01"], ["scheduled", "no longer planned", "2027-01-01"],
     ["scheduled", "scheduled but cancelled", "2027-01-01"],
+    ["scheduled", "was not set for that date", "2027-01-01"], ["scheduled", "has not been set for that date", "2027-01-01"],
+    ["scheduled", "has been set for that date subject to approval", "2027-01-01"], ["scheduled", "was set for that date but cancelled", "2027-01-01"],
     ["scheduled", "is not set for the date", "2027-01-01"], ["scheduled", "is not to be held on that date", "2027-01-01"],
     ["scheduled", "is set for that date if approved", "2027-01-01"], ["scheduled", "is to be held on that date subject to approval", "2027-01-01"],
     ["scheduled", "will not be held", "2027-01-01"], ["scheduled", "shall never be held", "2027-01-01"],

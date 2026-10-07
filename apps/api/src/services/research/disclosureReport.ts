@@ -21,16 +21,16 @@ function hasTradingAdvice(text: string): boolean {
   const positionAction = String.raw`(?:take|open|close|reduce|increase|build|establish)\s+${positionObject}`;
   const positionInflection = String.raw`(?:tak(?:e|ing)|open(?:ing)?|clos(?:e|ing)|reduc(?:e|ing)|increas(?:e|ing)|build(?:ing)?|establish(?:ing)?)\s+${positionObject}`;
   const positionParticiple = String.raw`(?:taken|opened|closed|reduced|increased|built|established)\b`;
-  const baseVerb = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|add\s+to|invest\s+in|divest(?:\s+(?:from|of))?|avoid|refrain\s+from|go\s+(?:long|short)(?:\s+on)?(?!\s+of\b))`;
-  const participle = String.raw`(?:bought|sold|held|purchased|accumulated|shorted|reduced|exited|liquidated|added\s+to|invested\s+in|divested|avoided)\b`;
-  const inflectedVerb = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to|invest(?:ing)?\s+in|divest(?:ing)?(?:\s+(?:from|of))?|avoid(?:ing)?|refrain(?:ing)?\s+from|go(?:ing)?\s+(?:long|short)(?:\s+on)?(?!\s+of\b))`;
+  const baseVerb = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|add\s+to|invest\s+in|divest(?:\s+(?:from|of))?|go\s+(?:long|short)(?:\s+on)?(?!\s+of\b))`;
+  const participle = String.raw`(?:bought|sold|held|purchased|accumulated|shorted|reduced|exited|liquidated|added\s+to|invested\s+in|divested)\b`;
+  const inflectedVerb = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to|invest(?:ing)?\s+in|divest(?:ing)?(?:\s+(?:from|of))?|go(?:ing)?\s+(?:long|short)(?:\s+on)?(?!\s+of\b))`;
   const imperative = String.raw`(?:${baseVerb}\s+${object}|${positionAction})`;
   const inflected = String.raw`(?:${inflectedVerb}\s+${object}|${positionInflection})`;
   // Direct commands do not need a security suffix: names/tickers are open-ended.
   // Keep this broader object rule in directive contexts so issuer descriptions survive.
   const directiveStart = String.raw`(?:^|[.!?;:。！？；：\n])\s*(?:(?:[-*+>]|\d+[.)])\s*)?["'“‘「]*`;
   const namedAction = String.raw`(?:${baseVerb}\s+[\p{L}\p{N}$]|${positionAction})`;
-  const operationalObject = String.raw`(?:(?:the|our|its|their)\s+)?(?:(?:unnecessary|avoidable|excessive)\s+)?(?:delays?|costs?|speculation|waste|damage|disruption|inventory|shipments?|equipment|machinery|assets?|business(?:es)?|subsidiar(?:y|ies)|supplies|materials?)\b`;
+  const operationalObject = String.raw`(?:(?:the|our|its|their)\s+)?(?:inventory|shipments?|equipment|machinery|assets?|business(?:es)?|subsidiar(?:y|ies)|supplies|materials?)\b`;
   const bareNamedAction = String.raw`(?:${baseVerb}\s+(?!(?:from|of|on)\b|${inflectedVerb}\s|${operationalObject})[\p{L}\p{N}$]|${positionAction})`;
   const namedInflection = String.raw`(?:${inflectedVerb}\s+[\p{L}\p{N}$]|${positionInflection})`;
   const bareNamedInflection = String.raw`(?:${inflectedVerb}\s+(?!(?:from|of|on)\b|${inflectedVerb}\s|${operationalObject})[\p{L}\p{N}$]|${positionInflection})`;
@@ -49,6 +49,25 @@ function hasTradingAdvice(text: string): boolean {
   const passiveAdvisory = String.raw`${advisoryVerb}\s+(?:that\s+)?(?:${passiveSubject}\s+(?:${modal})?${negative}${passiveAction}|${positionObject}\s+(?:${modal})?${negative}${passivePositionAction})`;
   const passiveRecommendation = String.raw`(?:is|are)\s+${negative}(?:recommended|advised)\s+${negative}to\s+${negative}`;
   const recommendedPassive = String.raw`(?:${passiveSubject}\s+${passiveRecommendation}${passiveAction}|${positionObject}\s+${passiveRecommendation}${passivePositionAction})`;
+  // Bare avoidance is also normal risk analysis. Require positive security
+  // indicators, preserving captured case; arbitrary names need a security noun.
+  const identifiesSecurity = (target: string): boolean => new RegExp(String.raw`^${object}`, "iu").test(target)
+    || /^(?:\$[A-Za-z][A-Za-z0-9.-]{0,9}|[A-Z]{2,5}(?:[.-][A-Z]{1,2})?|\d{4,6})(?![\p{L}\p{N}_.-])/u.test(target);
+  const avoidanceInflection = String.raw`(?:avoid(?:ing)?|refrain(?:ing)?\s+from)\s+`;
+  const avoidancePrefixes = [
+    String.raw`${directiveStart}${directivePrefix}${avoidance}`,
+    String.raw`(?:${directiveStart}|\b(?:I|we)\s+)${advisory}${avoidanceInflection}`,
+    String.raw`\b(?:you|investors?|traders?)\s+(?:${modal})?${directivePrefix}${avoidance}`,
+    String.raw`${directiveStart}(?:my\s+advice\s+is\s+${negative}to\s+${negative}|${modal})${avoidance}`,
+  ];
+  const passiveAvoidance = String.raw`be\s+${negative}avoided\b`;
+  const avoidancePatterns = [
+    ...avoidancePrefixes.map((prefix) => String.raw`${prefix}(?<securityTarget>[^\n;!?.。！？]+)`),
+    String.raw`${directiveStart}(?<securityTarget>${passiveSubject})\s+(?:${modal}|${passiveRecommendation})${passiveAvoidance}`,
+    String.raw`(?:${directiveStart}|\b(?:I|we)\s+)${advisoryVerb}\s+(?:that\s+)?(?<securityTarget>${passiveSubject})\s+(?:${modal})?${negative}${passiveAvoidance}`,
+  ];
+  if (avoidancePatterns.some((pattern) => [...text.matchAll(new RegExp(pattern, "giu"))]
+    .some((match) => identifiesSecurity(match.groups!.securityTarget!)))) return true;
   const chineseNegative = String.raw`(?:不要|不應該|不應|不宜|不必|不得|勿|別)?`;
   const chineseDirectivePrefix = String.raw`(?:請)?(?:立即|現在)?(?:應該|應當)?${chineseNegative}`;
   const chinesePositionVerb = String.raw`(?:建立|增加|減少|降低|平掉|關閉)`;
@@ -243,7 +262,7 @@ function hasUncertainStatusAssertion(excerpt: string, status: "observed" | "sche
 function hasFirmScheduledAssertion(assertion: string, literalDate: string | undefined): boolean {
   if (!literalDate) return false;
   const tentative = /(?:預計|預估|預期)|\b(?:expect(?:ed|s|ing)?|anticipat(?:e|ed|es|ing)|project(?:ed|ing)|forecast(?:s|ed|ing)?)\b/i;
-  const firm = /(?:預定|訂於|將於|\b(?:scheduled|planned|will|shall)\b|\b(?:is|are)\s+(?:set\s+for|to\s+be\s+held\s+on)\b)/i;
+  const firm = /(?:預定|訂於|將於|\b(?:scheduled|planned|will|shall)\b|\b(?:(?:is|are|was|were|(?:has|have|had)\s+been)\s+set\s+for|(?:is|are|was|were)\s+to\s+be\s+held\s+on)\b)/i;
   return assertion.includes(literalDate) && firm.test(assertion) && !tentative.test(assertion);
 }
 
