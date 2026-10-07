@@ -195,7 +195,7 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"]
       const results = [parseOfficialAnnouncementDetail(detail, notice, metadata, previous),
         await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), resolvePreviousRecords: async () => previous })];
       expect(results[0]!.detailStatus).toBe("available");
-      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.2");
+      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.3");
       expect(results[1]!.detailStatus).toBe("restricted");
       for (const result of results) {
         expect(result.record.relations).toEqual(targets.length === 1 ? [{ kind, targetAnnouncementId: prior.id }] : []);
@@ -218,5 +218,38 @@ it.each(["2026/02/30", "115-02-30", "2026/13/02", "2026/10-02", "2026年10/02日
       expect(result.record.relations).toEqual([]);
       expect(result.record.unknownRelationTargets).toEqual([{ kind: "corrects" }]);
       expect(result.reasonCodes).toContain("unresolved_correction_reference");
+    }
+  });
+
+
+it.each((["TWSE", "TPEX"] as const).flatMap((venue) => ["代子公司公告", "代重要子公司公告", "代子公司宏達股份有限公司公告", "代重要子公司「宏達股份有限公司」公告"].flatMap((prefix) =>
+  ["更正", "撤回", "撤銷"].map((action) => ({ venue, prefix, action })))))(
+  "$venue delegated $prefix$action: explicit prefix → same scoped detail and raw-fallback lineage", async ({ venue, prefix, action }) => {
+    const { record, detail } = fixture(venue);
+    const kind = action === "更正" ? "corrects" : "retracts";
+    const prior = { ...record, id: "prior_a", publishedAt: "2026-10-02T01:00:00.000Z", subject: "公司資本支出公告" };
+    const notice = { ...record, subject: `${prefix}${action}先前公告`, explanation: `原2026/10/02公告「${prior.subject}」內容變更。` };
+    for (const field of ["主旨", "說明"]) detail.result.data[0][detail.result.titles.findIndex((title: { main: string }) => title.main.trim() === field)] = field === "主旨" ? notice.subject : notice.explanation;
+    expect(announcementCitationSelectors(notice)).toEqual({ titles: [prior.subject], days: ["2026-10-02"] });
+    for (const count of [0, 1, 2]) {
+      const previous = [prior, { ...prior, id: "prior_b" }].slice(0, count).concat([
+        { ...prior, id: "foreign_issuer", issuerId: "foreign" }, { ...prior, id: "foreign_listing", listingId: "foreign" },
+        { ...prior, id: "future", publishedAt: "2026-10-04T01:00:00.000Z" }, { ...prior, id: "partial_title", subject: "資本支出公告" },
+      ]);
+      for (const result of [parseOfficialAnnouncementDetail(detail, notice, metadata, previous),
+        await enrichOfficialAnnouncement(notice, { previousRecords: previous, fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })) })]) {
+        expect(result.record.relations).toEqual(count === 1 ? [{ kind, targetAnnouncementId: prior.id }] : []);
+        expect(result.record.unresolvedRelations).toEqual(count === 2 ? [{ kind, candidateAnnouncementIds: ["prior_a", "prior_b"] }] : []);
+        expect(result.record.unknownRelationTargets).toEqual(count === 0 ? [{ kind }] : []);
+      }
+    }
+    for (const subject of [`說明${prefix}${action}程序`, `代子公司宏達公告內容說明公告${action}`, `代子公司宏達。公告${action}`, `代子公司${"甲".repeat(121)}公告${action}`]) {
+      const incidental = { ...notice, subject };
+      detail.result.data[0][detail.result.titles.findIndex((title: { main: string }) => title.main.trim() === "主旨")] = incidental.subject;
+      expect(announcementCitationSelectors(incidental)).toEqual({ titles: [], days: [] });
+      for (const result of [parseOfficialAnnouncementDetail(detail, incidental, metadata, [prior]),
+        await enrichOfficialAnnouncement(incidental, { previousRecords: [prior], fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })) })]) {
+        expect(result.record.relations).toEqual([]); expect(result.record.unknownRelationTargets).toEqual([]);
+      }
     }
   });

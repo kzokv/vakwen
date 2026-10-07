@@ -9,7 +9,7 @@ import { parseTaiwanOfficialDate } from "./twseIdentity.js";
 /** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
 export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
 export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
-export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.2";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.3";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const parametersSchema = z.object({
   marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
@@ -69,11 +69,15 @@ export function selectOfficialAnnouncementDetailParameters(payload: unknown, rec
   return parameters;
 }
 
+function announcementNoticeKind(subject: string): "corrects" | "retracts" | null {
+  const notice = /^(?:公告|代(?:重要)?子公司(?:(?!公告)[^。！？；：.!?;:\r\n\u2028\u2029]){0,120}公告)?(更正|撤回|撤銷)/u.exec(subject.trim());
+  return notice ? notice[1] === "更正" ? "corrects" : "retracts" : null;
+}
+
 function relationFromPublisherText(record: ResearchAnnouncementRecord, previousRecords: readonly ResearchAnnouncementMetadata[]) {
   // Require an explicit correction/retraction notice plus both a complete cited title
   // and its publication date. Shared keywords or coincident event dates never link facts.
-  const kind = /^(?:公告)?(?:撤回|撤銷)/.test(record.subject.trim()) ? "retracts" as const
-    : /^(?:公告)?更正/.test(record.subject.trim()) ? "corrects" as const : null;
+  const kind = announcementNoticeKind(record.subject);
   if (!kind) return { relations: record.relations, unresolved: false, unresolvedRelations: record.unresolvedRelations ?? [], unknownRelationTargets: record.unknownRelationTargets ?? [] };
   const selectors = announcementCitationSelectors(record);
   const matches = previousRecords.filter((prior) => {
@@ -206,7 +210,7 @@ export async function enrichOfficialAnnouncement(record: ResearchAnnouncementRec
 
 /** Exact publisher citation selectors; final relation verification remains in the parser. */
 export function announcementCitationSelectors(record: ResearchAnnouncementRecord): { titles: string[]; days: string[] } {
-  if (!/^(?:公告)?(?:更正|撤回|撤銷)/.test(record.subject.trim())) return { titles: [], days: [] };
+  if (!announcementNoticeKind(record.subject)) return { titles: [], days: [] };
   const explanation = compactTitle(record.explanation);
   const titles = [...explanation.matchAll(/「([^」]+)」|"([^"]+)"/g)].map((match) => compactTitle(match[1] ?? match[2]!));
   const days = [...explanation.matchAll(/(?<!\d)(\d{3,4})(?:([/-])(\d{1,2})\2(\d{1,2})|年(\d{1,2})月(\d{1,2})日?)(?!\d)/g)].map((match) => {

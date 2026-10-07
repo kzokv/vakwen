@@ -141,11 +141,12 @@ it.each([["TWSE", "2026-10-02"], ["TWSE", "2026-10-03"], ["TPEX", "2026-10-02"],
   expect(await persistence.listResearchAnnouncements({ ...query, issuerId: inactive.issuer.id })).toEqual([]);
 });
 
-it("identity resolution: unknown or overlapping eligible listings → source rejection remains explicit", () => {
-  const { rows, identity } = fixture("TWSE");
-  const metadata = { retrievedAt: at, contentHash: "c".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES.TWSE, acquisitionRunId: "ambiguous" };
-  expect(() => parseOfficialAnnouncementSnapshot(rows, metadata, "TWSE", [])).toThrow("announcement_identity_unresolved");
-  expect(() => parseOfficialAnnouncementSnapshot(rows, metadata, "TWSE", [identity, { ...identity, listing: { ...identity.listing, id: "overlapping_listing" } }])).toThrow("announcement_identity_unresolved");
+it.each(["TWSE", "TPEX"] as const)("%s identity resolution: absent catalog listing → skipped while overlapping or ineffective known listings fail closed", (venue) => {
+  const { rows, identity } = fixture(venue);
+  const metadata = { retrievedAt: at, contentHash: "c".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "ambiguous" };
+  expect(parseOfficialAnnouncementSnapshot(rows, metadata, venue, [])).toEqual([]);
+  expect(() => parseOfficialAnnouncementSnapshot(rows, metadata, venue, [{ ...identity, listing: { ...identity.listing, listedAt: "2026-10-04" } }])).toThrow("announcement_identity_unresolved");
+  expect(() => parseOfficialAnnouncementSnapshot(rows, metadata, venue, [identity, { ...identity, listing: { ...identity.listing, id: "overlapping_listing" } }])).toThrow("announcement_identity_unresolved");
 });
 
 it.each(["TWSE", "TPEX"] as const)("%s issuer-wide history: identical title/time on another listing → supersession stays listing-bound", async (venue) => {
@@ -396,3 +397,28 @@ it.each(["TWSE", "TPEX"] as const)("%s optional event dates: mixed missing/inval
   const filtered = await listMaterialAnnouncements(persistence, { ...input, range: { publishedFrom: "2026-10-01T00:00:00.000Z", publishedTo: at, eventFrom: "2000-01-01", eventTo: "2026-10-04" } });
   expect(filtered.items).toHaveLength(1); expect(filtered.items[0]?.eventDate).not.toBeNull();
 });
+
+
+it.each((["TWSE", "TPEX"] as const).flatMap((venue) => [false, true].map((malformedUnknown) => ({ venue, malformedUnknown }))))(
+  "$venue board with malformed unknown=$malformedUnknown: retain known rows → current nonexhaustive listing scan", async ({ venue, malformedUnknown }) => {
+    setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: venue === "TWSE", announcementsTpexEnabled: venue === "TPEX" });
+    const { identity, rows } = fixture(venue);
+    const unknown = malformedUnknown ? { 公司代號: " 999X ", SecuritiesCompanyCode: " 999X ", 發言日期: "invalid", 說明: 42 }
+      : { ...rows[0], 公司代號: " 999X ", SecuritiesCompanyCode: " 999X " };
+    const mixed = [unknown, ...rows.map((row: Record<string, unknown>) => ({ ...row, 公司代號: ` ${identity.listing.ticker} ` })), unknown];
+    const metadata = { retrievedAt: at, contentHash: "a".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "mixed_identity" };
+    const parsed = parseOfficialAnnouncementSnapshot(mixed, metadata, venue, [identity]);
+    expect(parsed).toHaveLength(1); expect(parsed[0]!.ticker).toBe(identity.listing.ticker);
+    expect(parsed[0]!.provenance.parserVersion).toBe("mops-announcements/1.0.2");
+    const persistence = new MemoryPersistence(); await persistence.appendResearchIdentityRecords([identity]);
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => String(url) === OFFICIAL_ANNOUNCEMENT_SOURCES[venue]
+      ? new Response(JSON.stringify(mixed)) : new Response("restricted", { status: 403 })) as unknown as typeof fetch;
+    expect((await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: at, acquisitionRunId: "mixed_identity" })).outcomes)
+      .toEqual([{ venue, status: "success", announcementCount: 1 }]);
+    const page = await listMaterialAnnouncements(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: at } });
+    expect(page.items).toHaveLength(1); expect(page.items[0]!.ticker).toBe(identity.listing.ticker);
+    expect(page.scan.status).toBe("current"); expect(page.scan.record!.exhaustive).toBe(false);
+    for (const ticker of [undefined, null, "", "  ", 9999, "???", "99-99", "99/9"]) expect(() => parseOfficialAnnouncementSnapshot([{ 公司代號: ticker }], metadata, venue, [identity])).toThrow();
+    expect(() => parseOfficialAnnouncementSnapshot([null], metadata, venue, [identity])).toThrow();
+    expect(() => parseOfficialAnnouncementSnapshot([{ 公司代號: identity.listing.ticker, 發言日期: "invalid" }], metadata, venue, [identity])).toThrow();
+  });

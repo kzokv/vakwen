@@ -9,7 +9,7 @@ export const OFFICIAL_ANNOUNCEMENT_SOURCES = {
   TWSE: "https://openapi.twse.com.tw/v1/opendata/t187ap04_L",
   TPEX: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O",
 } as const;
-export const DISCLOSURE_PARSER_VERSION = "mops-announcements/1.0.1";
+export const DISCLOSURE_PARSER_VERSION = "mops-announcements/1.0.2";
 export function disclosureId(prefix: string, ...parts: string[]) { return `${prefix}_${createHash("sha256").update(parts.join("\u001f")).digest("hex").slice(0, 32)}`; }
 export function disclosureHash(value: string) { return createHash("sha256").update(value).digest("hex"); }
 export function safeDisclosureUrl(value: string): boolean {
@@ -34,9 +34,14 @@ function publication(dateValue: string, timeValue: string) {
   return { publishedAt: new Date(`${date}T${hour}:${minute}:${second}+08:00`).toISOString(), precision: compact.length === 6 ? "second" as const : "minute" as const };
 }
 export function parseOfficialAnnouncementSnapshot(payload: unknown, metadata: AnnouncementSnapshotMetadata, venue: "TWSE" | "TPEX", identities: readonly ResearchIdentityRecord[]): ResearchAnnouncementRecord[] {
-  const rows = z.array(z.record(z.string(), z.unknown())).parse(payload).map((raw) => rowSchema.parse({ ...raw, 公司代號: raw.公司代號 ?? raw.SecuritiesCompanyCode, 主旨: raw.主旨 ?? raw["主旨 "] }));
-  return rows.flatMap((row) => {
-    const issuerListings = identities.filter((identity) => identity.listing.venue === venue && identity.listing.ticker === row.公司代號.trim());
+  const rows = z.array(z.record(z.string(), z.unknown())).parse(payload);
+  return rows.flatMap((raw) => {
+    const ticker = z.string().trim().regex(/^[A-Za-z0-9]+$/).parse(raw.公司代號 ?? raw.SecuritiesCompanyCode);
+    const issuerListings = identities.filter((identity) => identity.listing.venue === venue && identity.listing.ticker === ticker);
+    // A board feed can contain instruments absent from the retained identity catalog.
+    // Do not attribute their records or let their unrelated content block known issuers.
+    if (issuerListings.length === 0) return [];
+    const row = rowSchema.parse({ ...raw, 公司代號: ticker, 主旨: raw.主旨 ?? raw["主旨 "] });
     // Keep known ineligible listings distinguishable from an unknown subject.
     // Their rows must not poison the collection check for eligible issuers.
     if (issuerListings.length === 1 && issuerListings.every((identity) => identity.security.type !== "common_equity" || identity.eligibility.profile !== "operating_company" || identity.eligibility.state !== "eligible")) return [];
