@@ -118,3 +118,10 @@ it("HTML wide meta versus XHTML declaration: normalize HTML label and reject uns
   expect((await extractDisclosureContent(html, "text/html", "issuer", "meta")).blocks[0]?.text).toBe("重大訊息");
   await expect(extractDisclosureContent(Buffer.from('<?xml version="1.0" encoding="big5"?><html><body>text</body></html>'), "application/xhtml+xml", "issuer", "xml")).rejects.toThrow("unsupported_xml_encoding");
 });
+
+it.each(["text/plain", "text/html", "application/xhtml+xml"])("declared %s: binary control bytes → extraction fails closed", async (mediaType) => {
+  await expect(extractDisclosureContent(Buffer.from("<html><body>binary\u0000payload</body></html>"), mediaType, "issuer", "bad")).rejects.toThrow("binary_text_mismatch");
+});
+it.each(["text/html", "application/xhtml+xml"])("declared %s: missing HTML signature → extraction fails closed", async (mediaType) => {
+  await expect(extractDisclosureContent(Buffer.from("ASCII binary payload"), mediaType, "issuer", "bad")).rejects.toThrow("html_signature_missing");
+});

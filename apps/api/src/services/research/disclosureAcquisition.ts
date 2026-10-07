@@ -162,7 +162,7 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
             const artifactObservedAt = options.retrievedAt ?? new Date().toISOString();
             fetched = true;
             const mediaType = resolveDisclosureMediaType(retained.bytes, retained.mediaType, attachment.mediaType);
-            const extracted = await extractDisclosureContent(retained.bytes, `${mediaType}${retained.mediaType.includes(";") ? retained.mediaType.slice(retained.mediaType.indexOf(";")) : ""}`, candidate.issuerId, attachment.artifactId!);
+            const extracted = await extractDisclosureContent(retained.bytes, `${mediaType}${retained.mediaType.includes(";") ? retained.mediaType.slice(retained.mediaType.indexOf(";")) : ""}`, candidate.issuerId, attachment.artifactId!, workSignal);
             attachment.contentIdentity = { status: "retained", contentHash: createHash("sha256").update(retained.bytes).digest("hex"),
               extractionVersion: extracted.extractionVersion, mediaType, sourceMediaType: retained.mediaType };
             fetchedAttachments.set(attachment.sourceUrl, { bytes: retained.bytes, extracted, observedAt: artifactObservedAt,

@@ -41,20 +41,22 @@ export function decodeDisclosureText(bytes: Uint8Array, mediaType: string): stri
   return new TextDecoder(encoding ?? "utf-8", { fatal: true }).decode(bytes);
 }
 
-/** Resolve only generic transport MIME; never guess arbitrary binary content is text. */
+/** Validate textual media even when declared; never guess arbitrary binary content is text. */
 export function resolveDisclosureMediaType(bytes: Uint8Array, declared: string, attachmentType?: string): string {
   const type = declared.split(";", 1)[0]!.trim().toLowerCase();
-  if (type && type !== "application/octet-stream" && type !== "binary/octet-stream") return type;
-  if (Buffer.from(bytes.subarray(0, 5)).equals(Buffer.from("%PDF-"))) return "application/pdf";
-  if (attachmentType === "application/pdf") return "application/pdf"; // PDF.js validates the retained bytes.
-  if (attachmentType === "text/plain" || attachmentType === "text/html" || attachmentType === "application/xhtml+xml") {
-    const text = decodeDisclosureText(bytes, `${attachmentType}${declared.includes(";") ? declared.slice(declared.indexOf(";")) : ""}`);
+  const generic = !type || type === "application/octet-stream" || type === "binary/octet-stream";
+  const textType = generic ? attachmentType : type;
+  if (!generic && !["text/plain", "text/html", "application/xhtml+xml"].includes(type)) return type;
+  if (generic && Buffer.from(bytes.subarray(0, 5)).equals(Buffer.from("%PDF-"))) return "application/pdf";
+  if (generic && attachmentType === "application/pdf") return "application/pdf"; // PDF.js validates the retained bytes.
+  if (textType === "text/plain" || textType === "text/html" || textType === "application/xhtml+xml") {
+    const text = decodeDisclosureText(bytes, `${textType}${declared.includes(";") ? declared.slice(declared.indexOf(";")) : ""}`);
     for (const character of text) {
       const code = character.charCodeAt(0);
       if (code < 32 && ![9, 10, 12, 13].includes(code)) throw new Error("disclosure_extraction_binary_text_mismatch");
     }
-    if (attachmentType !== "text/plain" && !/^\s*(?:<\?xml\b[\s\S]*?\?>\s*)?(?:<!doctype\s+html\b|<(?:html|head|body|p|div|table|section|article|h[1-6])(?:\s|>))/i.test(text)) throw new Error("disclosure_extraction_html_signature_missing");
-    return attachmentType;
+    if (textType !== "text/plain" && !/^\s*(?:<\?xml\b[\s\S]*?\?>\s*)?(?:<!doctype\s+html\b|<(?:html|head|body|p|div|table|section|article|h[1-6])(?:\s|>))/i.test(text)) throw new Error("disclosure_extraction_html_signature_missing");
+    return textType;
   }
   return type || "application/octet-stream";
 }
@@ -84,12 +86,15 @@ export async function extractDisclosureContent(
   mediaType: string,
   subject: string,
   artifactId: string,
+  signal?: AbortSignal,
 ): Promise<{ blocks: Block[]; totalPages: number; extractionVersion: string; confirmedEmptyPages?: number[] }> {
+  signal?.throwIfAborted();
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_BYTES) throw new Error("disclosure_extraction_size_limit");
   const type = resolveDisclosureMediaType(bytes, mediaType);
   const blocks: Block[] = [];
   let characters = 0;
   function append(text: string, page: number, table: string | null = null, preserveWhitespace = false) {
+    signal?.throwIfAborted();
     if (preserveWhitespace ? !text.length : !text.trim()) return;
     characters += Array.from(text).length;
     if (characters > MAX_CHARACTERS) throw new Error("disclosure_extraction_text_limit");
@@ -169,22 +174,35 @@ export async function extractDisclosureContent(
   }
   if (type !== "application/pdf") throw new Error("disclosure_extraction_unsupported_media_type");
   const { getDocument, version, OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  signal?.throwIfAborted();
   // Only supplied bytes enter PDF.js; remote resource loading is disabled.
   // The caller retains the original bytes and their hash separately.
   const task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: true,
     disableFontFace: true, useWorkerFetch: false, disableAutoFetch: true, disableStream: true, stopAtErrors: true, verbosity: 0 });
+  let destruction: Promise<void> | undefined;
+  const destroy = () => destruction ??= task.destroy();
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      reject(signal!.reason);
+      void destroy().catch(() => undefined);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  const observe = <T>(operation: Promise<T>): Promise<T> => Promise.race([operation, aborted]);
   try {
-    const document = await task.promise;
+    if (signal?.aborted) onAbort!();
+    const document = await observe(task.promise);
     if (document.numPages > MAX_PAGES) throw new Error("disclosure_extraction_page_limit");
     const confirmedEmptyPages: number[] = [];
     for (let page = 1; page <= document.numPages; page++) {
-      const pdfPage = await document.getPage(page);
-      const content = await pdfPage.getTextContent();
+      const pdfPage = await observe(document.getPage(page));
+      const content = await observe(pdfPage.getTextContent());
       const text = content.items.flatMap((item) => "str" in item ? [item.str + (item.hasEOL ? "\n" : " ")] : []).join("").trim();
       if (Array.from(text).length > 50_000 || Buffer.byteLength(JSON.stringify(text)) > 180 * 1024) throw new Error("disclosure_extraction_physical_page_limit");
       append(text, page);
       if (!text) {
-        const operators = await pdfPage.getOperatorList();
+        const operators = await observe(pdfPage.getOperatorList());
         if (hasOnlyNonPaintingPdfOperations(operators.fnArray, OPS)) confirmedEmptyPages.push(page);
       }
       pdfPage.cleanup();
@@ -192,6 +210,7 @@ export async function extractDisclosureContent(
     if (!blocks.length && confirmedEmptyPages.length !== document.numPages) throw new Error("disclosure_extraction_no_text");
     return { blocks, totalPages: document.numPages, confirmedEmptyPages, extractionVersion: `disclosure-pdfjs-${version}/2.0.1` };
   } finally {
-    await task.destroy();
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+    await destroy().catch((error: unknown) => { if (!signal?.aborted) throw error; });
   }
 }
