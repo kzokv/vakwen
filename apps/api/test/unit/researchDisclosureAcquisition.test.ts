@@ -410,7 +410,7 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => [false, true].map((malfor
     const metadata = { retrievedAt: at, contentHash: "a".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "mixed_identity" };
     const parsed = parseOfficialAnnouncementSnapshot(mixed, metadata, venue, [identity]);
     expect(parsed).toHaveLength(1); expect(parsed[0]!.ticker).toBe(identity.listing.ticker);
-    expect(parsed[0]!.provenance.parserVersion).toBe("mops-announcements/1.0.3");
+    expect(parsed[0]!.provenance.parserVersion).toBe("mops-announcements/1.0.4");
     const persistence = new MemoryPersistence(); await persistence.appendResearchIdentityRecords([identity]);
     const fetchImpl = vi.fn(async (url: string | URL | Request) => String(url) === OFFICIAL_ANNOUNCEMENT_SOURCES[venue]
       ? new Response(JSON.stringify(mixed)) : new Response("restricted", { status: 403 })) as unknown as typeof fetch;
@@ -718,3 +718,18 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["cycle", "over_limit", 
       expect(unaffectedPage.scan.record!.detailAttempts!.every((attempt) => !attempt.reasonCodes.includes("disclosure_revision_lineage_unresolved"))).toBe(true);
     }
   });
+
+it.each(["TWSE", "TPEX"] as const)("%s source clocks: explicit minute/second forms → exact timestamp and preserved raw precision", (venue) => {
+  const { rows, identity } = fixture(venue);
+  const metadata = { retrievedAt: at, contentHash: "a".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES[venue], acquisitionRunId: "clock" };
+  for (const value of ["9:30", "09:30", "930", "0930", " 9:30 "]) {
+    const record = parseOfficialAnnouncementSnapshot([{ ...rows[0], 發言時間: value }], metadata, venue, [identity])[0]!;
+    expect(record).toMatchObject({ publishedAt: "2026-10-03T01:30:00.000Z", publicationPrecision: "minute", rawPublication: { time: value } });
+  }
+  for (const value of ["9:30:47", "09:30:47", "93047", "093047"]) {
+    expect(parseOfficialAnnouncementSnapshot([{ ...rows[0], 發言時間: value }], metadata, venue, [identity])[0]).toMatchObject({ publishedAt: "2026-10-03T01:30:47.000Z", publicationPrecision: "second", rawPublication: { time: value } });
+  }
+  for (const value of ["", "9", "93", "9:3", "9:30:4", "09:3047", "24:00", "2400", "960", "2360", "93060", "093060", "1234567", "-930", "9.30"]) {
+    expect(() => parseOfficialAnnouncementSnapshot([{ ...rows[0], 發言時間: value }], metadata, venue, [identity])).toThrow("announcement_publication_time_invalid");
+  }
+});

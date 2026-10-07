@@ -209,7 +209,7 @@ describe("focused disclosure report", () => {
   afterEach(() => setResearchRolloutOverrideForTest(null));
   it.each(["TWSE", "TPEX"] as const)("%s issuer: retained official evidence → independent classifications and faithful rendering", async (venue) => {
     const f = await fixture(venue);
-    f.announcement.explanation = f.announcement.explanation.replace("，", "。");
+    f.announcement.explanation = f.announcement.explanation.replace("，", "。").replace("預計", "預定");
     await f.persistence.appendResearchAnnouncements([f.announcement]);
     await f.persistence.appendResearchDisclosureArtifacts([f.artifact]);
     await f.persistence.appendResearchDisclosureScans([f.scan]);
@@ -781,6 +781,35 @@ describe("focused disclosure report", () => {
     }
   });
   it.each([
+    ["The transaction is expected to close on 2027/01/01.", false],
+    ["The transaction is anticipated to close on 2027/01/01.", false],
+    ["The transaction is projected to close on 2027/01/01.", false],
+    ["The transaction is forecast to close on 2027/01/01.", false],
+    ["The transaction is expected to be scheduled for 2027/01/01.", false],
+    ["We expect the transaction will close on 2027/01/01.", false],
+    ["We expect the meeting will start and will close on 2027/01/01.", false],
+    ["We expect that, after discussion, it will close on 2027/01/01.", false],
+    ["交易預計於2027/01/01完成。", false], ["交易預期將於2027/01/01完成。", false], ["交易預估於2027/01/01完成。", false],
+    ["The transaction is scheduled for 2027/01/01, and completion is expected later.", false],
+    ["Completion is expected later, but the board meeting will be held on 2027/01/01.", false],
+    ["The transaction is scheduled for 2027/01/01 despite an unexpected delay elsewhere.", true],
+    ["交易預計延後，董事會訂於2027/01/01召開。", false],
+  ] as const)("expectation source %s: dated non-tentative assertion → scheduled support %s", async (statement, supported) => {
+    const f = await fixture();
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: statement }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    await f.persistence.appendResearchDisclosureArtifacts([{ ...f.artifact, verifiedClaims: [{ ...f.artifact.verifiedClaims[0]!, text: statement }] }]);
+    const references = [candidate.statusEvidence.reference, { kind: "artifact_claim" as const, artifactId: f.artifact.id, claimId: "claim_1" }];
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: references.map((reference, index) => ({ ...candidate,
+      id: `expectation_${index}`, status: "scheduled", statement, triggeringEvidence: [reference],
+      statusEvidence: { reference, excerpt: statement, eventDate: "2027-01-01", eventDateText: "2027/01/01" } })), readBudget: 10 });
+    for (const assessment of report.assessments) {
+      expect(assessment.sourceSupport).toBe(supported ? "supported" : "withheld");
+      if (!supported) expect(assessment.reasonCodes).toContain("classification_status_not_verified");
+    }
+    for (const locale of ["en", "zh-TW"] as const) expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, locale))).toContain(statement);
+  });
+  it.each([
     ["2027/02/29", "2027-02-29"], ["2027年4月31日", "2027-04-31"],
     ["2027-02-29", "2027-02-29"], ["2100/02/29", "2100-02-29"],
     ["116/02/29", "2027-02-29"], ["116年4月31日", "2027-04-31"],
@@ -818,6 +847,10 @@ describe("focused disclosure report", () => {
     ["observed", "The transaction was not\ncompleted on 2026/10/03.", "completed on 2026/10/03", "2026-10-03", "2026/10/03"],
     ["observed", "交易尚未\n完成於2026年10月3日。", "完成於2026年10月3日", "2026-10-03", "2026年10月3日"],
     ["observed", "If approved, the transaction completed on 2026/10/03.", "completed on 2026/10/03", "2026-10-03", "2026/10/03"],
+    ["scheduled", "We expect the meeting will start and will close on 2027/01/01.", "will close on 2027/01/01", "2027-01-01", "2027/01/01"],
+    ["scheduled", "We expect that, after discussion, it will close on 2027/01/01.", "will close on 2027/01/01", "2027-01-01", "2027/01/01"],
+    ["scheduled", "We expect the meeting will be held on 2027/01/01.", "will be held on 2027/01/01", "2027-01-01", "2027/01/01"],
+    ["scheduled", "交易預期將於2027年1月1日完成。", "將於2027年1月1日完成", "2027-01-01", "2027年1月1日"],
     ["scheduled", "If approved, the meeting will be held on 2027/01/01.", "will be held on 2027/01/01", "2027-01-01", "2027/01/01"],
     ["scheduled", "The meeting shall be held on 2027/01/01, subject to approval.", "shall be held on 2027/01/01", "2027-01-01", "2027/01/01"],
     ["scheduled", "The transaction is not scheduled for 2027/01/01.", "scheduled for 2027/01/01", "2027-01-01", "2027/01/01"],
@@ -852,6 +885,17 @@ describe("focused disclosure report", () => {
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, status, statement: excerpt,
       statusEvidence: { ...candidate.statusEvidence, excerpt, eventDate, eventDateText } }], readBudget: 10 });
     expect(report.assessments[0]!.sourceSupport).toBe("supported");
+  });
+  it.each(["en", "zh-TW"] as const)("%s independent firm sentence: earlier expectation → support only the dated firm excerpt", async (language) => {
+    const f = await fixture();
+    const excerpt = language === "en" ? "The board meeting will be held on 2027/01/01." : "董事會訂於2027/01/01召開。";
+    const source = language === "en" ? `Completion is expected later. ${excerpt}` : `工程預計延後。${excerpt}`;
+    await f.persistence.appendResearchAnnouncements([{ ...f.announcement, explanation: source }]);
+    await f.persistence.appendResearchDisclosureScans([f.scan]);
+    const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [{ ...candidate, status: "scheduled", statement: excerpt,
+      statusEvidence: { ...candidate.statusEvidence, excerpt, eventDate: "2027-01-01", eventDateText: "2027/01/01" } }], readBudget: 10 });
+    expect(report.assessments[0]!.sourceSupport).toBe("supported");
+    for (const locale of ["en", "zh-TW"] as const) expect(literalMarkdownText(renderFocusedDisclosureResearchReportMarkdown(report, locale))).toContain(excerpt);
   });
   it("planned future event mislabeled observed: authentic excerpt → status withheld", async () => {
     const f = await seeded();

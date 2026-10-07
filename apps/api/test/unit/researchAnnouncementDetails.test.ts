@@ -195,7 +195,7 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"]
       const results = [parseOfficialAnnouncementDetail(detail, notice, metadata, previous),
         await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), resolvePreviousRecords: async () => previous })];
       expect(results[0]!.detailStatus).toBe("available");
-      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.8");
+      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.9");
       expect(results[1]!.detailStatus).toBe("restricted");
       for (const result of results) {
         expect(result.record.relations).toEqual(targets.length === 1 ? [{ kind, targetAnnouncementId: prior.id }] : []);
@@ -255,8 +255,8 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => ["代子公司公告", "�
   });
 
 
-it.each((["TWSE", "TPEX"] as const).flatMap((venue) => ["09:30", "0930"].flatMap((snapshotClock) =>
-  ["09:30", "9:30", "09:30:00", "09:30:47", "9:30:47", "0930", "093047", "93047"].map((publisherClock) => ({ venue, snapshotClock, publisherClock })))))(
+it.each((["TWSE", "TPEX"] as const).flatMap((venue) => ["09:30", "9:30", "0930", "930"].flatMap((snapshotClock) =>
+  ["09:30", "9:30", "09:30:00", "09:30:47", "9:30:47", "0930", "930", "093047", "93047"].map((publisherClock) => ({ venue, snapshotClock, publisherClock })))))(
   "$venue minute snapshot $snapshotClock with publisher $publisherClock: unique minute match → retain original snapshot precision", async ({ venue, snapshotClock, publisherClock }) => {
     const { record, history, detail } = fixture(venue);
     const minuteRecord = { ...record, publishedAt: "2026-10-03T01:30:00.000Z", publicationPrecision: "minute" as const,
@@ -279,7 +279,7 @@ it.each(["TWSE", "TPEX"] as const)("%s precise publication: clock mismatch or in
   const timeIndex = detail.result.titles.findIndex((title: { main: string }) => title.main.trim() === "發言時間");
   for (const publicationPrecision of ["minute", "second"] as const) {
     const target = { ...record, publishedAt: "2026-10-03T01:30:47.000Z", publicationPrecision };
-    for (const value of ["09:31", "09:31:47", "24:30:47", "09:60:47", "09:30:60", "09:3047", "930", "", "invalid", ...(publicationPrecision === "second" ? ["09:30", "0930", "09:30:46"] : [])]) {
+    for (const value of ["09:31", "09:31:47", "24:30:47", "09:60:47", "09:30:60", "09:3047", "9:3", "93", "", "invalid", ...(publicationPrecision === "second" ? ["09:30", "9:30", "0930", "930", "09:30:46"] : [])]) {
       history.result.data[0][3] = value; detail.result.data[0][timeIndex] = value;
       expect(() => selectOfficialAnnouncementDetailParameters(history, target)).toThrow("detail_reference_unresolved");
       expect(() => parseOfficialAnnouncementDetail(detail, target, metadata)).toThrow("detail_observation_mismatch");

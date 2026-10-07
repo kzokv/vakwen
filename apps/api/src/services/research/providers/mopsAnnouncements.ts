@@ -9,7 +9,7 @@ export const OFFICIAL_ANNOUNCEMENT_SOURCES = {
   TWSE: "https://openapi.twse.com.tw/v1/opendata/t187ap04_L",
   TPEX: "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O",
 } as const;
-export const DISCLOSURE_PARSER_VERSION = "mops-announcements/1.0.3";
+export const DISCLOSURE_PARSER_VERSION = "mops-announcements/1.0.4";
 export function disclosureId(prefix: string, ...parts: string[]) { return `${prefix}_${createHash("sha256").update(parts.join("\u001f")).digest("hex").slice(0, 32)}`; }
 export function disclosureHash(value: string | Uint8Array) { return createHash("sha256").update(value).digest("hex"); }
 export function safeDisclosureUrl(value: string): boolean {
@@ -22,16 +22,19 @@ export function parseOptionalAnnouncementEventDate(value: string | null | undefi
   if (value == null) return null;
   try { return parseTaiwanOfficialDate(value); } catch { return null; }
 }
+/** Explicit source clock grammar; compact three/four digits are minute-only. */
+export function parseOfficialAnnouncementClock(timeValue: string) {
+  const raw = timeValue.trim();
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(raw)
+    ?? /^(\d{1,2})(\d{2})$/.exec(raw) ?? /^(\d{1,2})(\d{2})(\d{2})$/.exec(raw);
+  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59 || (match[3] !== undefined && Number(match[3]) > 59)) throw new Error("announcement_publication_time_invalid");
+  return { clock: `${match[1]!.padStart(2, "0")}:${match[2]}:${match[3] ?? "00"}`, precision: match[3] === undefined ? "minute" as const : "second" as const };
+}
 function publication(dateValue: string, timeValue: string) {
   const date = parseTaiwanOfficialDate(dateValue);
   if (!date) throw new Error("announcement_publication_date_invalid");
-  const raw = timeValue.trim();
-  const minutePrecision = /^\d{2}:\d{2}$/.test(raw) || /^\d{4}$/.test(raw);
-  const compact = minutePrecision ? raw.replaceAll(":", "") : raw.replaceAll(":", "").padStart(6, "0");
-  if (!/^\d{4}(\d{2})?$/.test(compact)) throw new Error("announcement_publication_time_invalid");
-  const hour = compact.slice(0,2), minute = compact.slice(2,4), second = compact.slice(4,6) || "00";
-  if (+hour > 23 || +minute > 59 || +second > 59) throw new Error("announcement_publication_time_invalid");
-  return { publishedAt: new Date(`${date}T${hour}:${minute}:${second}+08:00`).toISOString(), precision: compact.length === 6 ? "second" as const : "minute" as const };
+  const parsed = parseOfficialAnnouncementClock(timeValue);
+  return { publishedAt: new Date(`${date}T${parsed.clock}+08:00`).toISOString(), precision: parsed.precision };
 }
 export function parseOfficialAnnouncementSnapshot(payload: unknown, metadata: AnnouncementSnapshotMetadata, venue: "TWSE" | "TPEX", identities: readonly ResearchIdentityRecord[]): ResearchAnnouncementRecord[] {
   const rows = z.array(z.record(z.string(), z.unknown())).parse(payload);

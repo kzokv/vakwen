@@ -3,13 +3,13 @@ import { isMopsAccessDenial } from "./mopsAccessDenial.js";
 import { z } from "zod";
 import type { ResearchAnnouncementRecord } from "../disclosureContracts.js";
 import { researchAnnouncementRecordSchema } from "../disclosureContracts.js";
-import { disclosureHash, disclosureId, safeDisclosureUrl, parseOptionalAnnouncementEventDate } from "./mopsAnnouncements.js";
+import { disclosureHash, disclosureId, safeDisclosureUrl, parseOptionalAnnouncementEventDate, parseOfficialAnnouncementClock } from "./mopsAnnouncements.js";
 import { parseTaiwanOfficialDate } from "./twseIdentity.js";
 
 /** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
 export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
 export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
-export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.8";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.9";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const parametersSchema = z.object({
   marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
@@ -51,14 +51,13 @@ function localStamp(record: Pick<ResearchAnnouncementRecord, "publishedAt">) {
 }
 function dateMatches(raw: string, isoDate: string): boolean { return parseTaiwanOfficialDate(raw.replaceAll("/", "")) === isoDate; }
 function publicationClockMatches(raw: string, record: ResearchAnnouncementRecord): boolean {
-  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(raw.trim())
-    ?? /^(\d{2})(\d{2})$/.exec(raw.trim()) ?? /^(\d{1,2})(\d{2})(\d{2})$/.exec(raw.trim());
-  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59 || (match[3] !== undefined && Number(match[3]) > 59)) return false;
-  const clock = `${match[1]!.padStart(2, "0")}:${match[2]}`;
-  const retainedClock = localStamp(record).clock;
-  if (record.publicationPrecision === "minute") return clock === retainedClock.slice(0, 5);
-  if (record.publicationPrecision === "date") return false; // No date-only detail producer is supported.
-  return match[3] !== undefined && `${clock}:${match[3]}` === retainedClock;
+  try {
+    const parsed = parseOfficialAnnouncementClock(raw);
+    const retainedClock = localStamp(record).clock;
+    if (record.publicationPrecision === "minute") return parsed.clock.slice(0, 5) === retainedClock.slice(0, 5);
+    if (record.publicationPrecision === "date") return false; // No date-only detail producer is supported.
+    return parsed.precision === "second" && parsed.clock === retainedClock;
+  } catch { return false; }
 }
 function expectedMarket(record: ResearchAnnouncementRecord) { return record.venue === "TWSE" ? "sii" : "otc"; }
 function assertMarket(marketName: string, record: ResearchAnnouncementRecord) {

@@ -237,6 +237,16 @@ function hasUncertainStatusAssertion(excerpt: string, status: "observed" | "sche
     || (status === "observed" && /\b(?:will|shall)\b/i.test(excerpt));
 }
 
+// A forecast cannot establish a schedule merely because it contains future tense.
+// Require the literal date and a firm cue in a non-tentative source assertion;
+// conjunctions and commas do not end the scope of an expectation qualifier.
+function hasFirmScheduledAssertion(assertion: string, literalDate: string | undefined): boolean {
+  if (!literalDate) return false;
+  const tentative = /(?:預計|預估|預期)|\b(?:expect(?:ed|s|ing)?|anticipat(?:e|ed|es|ing)|project(?:ed|ing)|forecast(?:s|ed|ing)?)\b/i;
+  const firm = /(?:預定|訂於|將於|\b(?:scheduled|planned|will|shall)\b)/i;
+  return assertion.includes(literalDate) && firm.test(assertion) && !tentative.test(assertion);
+}
+
 function artifactReportScopeFailure(artifact: NonNullable<DisclosureArtifactOutput["artifact"]>, pages: MaterialAnnouncementsOutput[]): string | null {
   const window = pages[0]!.window;
   const publishedAt = Date.parse(artifact.publishedAt);
@@ -429,8 +439,9 @@ export function composeFocusedDisclosureResearchReport(input: {
       && (anchorAnnouncementId === null || announcements.find((item) => item.id === anchorAnnouncementId)?.eventDate === anchor.eventDate)
     );
     const scheduleVerified = candidate.status !== "scheduled" || (assertionContexts.length > 0
-      && assertionContexts.every((assertion) => !hasUncertainStatusAssertion(assertion, "scheduled"))
-      && /(?:預計|預定|訂於|將於|\b(?:scheduled|planned|expected|will|shall)\b)/i.test(anchor.excerpt));
+      && assertionContexts.every((assertion) => !hasUncertainStatusAssertion(assertion, "scheduled")
+        && hasFirmScheduledAssertion(assertion, literalDate))
+      && hasFirmScheduledAssertion(anchor.excerpt, literalDate));
     const failures = refs.map((reference) => ({ reference, reason: failedReason(reference) })).filter((failure) => failure.reason !== null);
     const revalidationFailures = refs.flatMap((reference) => {
       if (reference.kind !== "artifact_claim") return [];
