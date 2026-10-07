@@ -22,6 +22,16 @@ const candidate = {
 } satisfies z.input<typeof disclosureCandidateSchema>;
 
 const analyticalFields = ["materialMechanism", "affectedMetricOrAssumption", "horizon", "condition", "confirmationCondition", "disconfirmationCondition"] as const;
+const allocationTradingAdvice = [
+  "You should be overweight TSMC", "Investors should be underweight 2330", "You should not be overweight AAPL",
+  "I recommend that you be underweight TSMC", "Be overweight AAPL",
+  "Overweight TSMC", "Underweight 2330", "Investors should underweight 2330", "I recommend overweighting AAPL",
+  "We advise underweighting TSMC", "You must overweight AAPL", "My advice is to underweight 2330",
+  "Overweight the stock", "I suggest underweighting shares", "Do not overweight TSMC", "Don't underweight AAPL",
+  "Investors shouldn't overweight 2330", "I recommend not underweighting TSMC", "Avoid overweighting AAPL",
+  "Refrain from underweighting 2330", "TSMC should be overweighted", "AAPL must not be underweighted",
+  "I recommend that 2330 be overweighted", "TSMC is recommended to be underweighted",
+];
 const avoidanceTradingAdvice = [
   "Avoid TSMC", "Avoid 2330", "Refrain from AAPL", "Avoid the stock", "Refrain from shares",
   "Investors should avoid TSMC", "You must refrain from 2330", "I recommend avoiding AAPL", "We advise refraining from TSMC",
@@ -100,7 +110,7 @@ describe("disclosure specialist candidate contract", () => {
     expect(disclosureCandidateSchema.safeParse({ ...candidate, materialMechanism: "Bullish investor sentiment." }).success).toBe(false);
   });
   it.each(analyticalFields)("analytical %s: action or sentiment in either language → reject the specific field", (field) => {
-    for (const text of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, ...avoidanceTradingAdvice, "Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲",
+    for (const text of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, ...avoidanceTradingAdvice, ...allocationTradingAdvice, "Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲",
       "Buy TSMC", "Sell AAPL now", "Hold 2330", "I recommend buying TSMC", "We advise selling AAPL", "I recommend that you buy TSMC",
       "You should buy NVDA", "Hold shipments. Buy TSMC now.", "Investors should buy equipment.", "My advice is to buy 2330", "買進台積電", "賣出2330", "請持有聯發科", "確認：買進台積電", "條件成立。賣出2330",
       "- Buy TSMC", '"Sell AAPL now"', "推薦買入台積電",
@@ -115,7 +125,7 @@ describe("disclosure specialist candidate contract", () => {
     }
   });
   it("publisher quote: exact source trading instruction → preserve literal evidence separately from analyst prose", () => {
-    for (const excerpt of ["Buy the stock now", "建議買入股票", ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, ...avoidanceTradingAdvice]) expect(disclosureCandidateSchema.safeParse({ ...candidate,
+    for (const excerpt of ["Buy the stock now", "建議買入股票", ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, ...avoidanceTradingAdvice, ...allocationTradingAdvice]) expect(disclosureCandidateSchema.safeParse({ ...candidate,
       statement: excerpt, statusEvidence: { ...candidate.statusEvidence, excerpt } }).success).toBe(true);
   });
   it("candidate identifier: prose or Markdown instruction → reject identifier misuse", () => {
@@ -251,6 +261,9 @@ describe("focused disclosure report", () => {
       "The equipment must not be sold before commissioning.", "The issuer should be bought by its parent company.",
       "The company could be sold after regulatory approval.", "I recommend that inventory be sold before expiry.",
       "Equipment is recommended to be purchased after approval.",
+      "The issuer reported that its pension portfolio was overweight TSMC last quarter.",
+      "The portfolio was underweighted in AAPL before the reporting date.", "The company described the broker's overweight rating in its investor presentation.",
+      "Overweight shipments incur additional freight charges.", "Underweight inventory requires a quantity reconciliation.",
       "The financing structure should avoid dilution.", "Avoid covenant default.", "Avoid Dilution.", "Avoid Covenant Default.",
       "You should avoid covenant default.", "I recommend avoiding dilution.", "Covenant Default should be avoided.",
       "I recommend that dilution be avoided.", "Dilution is recommended to be avoided.", "Refrain from market manipulation.",
@@ -326,7 +339,7 @@ describe("focused disclosure report", () => {
   it.each(analyticalFields)("rendered analytical %s: injected trading advice → reject revalidation", async (field) => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [candidate], readBudget: 10 });
-    for (const advice of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, ...avoidanceTradingAdvice, "Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票", "Buy TSMC", "Sell AAPL now", "I recommend buying TSMC", "買進台積電", "賣出2330"]) {
+    for (const advice of [...tickerOnlyAdvice, ...negativeTradingAdvice, ...passiveTradingAdvice, ...investmentTradingAdvice, ...positionTradingAdvice, ...avoidanceTradingAdvice, ...allocationTradingAdvice, "Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票", "Buy TSMC", "Sell AAPL now", "I recommend buying TSMC", "買進台積電", "賣出2330"]) {
       const mutated = structuredClone(report);
       mutated.assessments[0]!.candidate[field] = advice;
       for (const locale of ["en", "zh-TW"] as const) expect(() => renderFocusedDisclosureResearchReportMarkdown(mutated, locale)).toThrow();

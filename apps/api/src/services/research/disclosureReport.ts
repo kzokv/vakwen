@@ -21,9 +21,9 @@ function hasTradingAdvice(text: string): boolean {
   const positionAction = String.raw`(?:take|open|close|reduce|increase|build|establish)\s+${positionObject}`;
   const positionInflection = String.raw`(?:tak(?:e|ing)|open(?:ing)?|clos(?:e|ing)|reduc(?:e|ing)|increas(?:e|ing)|build(?:ing)?|establish(?:ing)?)\s+${positionObject}`;
   const positionParticiple = String.raw`(?:taken|opened|closed|reduced|increased|built|established)\b`;
-  const baseVerb = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|add\s+to|invest\s+in|divest(?:\s+(?:from|of))?|go\s+(?:long|short)(?:\s+on)?(?!\s+of\b))`;
-  const participle = String.raw`(?:bought|sold|held|purchased|accumulated|shorted|reduced|exited|liquidated|added\s+to|invested\s+in|divested)\b`;
-  const inflectedVerb = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to|invest(?:ing)?\s+in|divest(?:ing)?(?:\s+(?:from|of))?|go(?:ing)?\s+(?:long|short)(?:\s+on)?(?!\s+of\b))`;
+  const baseVerb = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|(?:be\s+)?(?:overweight|underweight)|add\s+to|invest\s+in|divest(?:\s+(?:from|of))?|go\s+(?:long|short)(?:\s+on)?(?!\s+of\b))`;
+  const participle = String.raw`(?:bought|sold|held|purchased|accumulated|shorted|reduced|exited|liquidated|added\s+to|invested\s+in|divested|overweighted|underweighted)\b`;
+  const inflectedVerb = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to|invest(?:ing)?\s+in|(?:be\s+)?(?:overweight|underweight)(?:ing)?|divest(?:ing)?(?:\s+(?:from|of))?|go(?:ing)?\s+(?:long|short)(?:\s+on)?(?!\s+of\b))`;
   const imperative = String.raw`(?:${baseVerb}\s+${object}|${positionAction})`;
   const inflected = String.raw`(?:${inflectedVerb}\s+${object}|${positionInflection})`;
   // Direct commands do not need a security suffix: names/tickers are open-ended.
