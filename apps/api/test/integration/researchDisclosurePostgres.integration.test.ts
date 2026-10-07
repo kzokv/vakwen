@@ -1,3 +1,4 @@
+import { disclosureReversionScenario } from "../fixtures/research/disclosureRevisionScenario.js";
 import { Client, Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryPersistence } from "../../src/persistence/memory.js";
@@ -60,6 +61,23 @@ describePostgres("disclosure memory/Postgres conformance", () => {
       await expect(persistence.appendResearchDisclosureArtifacts([{ ...raw, id: "new_oversized", verifiedClaims: [claim] }])).rejects.toThrow("50,000 combined block and claim characters");
       expect((await getDisclosureArtifact(persistence, { subject: f.subject, context: f.context, artifactId: raw.id })).page.retainedCharacters).toBe(50_000);
     }
+  });
+  it.each(["TWSE", "TPEX"] as const)("%s detail reversion: memory/Postgres acquisition → distinct active recurrence and replay parity", async (venue) => {
+    const results = [];
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const result = await disclosureReversionScenario(persistence, venue);
+      expect(result.counts).toEqual([1, 1, 1, 0, 0]);
+      expect(result.records.map((records) => records.length)).toEqual([1, 2, 3, 3, 3]);
+      const a = result.pages[0]!.items[0]!, b = result.pages[1]!.items[0]!, reverted = result.pages[2]!.items[0]!;
+      expect(new Set([a.id, b.id, reverted.id]).size).toBe(3);
+      expect(b.relations).toEqual([{ kind: "supersedes", targetAnnouncementId: a.id }]);
+      expect(reverted.relations).toEqual([{ kind: "supersedes", targetAnnouncementId: b.id }]);
+      expect(result.pages.slice(2).map((page) => page.items.map((item) => item.id))).toEqual([[reverted.id], [reverted.id], [reverted.id]]);
+      expect(result.records[4]!.find((record) => record.id === a.id)).toEqual(result.records[0]![0]);
+      expect(result.historical.items.map((item) => item.id)).toEqual([b.id]);
+      results.push(result.pages.map((page) => page.items));
+    }
+    expect(results[1]).toEqual(results[0]);
   });
   it("missing material artifact: exact scoped existence → backend parity without broad payload reads", async () => {
     const outputs = [];

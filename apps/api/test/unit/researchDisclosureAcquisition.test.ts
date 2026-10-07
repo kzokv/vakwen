@@ -1,3 +1,4 @@
+import { disclosureReversionScenario } from "../fixtures/research/disclosureRevisionScenario.js";
 import { twoPagePdf } from "../fixtures/research/disclosurePdf.js";
 import { getResearchManifest } from "../../src/services/research/service.js";
 import { getDisclosureArtifact, listMaterialAnnouncements } from "../../src/services/research/disclosures.js";
@@ -422,3 +423,60 @@ it.each((["TWSE", "TPEX"] as const).flatMap((venue) => [false, true].map((malfor
     expect(() => parseOfficialAnnouncementSnapshot([null], metadata, venue, [identity])).toThrow();
     expect(() => parseOfficialAnnouncementSnapshot([{ 公司代號: identity.listing.ticker, 發言日期: "invalid" }], metadata, venue, [identity])).toThrow();
   });
+
+
+it.each(["TWSE", "TPEX"] as const)("%s detail A→B→A→A: reversion gets new immutable observation → replay and failed refresh retain active A", async (venue) => {
+  const result = await disclosureReversionScenario(new MemoryPersistence(), venue);
+  expect(result.counts).toEqual([1, 1, 1, 0, 0]);
+  expect(result.records.map((records) => records.length)).toEqual([1, 2, 3, 3, 3]);
+  const a = result.pages[0]!.items[0]!, b = result.pages[1]!.items[0]!, reverted = result.pages[2]!.items[0]!;
+  expect(new Set([a.id, b.id, reverted.id]).size).toBe(3);
+  expect(new Set([a.provenance.id, b.provenance.id, reverted.provenance.id]).size).toBe(3);
+  expect(new Set(result.records[4]!.map((record) => record.collectionProvenance!.id)).size).toBe(3);
+  expect(result.auditReport.announcementPages).toHaveLength(3);
+  expect(result.auditReport.evidence.provenanceIds).toEqual(expect.arrayContaining([a.provenance.id, b.provenance.id, reverted.provenance.id]));
+  expect(b.relations).toEqual([{ kind: "supersedes", targetAnnouncementId: a.id }]);
+  expect(reverted.relations).toEqual([{ kind: "supersedes", targetAnnouncementId: b.id }]);
+  expect(result.pages.slice(2).map((page) => page.items.map((item) => item.id))).toEqual([[reverted.id], [reverted.id], [reverted.id]]);
+  expect(reverted.explanation.text).toBe(a.explanation.text);
+  expect(result.records[4]!.find((record) => record.id === a.id)).toEqual(result.records[0]![0]);
+  expect(result.historical.items.map((item) => item.id)).toEqual([b.id]);
+  expect(result.artifacts.filter((artifact) => artifact.reference.id === reverted.id).map((artifact) => artifact.blocks.map((block) => block.text).join(""))).toContain(result.original);
+  expect(result.pages[4]!.scan.latestAttempt!.detailAttempts![0]).toMatchObject({ announcementId: reverted.id, status: "restricted" });
+});
+
+it.each(["reconcile", "restricted", "over_limit", "cycle"] as const)("revision tips %s: deterministic graph boundary → reconcile success or fail closed", async (state) => {
+  setResearchRolloutOverrideForTest({ acquisitionEnabled: true, announcementsTwseEnabled: true, announcementsTpexEnabled: false });
+  const ids = state === "over_limit" ? Array.from({ length: 101 }, (_, index) => `tip_${index}`) : ["tip_z", "tip_a"];
+  const results = [];
+  for (const order of [ids, [...ids].reverse()]) {
+    const { rows, identity } = fixture("TWSE");
+    const persistence = new MemoryPersistence(); await persistence.appendResearchIdentityRecords([identity]);
+    const source = parseOfficialAnnouncementSnapshot(rows, { retrievedAt: at, contentHash: "a".repeat(64), sourceUrl: OFFICIAL_ANNOUNCEMENT_SOURCES.TWSE, acquisitionRunId: "tips" }, "TWSE", [identity])[0]!;
+    const prior = order.map((id) => ({ ...source, id, collectionRecordId: source.id, explanation: `Prior detail ${id}`,
+      detailQuality: { status: "available" as const, reasonCodes: [] }, provenance: { ...source.provenance, id: `pr_${id}` },
+      relations: state === "cycle" ? [{ kind: "supersedes" as const, targetAnnouncementId: ids.find((other) => other !== id)! }] : [] }));
+    await persistence.appendResearchAnnouncements(prior);
+    const history = JSON.parse(readFileSync(new URL("../fixtures/research/mops-history-2072.json", import.meta.url), "utf8"));
+    const detail = JSON.parse(readFileSync(new URL("../fixtures/research/mops-detail-2072.json", import.meta.url), "utf8"));
+    const fetchImpl: typeof fetch = async (url) => state === "restricted" && String(url).endsWith("t05st01") ? new Response("restricted", { status: 403 })
+      : new Response(JSON.stringify(String(url).endsWith("t05st01_detail") ? detail : String(url).endsWith("t05st01") ? history : rows));
+    const payloadReads = vi.spyOn(persistence, "getResearchAnnouncementsByIds");
+    const cacheRead = vi.spyOn(persistence, "getLatestSuccessfulDisclosureDetail");
+    const result = await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: "2026-10-04T05:15:00.000Z", acquisitionRunId: "tips_next" });
+    expect(cacheRead).not.toHaveBeenCalled();
+    const retained = await persistence.listResearchAnnouncements({ issuerId: identity.issuer.id, knowledgeAt: "2026-10-04T05:15:00.000Z", effectiveAt: "2026-10-04T05:15:00.000Z" });
+    if (state === "reconcile") {
+      expect(result.outcomes).toEqual([{ venue: "TWSE", status: "success", announcementCount: 1 }]);
+      const next = retained.find((record) => !ids.includes(record.id))!;
+      expect(next.relations).toEqual([...ids].sort().map((id) => ({ kind: "supersedes", targetAnnouncementId: id })));
+      expect(payloadReads.mock.calls.every(([query]) => query.ids.length <= 100)).toBe(true);
+      results.push(next);
+    } else {
+      expect(result.outcomes).toEqual([{ venue: "TWSE", status: "failed", announcementCount: 0 }]);
+      expect(retained.map((record) => record.id).sort()).toEqual([...ids].sort());
+      expect(payloadReads).not.toHaveBeenCalled();
+    }
+  }
+  if (state === "reconcile") expect(results[1]).toEqual(results[0]);
+});

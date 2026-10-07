@@ -3,7 +3,7 @@ import { enrichOfficialAnnouncement, announcementCitationSelectors } from "./pro
 import { extractDisclosureContent, resolveDisclosureMediaType } from "./providers/disclosureExtraction.js";
 import { createHash } from "node:crypto";
 import type { Persistence } from "../../persistence/types.js";
-import type { ResearchDisclosureScan, ResearchDisclosureArtifact } from "./disclosureContracts.js";
+import type { ResearchDisclosureScan, ResearchDisclosureArtifact, ResearchAnnouncementRecord } from "./disclosureContracts.js";
 import { ResearchAcquisitionDisabledError } from "./acquisition.js";
 import { researchAcquisitionEnabled, researchDisclosureAcquisitionEnabled } from "./rollout.js";
 import { DISCLOSURE_PARSER_VERSION, OFFICIAL_ANNOUNCEMENT_SOURCES, disclosureHash, disclosureId, parseOfficialAnnouncementSnapshot, retainAnnouncementExplanation, safeDisclosureUrl } from "./providers/mopsAnnouncements.js";
@@ -38,6 +38,16 @@ async function officialResponse(fetchImpl: typeof fetch, url: string, signal?: A
   if (bytes.byteLength > 8 * 1024 * 1024) throw new Error("disclosure_source_too_large");
   if (isMopsAccessDenial(body)) throw new Error("disclosure_access_restricted");
   return { body, bytes, mediaType: response.headers.get("content-type") ?? "application/octet-stream" };
+}
+function announcementContentVariant(record: ResearchAnnouncementRecord): string {
+  return disclosureHash(JSON.stringify({
+    content: [record.subject, record.ruleClause, record.eventDate, record.explanation], parserVersion: record.provenance.parserVersion,
+    detailQuality: record.detailQuality ? { ...record.detailQuality, reasonCodes: [...record.detailQuality.reasonCodes].sort() } : undefined,
+    attachments: record.attachments.map((attachment) => ({ title: attachment.title, sourceUrl: attachment.sourceUrl,
+      mediaType: attachment.mediaType, hasArtifact: attachment.artifactId !== null })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    relations: record.relations.filter((relation) => relation.kind !== "supersedes").sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    unresolvedRelations: record.unresolvedRelations, unknownRelationTargets: record.unknownRelationTargets,
+  }));
 }
 export async function runOfficialDisclosureAcquisition(persistence: Persistence, options: AcquisitionOptions = {}) {
   options.signal?.throwIfAborted();
@@ -80,22 +90,32 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         const detailAttempts = detailAttemptsByListing.get(listingKey) ?? [];
         detailAttempts.push({ announcementId: sourceRecord.id, attemptedAt: detailCompletedAt, status: enriched.detailStatus, reasonCodes: enriched.reasonCodes });
         detailAttemptsByListing.set(listingKey, detailAttempts);
-        const priorSuccessfulDetail = enriched.detailStatus !== "available" ? await persistence.getLatestSuccessfulDisclosureDetail({ ...scope, collectionRecordId: sourceRecord.id }) : null;
-        record = priorSuccessfulDetail ? structuredClone(priorSuccessfulDetail) : enriched.record;
         const collectionRecordId = sourceRecord.id;
-        if (!priorSuccessfulDetail) {
-          const variant = disclosureHash(JSON.stringify({ content: [record.subject, record.ruleClause, record.eventDate, record.explanation], parserVersion: record.provenance.parserVersion, detailQuality: record.detailQuality, attachments: record.attachments, relations: record.relations, unresolvedRelations: record.unresolvedRelations, unknownRelationTargets: record.unknownRelationTargets }));
-          record = { ...record, collectionRecordId, id: disclosureId("ann", collectionRecordId, variant) };
+        const previous = await persistence.findResearchAnnouncementCandidates({ ...scope, kind: "revision", collectionRecordId,
+          publishedAt: enriched.record.publishedAt, subject: enriched.record.subject });
+        const superseded = new Set(previous.flatMap((prior) => prior.relations.filter((relation) => relation.kind === "supersedes").map((relation) => relation.targetAnnouncementId)));
+        const tips = previous.filter((prior) => !superseded.has(prior.id)).sort((a, b) => a.id.localeCompare(b.id));
+        if ((previous.length > 0 && tips.length === 0) || tips.length > 100 || (enriched.detailStatus !== "available" && tips.length > 1)) {
+          throw new Error("disclosure_revision_lineage_unresolved");
+        }
+        const activeRecords = tips.length ? await persistence.getResearchAnnouncementsByIds({ ...scope, ids: tips.map((tip) => tip.id) }) : [];
+        if (activeRecords.length !== tips.length) throw new Error("disclosure_revision_lineage_unresolved");
+        const current = activeRecords.length === 1 ? activeRecords[0] : undefined;
+        const priorSuccessfulDetail = enriched.detailStatus !== "available" && current?.collectionRecordId === collectionRecordId && current.detailQuality?.status === "available" ? current : undefined;
+        const variant = announcementContentVariant(enriched.record);
+        const retainedRecord = priorSuccessfulDetail ?? (current?.collectionRecordId === collectionRecordId && announcementContentVariant(current) === variant ? current : undefined);
+        record = retainedRecord ? structuredClone(retainedRecord) : { ...enriched.record, collectionRecordId,
+          id: disclosureId("ann", collectionRecordId, variant, ...tips.map((tip) => tip.id)) };
+        if (!retainedRecord) {
+          record.provenance = { ...record.provenance, id: disclosureId("pr", record.id, record.provenance.id) };
+          if (record.collectionProvenance) record.collectionProvenance = { ...record.collectionProvenance,
+            id: disclosureId("pr", record.id, record.collectionProvenance.id, "collection") };
           record.attachments = record.attachments.map((attachment) => attachment.id === disclosureId("att", collectionRecordId, "explanation")
             ? { ...attachment, id: disclosureId("att", record.id, "explanation"), artifactId: disclosureId("art", record.id, "explanation") }
             : { ...attachment, id: disclosureId("att", record.id, attachment.sourceUrl), artifactId: attachment.artifactId ? disclosureId("art", record.id, attachment.sourceUrl) : null });
+          for (const prior of tips) record.relations.push({ kind: "supersedes", targetAnnouncementId: prior.id });
         }
         detailAttempts[detailAttempts.length - 1]!.announcementId = record.id;
-        const retainedRecord = (await persistence.getResearchAnnouncementsByIds({ ...scope, ids: [record.id] }))[0];
-        // Content-changing observations retain both records and their explicit
-        // revision relation; the previous evidence is never updated in place.
-        const previous = (await persistence.findResearchAnnouncementCandidates({ ...scope, kind: "revision", collectionRecordId, publishedAt: record.publishedAt, subject: record.subject })).filter((prior) => prior.id !== record.id);
-        if (!retainedRecord) for (const prior of previous) record.relations.push({ kind: "supersedes", targetAnnouncementId: prior.id });
         options.signal?.throwIfAborted();
         if (!retainedRecord) await persistence.appendResearchAnnouncements([record]);
         const stableRecord = retainedRecord ?? record;
