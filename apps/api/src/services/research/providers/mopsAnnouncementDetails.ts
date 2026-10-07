@@ -9,7 +9,7 @@ import { parseTaiwanOfficialDate } from "./twseIdentity.js";
 /** Routes and parameter names verified against the official MOPS SPA on 2026-10-04. */
 export const MOPS_ANNOUNCEMENT_HISTORY_URL = "https://mops.twse.com.tw/mops/api/t05st01";
 export const MOPS_ANNOUNCEMENT_DETAIL_URL = "https://mops.twse.com.tw/mops/api/t05st01_detail";
-export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.1";
+export const MOPS_DETAIL_PARSER_VERSION = "mops-announcement-detail/1.0.2";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const parametersSchema = z.object({
   marketKind: z.enum(["sii", "otc"]), companyId: z.string().regex(/^[A-Za-z0-9]+$/),
@@ -75,16 +75,10 @@ function relationFromPublisherText(record: ResearchAnnouncementRecord, previousR
   const kind = /^(?:公告)?(?:撤回|撤銷)/.test(record.subject.trim()) ? "retracts" as const
     : /^(?:公告)?更正/.test(record.subject.trim()) ? "corrects" as const : null;
   if (!kind) return { relations: record.relations, unresolved: false, unresolvedRelations: record.unresolvedRelations ?? [], unknownRelationTargets: record.unknownRelationTargets ?? [] };
-  const text = compactTitle(record.explanation);
+  const selectors = announcementCitationSelectors(record);
   const matches = previousRecords.filter((prior) => {
     if (prior.id === record.id || prior.issuerId !== record.issuerId || prior.listingId !== record.listingId || prior.venue !== record.venue || prior.publishedAt >= record.publishedAt) return false;
-    const title = compactTitle(prior.subject);
-    if (!title || !(text.includes(`「${title}」`) || text.includes(`"${title}"`))) return false;
-    const date = localStamp(prior).day;
-    const year = Number(date.slice(0, 4)) - 1911;
-    const month = Number(date.slice(5, 7));
-    const day = Number(date.slice(8, 10));
-    return [date, `${year}/${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`, `${year}/${month}/${day}`, `${year}年${month}月${day}日`].some((value) => text.includes(value));
+    return selectors.titles.includes(compactTitle(prior.subject)) && selectors.days.includes(localStamp(prior).day);
   });
   const unresolvedRelations = (record.unresolvedRelations ?? []).filter((relation) => relation.kind !== kind);
   const unknownRelationTargets = (record.unknownRelationTargets ?? []).filter((relation) => relation.kind !== kind);
@@ -215,9 +209,11 @@ export function announcementCitationSelectors(record: ResearchAnnouncementRecord
   if (!/^(?:公告)?(?:更正|撤回|撤銷)/.test(record.subject.trim())) return { titles: [], days: [] };
   const explanation = compactTitle(record.explanation);
   const titles = [...explanation.matchAll(/「([^」]+)」|"([^"]+)"/g)].map((match) => compactTitle(match[1] ?? match[2]!));
-  const days = [...explanation.matchAll(/(\d{3,4})[年/-](\d{1,2})[月/-](\d{1,2})日?/g)].map((match) => {
+  const days = [...explanation.matchAll(/(?<!\d)(\d{3,4})(?:([/-])(\d{1,2})\2(\d{1,2})|年(\d{1,2})月(\d{1,2})日?)(?!\d)/g)].map((match) => {
     const year = Number(match[1]) + (match[1]!.length === 3 ? 1911 : 0);
-    return `${year}-${match[2]!.padStart(2, "0")}-${match[3]!.padStart(2, "0")}`;
+    const month = match[3] ?? match[5]!;
+    const day = match[4] ?? match[6]!;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
   });
   return { titles: [...new Set(titles.filter(Boolean))], days: [...new Set(days.filter((day) => Number.isFinite(Date.parse(day)) && new Date(day).toISOString().slice(0, 10) === day))] };
 }

@@ -21,6 +21,14 @@ const candidate = {
 } satisfies z.input<typeof disclosureCandidateSchema>;
 
 const analyticalFields = ["materialMechanism", "affectedMetricOrAssumption", "horizon", "condition", "confirmationCondition", "disconfirmationCondition"] as const;
+const tickerOnlyAdvice = [
+  "Exit AAPL now", "Reduce TSMC", "Add to 2330",
+  "Please exit AAPL", "- Reduce TSMC", '"Add to 2330"',
+  "I recommend exiting 2330", "We advise reducing TSMC", "I suggest adding to AAPL",
+  "I recommend that you exit AAPL", "We advise you to reduce TSMC", "I suggest you add to 2330",
+  "You should exit AAPL", "Investors could reduce TSMC", "Traders must add to 2330",
+  "My advice is to exit AAPL", "Should reduce TSMC", "Ought to add to 2330",
+];
 
 describe("disclosure specialist candidate contract", () => {
   it("causal candidate: required mechanism and evidence → accepted structured judgment", () => {
@@ -37,7 +45,7 @@ describe("disclosure specialist candidate contract", () => {
     expect(disclosureCandidateSchema.safeParse({ ...candidate, materialMechanism: "Bullish investor sentiment." }).success).toBe(false);
   });
   it.each(analyticalFields)("analytical %s: action or sentiment in either language → reject the specific field", (field) => {
-    for (const text of ["Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲",
+    for (const text of [...tickerOnlyAdvice, "Investors should buy the stock.", "Bullish investor sentiment.", "建議買進", "看漲",
       "Buy TSMC", "Sell AAPL now", "Hold 2330", "I recommend buying TSMC", "We advise selling AAPL", "I recommend that you buy TSMC",
       "You should buy NVDA", "Hold shipments. Buy TSMC now.", "Investors should buy equipment.", "My advice is to buy 2330", "買進台積電", "賣出2330", "請持有聯發科", "確認：買進台積電", "條件成立。賣出2330",
       "- Buy TSMC", '"Sell AAPL now"', "推薦買入台積電",
@@ -182,6 +190,9 @@ describe("focused disclosure report", () => {
       "Holding shares reduces public float.", "The issuer is acquiring a business to expand capacity.",
       "The issuer plans to buy TSMC to integrate production.", "The company should buy machinery to expand output.",
       "Hold shipments until commissioning completes.", "Sell inventory to reduce storage costs.",
+      "Reduce inventory after commissioning.", "Exit the business after regulatory approval.", "Add to supplies before production restarts.",
+      "The issuer will reduce its TSMC stake to fund production.", "The company plans to exit AAPL after board approval.",
+      "The issuer is adding to its subsidiary holdings to consolidate control.",
       "Buy equipment to expand capacity.", "Purchase the machinery after approval.", "買入設備以擴大產能。", "賣出庫存以降低儲存成本。",
       "公司計畫買進台積電以整合產能。",
       "公司買回股份以執行庫藏股計畫。", "公司收購企業以擴充產能。"]) {
@@ -228,7 +239,7 @@ describe("focused disclosure report", () => {
   it.each(analyticalFields)("rendered analytical %s: injected trading advice → reject revalidation", async (field) => {
     const f = await seeded();
     const report = await buildFocusedDisclosureResearchReport(f.persistence, f.query, { candidates: [candidate], readBudget: 10 });
-    for (const advice of ["Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票", "Buy TSMC", "Sell AAPL now", "I recommend buying TSMC", "買進台積電", "賣出2330"]) {
+    for (const advice of [...tickerOnlyAdvice, "Buy the stock now", "I recommend buying shares", "請買進股票", "推薦投資人賣出股票", "Buy TSMC", "Sell AAPL now", "I recommend buying TSMC", "買進台積電", "賣出2330"]) {
       const mutated = structuredClone(report);
       mutated.assessments[0]!.candidate[field] = advice;
       for (const locale of ["en", "zh-TW"] as const) expect(() => renderFocusedDisclosureResearchReportMarkdown(mutated, locale)).toThrow();

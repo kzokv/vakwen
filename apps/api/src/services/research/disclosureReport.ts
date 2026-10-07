@@ -16,15 +16,17 @@ const evidenceReferenceSchema = z.discriminatedUnion("kind", [
 // Scope trading commands to imperative/advisory contexts, not ordinary issuer operations.
 function hasTradingAdvice(text: string): boolean {
   const object = String.raw`(?:(?:the|this|these|those|your|more|some|all|its|company)\s+)?(?:[A-Za-z0-9][\w.-]*(?:['’]s)?\s+){0,2}(?:stock|stocks|shares?|securit(?:y|ies)|holdings?|position)\b`;
-  const imperative = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|add\s+to)\s+${object}`;
-  const inflected = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to)\s+${object}`;
+  const baseVerb = String.raw`(?:buy|sell|hold|purchase|accumulate|short|reduce|exit|liquidate|add\s+to)`;
+  const inflectedVerb = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|reduc(?:e|ing)|exit(?:ing)?|liquidat(?:e|ing)|add(?:ing)?\s+to)`;
+  const imperative = String.raw`${baseVerb}\s+${object}`;
+  const inflected = String.raw`${inflectedVerb}\s+${object}`;
   // Direct commands do not need a security suffix: names/tickers are open-ended.
   // Keep this broader object rule in directive contexts so issuer descriptions survive.
   const directiveStart = String.raw`(?:^|[.!?;:。！？；：\n])\s*(?:(?:[-*+>]|\d+[.)])\s*)?["'“‘「]*`;
-  const namedAction = String.raw`(?:buy|sell|hold|purchase|accumulate|short|liquidate)\s+[\p{L}\p{N}$]`;
+  const namedAction = String.raw`${baseVerb}\s+[\p{L}\p{N}$]`;
   const operationalObject = String.raw`(?:(?:the|our|its|their)\s+)?(?:inventory|shipments?|equipment|machinery|assets?|business(?:es)?|subsidiar(?:y|ies)|supplies|materials?)\b`;
-  const bareNamedAction = String.raw`(?:buy|sell|hold|purchase|accumulate|short|liquidate)\s+(?!${operationalObject})[\p{L}\p{N}$]`;
-  const namedInflection = String.raw`(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?|purchas(?:e|ing)|accumulat(?:e|ing)|short(?:ing)?|liquidat(?:e|ing))\s+[\p{L}\p{N}$]`;
+  const bareNamedAction = String.raw`${baseVerb}\s+(?!${operationalObject})[\p{L}\p{N}$]`;
+  const namedInflection = String.raw`${inflectedVerb}\s+[\p{L}\p{N}$]`;
   if (new RegExp(String.raw`${directiveStart}(?:please\s+)?${bareNamedAction}`, "iu").test(text)
     || new RegExp(String.raw`(?:${directiveStart}|\b(?:I|we)\s+)(?:recommend(?:ed|ing)?|advis(?:e|ed|ing)|suggest(?:ed|ing)?)\s+(?:(?:that\s+)?(?:you|investors?|traders?)\s+)?(?:to\s+)?${namedInflection}`, "iu").test(text)
     || new RegExp(String.raw`\b(?:you|investors?|traders?)\s+(?:(?:should|must|can|could|ought\s+to|need\s+to)\s+)?${namedAction}`, "iu").test(text)

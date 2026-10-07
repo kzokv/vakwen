@@ -175,3 +175,48 @@ it.each(["TWSE", "TPEX"] as const)("%s optional detailed event date: unavailable
   const missing = structuredClone(detail); missing.result.titles.splice(index, 1); missing.result.data[0].splice(index, 1);
   expect(parseOfficialAnnouncementDetail(missing, record, metadata).record.eventDate).toBeNull();
 });
+
+it.each((["TWSE", "TPEX"] as const).flatMap((venue) => (["corrects", "retracts"] as const).flatMap((kind) =>
+  ["2026-10-02", "2026-10-2", "2026/10/02", "2026/10/2", "2026年10月02日", "2026年10月2日", "115-10-02", "115-10-2", "115/10/02", "115/10/2", "115年10月02日", "115年10月2日"].map((citationDate) => ({ venue, kind, citationDate })))))(
+  "$venue $kind citation $citationDate: shared normalized selectors → same exact lineage in detail and failed-detail fallback", async ({ venue, kind, citationDate }) => {
+    const { record, detail } = fixture(venue);
+    const prior = { ...record, id: "cited_prior", publishedAt: "2026-10-02T01:00:00.000Z", subject: "公司資本支出公告" };
+    const notice = { ...record, subject: `${kind === "corrects" ? "更正" : "撤回"}本公司公告`, explanation: `原${citationDate}公告「公司\u3000資本支出公告」內容變更。` };
+    for (const field of ["主旨", "說明"]) detail.result.data[0][detail.result.titles.findIndex((title: { main: string }) => title.main.trim() === field)] = field === "主旨" ? notice.subject : notice.explanation;
+    expect(announcementCitationSelectors(notice)).toEqual({ titles: [prior.subject], days: ["2026-10-02"] });
+    const isolated = [
+      { ...prior, id: "wrong_issuer", issuerId: "other_issuer" }, { ...prior, id: "wrong_listing", listingId: "other_listing" },
+      { ...prior, id: "wrong_venue", venue: venue === "TWSE" ? "TPEX" as const : "TWSE" as const },
+      { ...prior, id: "future", publishedAt: "2026-10-04T01:00:00.000Z" },
+      { ...prior, id: "wrong_title", subject: "公司資本支出" },
+    ];
+    for (const targets of [[prior], [prior, { ...prior, id: "second_cited_prior" }], []]) {
+      const previous = [...targets, ...isolated];
+      const results = [parseOfficialAnnouncementDetail(detail, notice, metadata, previous),
+        await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), resolvePreviousRecords: async () => previous })];
+      expect(results[0]!.detailStatus).toBe("available");
+      expect(results[0]!.record.provenance.parserVersion).toBe("mops-announcement-detail/1.0.2");
+      expect(results[1]!.detailStatus).toBe("restricted");
+      for (const result of results) {
+        expect(result.record.relations).toEqual(targets.length === 1 ? [{ kind, targetAnnouncementId: prior.id }] : []);
+        expect(result.record.unresolvedRelations).toEqual(targets.length === 2 ? [{ kind, candidateAnnouncementIds: [prior.id, "second_cited_prior"] }] : []);
+        expect(result.record.unknownRelationTargets).toEqual(targets.length === 0 ? [{ kind }] : []);
+        expect(result.record.explanation).toBe(notice.explanation);
+      }
+    }
+  });
+
+it.each(["2026/02/30", "115-02-30", "2026/13/02", "2026/10-02", "2026年10/02日", "12026/10/02", "2026/10/022"])(
+  "invalid citation %s: detail and raw fallback → no fabricated predecessor relation", async (citationDate) => {
+    const { record, detail } = fixture("TWSE");
+    const prior = { ...record, id: "prior", publishedAt: "2026-10-02T01:00:00.000Z", subject: "公司資本支出公告" };
+    const notice = { ...record, subject: "更正本公司公告", explanation: `原${citationDate}公告「${prior.subject}」內容變更。` };
+    detail.result.data[0][6] = notice.subject; detail.result.data[0][9] = notice.explanation;
+    expect(announcementCitationSelectors(notice).days).toEqual([]);
+    for (const result of [parseOfficialAnnouncementDetail(detail, notice, metadata, [prior]),
+      await enrichOfficialAnnouncement(notice, { fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response("restricted", { status: 403 })), previousRecords: [prior] })]) {
+      expect(result.record.relations).toEqual([]);
+      expect(result.record.unknownRelationTargets).toEqual([{ kind: "corrects" }]);
+      expect(result.reasonCodes).toContain("unresolved_correction_reference");
+    }
+  });
