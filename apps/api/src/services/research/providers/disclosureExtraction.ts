@@ -25,6 +25,25 @@ export function resolveDisclosureMediaType(bytes: Uint8Array, declared: string, 
   return type || "application/octet-stream";
 }
 
+/** Known state/path setup only; unknown, text-showing, and painting operations are never blank proof. */
+export function hasOnlyNonPaintingPdfOperations(operations: readonly number[], ops: typeof import("pdfjs-dist/legacy/build/pdf.mjs").OPS): boolean {
+  // Checked against PDF.js CanvasGraphics: constructPath dispatches a paint operation,
+  // and forms/groups/annotations may composite content, so none is included here.
+  const nonPainting = new Set<number>([
+    ops.dependency, ops.save, ops.restore, ops.transform,
+    ops.setLineWidth, ops.setLineCap, ops.setLineJoin, ops.setMiterLimit, ops.setDash, ops.setRenderingIntent, ops.setFlatness, ops.setGState,
+    ops.moveTo, ops.lineTo, ops.curveTo, ops.curveTo2, ops.curveTo3, ops.closePath, ops.rectangle, ops.endPath, ops.clip, ops.eoClip,
+    ops.beginText, ops.endText, ops.setCharSpacing, ops.setWordSpacing, ops.setHScale, ops.setLeading, ops.setFont,
+    ops.setTextRenderingMode, ops.setTextRise, ops.moveText, ops.setLeadingMoveText, ops.setTextMatrix, ops.nextLine,
+    ops.setCharWidth, ops.setCharWidthAndBounds,
+    ops.setStrokeColorSpace, ops.setFillColorSpace, ops.setStrokeColor, ops.setStrokeColorN, ops.setFillColor, ops.setFillColorN,
+    ops.setStrokeGray, ops.setFillGray, ops.setStrokeRGBColor, ops.setFillRGBColor, ops.setStrokeCMYKColor, ops.setFillCMYKColor,
+    ops.setStrokeTransparent, ops.setFillTransparent,
+    ops.markPoint, ops.markPointProps, ops.beginMarkedContent, ops.beginMarkedContentProps, ops.endMarkedContent, ops.beginCompat, ops.endCompat,
+  ]);
+  return operations.every((operation) => nonPainting.has(operation));
+}
+
 /** Acquisition-only extraction: no URLs, network access, or verified-claim promotion. */
 export async function extractDisclosureContent(
   bytes: Uint8Array,
@@ -121,7 +140,6 @@ export async function extractDisclosureContent(
     const document = await task.promise;
     if (document.numPages > MAX_PAGES) throw new Error("disclosure_extraction_page_limit");
     const confirmedEmptyPages: number[] = [];
-    const nonPaintingOperations = new Set<number>([OPS.dependency, OPS.save, OPS.restore, OPS.transform]);
     for (let page = 1; page <= document.numPages; page++) {
       const pdfPage = await document.getPage(page);
       const content = await pdfPage.getTextContent();
@@ -130,12 +148,12 @@ export async function extractDisclosureContent(
       append(text, page);
       if (!text) {
         const operators = await pdfPage.getOperatorList();
-        if (operators.fnArray.every((operation) => nonPaintingOperations.has(operation))) confirmedEmptyPages.push(page);
+        if (hasOnlyNonPaintingPdfOperations(operators.fnArray, OPS)) confirmedEmptyPages.push(page);
       }
       pdfPage.cleanup();
     }
     if (!blocks.length && confirmedEmptyPages.length !== document.numPages) throw new Error("disclosure_extraction_no_text");
-    return { blocks, totalPages: document.numPages, confirmedEmptyPages, extractionVersion: `disclosure-pdfjs-${version}/2.0.0` };
+    return { blocks, totalPages: document.numPages, confirmedEmptyPages, extractionVersion: `disclosure-pdfjs-${version}/2.0.1` };
   } finally {
     await task.destroy();
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractDisclosureContent } from "../../src/services/research/providers/disclosureExtraction.js";
+import { extractDisclosureContent, hasOnlyNonPaintingPdfOperations } from "../../src/services/research/providers/disclosureExtraction.js";
 
 import { twoPagePdf } from "../fixtures/research/disclosurePdf.js";
 
@@ -64,4 +64,26 @@ it("physical PDF page: more than retrieval character budget → reject without r
   expect(supported.blocks[0]?.text).toHaveLength(50_000);
   expect(supported.blocks[0]?.page).toBe(1);
   expect(supported.totalPages).toBe(2);
+});
+
+
+it.each([
+  ["text setup", "BT /F1 12 Tf 1 Tc 2 Tw 95 Tz 14 TL 0 Tr 3 Ts 40 700 Td 0 -14 TD 1 0 0 1 0 0 Tm T* ET"],
+  ["graphics setup", "q 2 w 1 J 2 j 10 M [3 2] 0 d /RelativeColorimetric ri 1 i 0.5 G 0.5 g 1 0 0 RG 0 1 0 rg 0 0 0 1 K 0 0 0 0 k Q"],
+  ["marked content", "/Artifact BMC BT /F1 12 Tf ET EMC"],
+] as const)("PDF %s without paint: actual operator list → confirmed blank physical page", async (_kind, stream) => {
+  const result = await extractDisclosureContent(twoPagePdf(["BT /F1 12 Tf 40 700 Td (Evidence) Tj ET", stream]), "application/pdf", "issuer", "setup");
+  expect(result.confirmedEmptyPages).toEqual([2]);
+  expect(result.blocks.map((block) => block.page)).toEqual([1]);
+  expect(result.extractionVersion).toMatch(/pdfjs-.*\/2\.0\.1$/);
+  expect(result).not.toHaveProperty("verifiedClaims");
+});
+
+it("PDF operator safety: empty text extraction → painting/compositing and unknown operations never prove blank", async () => {
+  const { OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  for (const operation of [OPS.showText, OPS.showSpacedText, OPS.nextLineShowText, OPS.nextLineSetSpacingShowText,
+    OPS.stroke, OPS.fill, OPS.shadingFill, OPS.constructPath, OPS.rawFillPath, OPS.paintImageXObject,
+    OPS.paintInlineImageXObject, OPS.paintImageMaskXObject, OPS.paintFormXObjectBegin, OPS.endGroup, OPS.endAnnotation, 999_999]) {
+    expect(hasOnlyNonPaintingPdfOperations([OPS.beginText, OPS.setFont, operation, OPS.endText], OPS)).toBe(false);
+  }
 });

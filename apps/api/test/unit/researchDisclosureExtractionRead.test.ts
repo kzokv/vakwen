@@ -13,7 +13,7 @@ function pdfWithSecondPage(stream: string): Uint8Array {
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 7 0 R >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     ...["BT /F1 12 Tf 40 700 Td (Revenue 100 TWD) Tj ET", stream].map((text) => `<< /Length ${Buffer.byteLength(text)} >>\nstream\n${text}\nendstream`),
   ];
@@ -96,6 +96,8 @@ describe("disclosure extraction through retained public reads", () => {
   it.each([
     ["blank", "", true],
     ["nonpainting", "q 1 0 0 1 0 0 cm Q", true],
+    ["text setup", "BT /F1 12 Tf 1 Tc 2 Tw 90 Tz 12 TL 0 Tr 2 Ts 40 700 Td T* ET", true],
+    ["graphics setup", "q 2 w 1 J 2 j 10 M [3 2] 0 d 0.5 G 0.5 g 1 0 0 RG 0 1 0 rg Q", true],
     ["vector", "0 0 100 100 re f", false],
     ["image", "q 10 0 0 10 0 0 cm BI /W 1 /H 1 /CS /RGB /BPC 8 /F /AHx ID FF0000> EI Q", false],
   ] as const)("PDF text plus %s page: operator evidence → distinguish proven empty from unextracted visual content", async (_kind, stream, confirmedEmpty) => {
