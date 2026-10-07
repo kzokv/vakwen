@@ -1,3 +1,4 @@
+import { disclosureAttachmentRevisionScenario } from "../fixtures/research/disclosureAttachmentRevisionScenario.js";
 import { disclosureReversionScenario } from "../fixtures/research/disclosureRevisionScenario.js";
 import { Client, Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,6 +61,40 @@ describePostgres("disclosure memory/Postgres conformance", () => {
       expect(await persistence.listResearchDisclosureArtifacts(scope)).toEqual(before);
       await expect(persistence.appendResearchDisclosureArtifacts([{ ...raw, id: "new_oversized", verifiedClaims: [claim] }])).rejects.toThrow("50,000 combined block and claim characters");
       expect((await getDisclosureArtifact(persistence, { subject: f.subject, context: f.context, artifactId: raw.id })).page.retainedCharacters).toBe(50_000);
+    }
+  });
+
+  it.each(["TWSE", "TPEX"] as const)("%s same URL attachment A→B→B→failure→failure→A: immutable revisions and replay", async (venue) => {
+    for (const persistence of [new MemoryPersistence(), postgres]) {
+      const result = await disclosureAttachmentRevisionScenario(persistence, venue);
+      expect(result.requests).toBe(7);
+      expect(result.failureReport.assessments.map((assessment) => assessment.support)).toEqual(["provisional", "withheld", "withheld"]);
+      expect(result.failureReport.assessments[0]!.sourceSupport).toBe("supported");
+      expect(result.failureReport.assessments[1]!.reasonCodes).toContain("artifact_not_returned");
+      expect(result.failureReport.assessments[2]!.reasonCodes).toContain("artifact_parent_not_returned");
+      expect(result.counts).toEqual([1, 1, 0, 1, 0, 1, 0]);
+      expect(result.records).toHaveLength(4);
+      expect(result.artifacts).toHaveLength(7);
+      expect(result.reads.map((read) => read.artifact?.blocks[0]?.text ?? null)).toEqual(["A", "B", "B", null, null, "A", "A"]);
+      expect(result.reads[0]!.artifact!.id).not.toBe(result.reads[5]!.artifact!.id);
+      expect(result.reads[0]!.artifact!.contentHash).toBe(result.reads[5]!.artifact!.contentHash);
+      expect(result.reads[2]).toMatchObject({ artifact: result.reads[1]!.artifact });
+      expect(result.reads[6]).toMatchObject({ artifact: result.reads[5]!.artifact });
+      expect(result.oldRead.artifact).toEqual(result.reads[0]!.artifact);
+      expect(result.historical.items[0]!.id).toBe(result.pages[1]!.items[0]!.id);
+      for (const step of [3, 4]) {
+        expect(result.pages[step]!.scan.status).toBe("current");
+        expect(result.pages[step]!.quality.readiness.currentAssessment).toBe("degraded");
+        expect(result.pages[step]!.quality.reasonCodes).toContain("attachment_refresh_failed");
+        expect(result.pages[step]!.items[0]!.quality).toBe("available");
+        expect(result.pages[step]!.items[0]!.explanation.text).toBe(result.pages[0]!.items[0]!.explanation.text);
+        expect(result.reads[step]!.quality.status).toBe("restricted");
+        expect(result.reads[step]!.artifact).toBeNull();
+      }
+      for (const step of [1, 3, 5]) {
+        expect(result.pages[step]!.items[0]!.relations).toEqual([{ kind: "supersedes", targetAnnouncementId: result.pages[step - 1]!.items[0]!.id }]);
+      }
+      expect(result.pages[6]!.quality.readiness.currentAssessment).toBe("ready");
     }
   });
   it.each(["TWSE", "TPEX"] as const)("%s detail reversion: memory/Postgres acquisition → distinct active recurrence and replay parity", async (venue) => {

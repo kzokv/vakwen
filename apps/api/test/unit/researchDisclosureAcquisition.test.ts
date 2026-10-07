@@ -1,3 +1,5 @@
+import * as announcementDetails from "../../src/services/research/providers/mopsAnnouncementDetails.js";
+import { disclosureAttachmentRevisionScenario } from "../fixtures/research/disclosureAttachmentRevisionScenario.js";
 import { disclosureReversionScenario } from "../fixtures/research/disclosureRevisionScenario.js";
 import { twoPagePdf } from "../fixtures/research/disclosurePdf.js";
 import { getResearchManifest } from "../../src/services/research/service.js";
@@ -84,8 +86,8 @@ it("attachment retry: official detail reference with restricted first fetch → 
   expect(await persistence.listResearchDisclosureArtifacts(query)).toHaveLength(1);
   restricted = false;
   await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: "2026-10-04T05:15:00.000Z", acquisitionRunId: "job1" });
-  expect(await persistence.listResearchAnnouncements(query)).toHaveLength(1);
-  const artifacts = await persistence.listResearchDisclosureArtifacts(query); expect(artifacts).toHaveLength(2);
+  const recoveredRecords = await persistence.listResearchAnnouncements(query); expect(recoveredRecords).toHaveLength(2);
+  const artifacts = await persistence.listResearchDisclosureArtifacts(query); expect(artifacts).toHaveLength(3);
   const attachment = artifacts.find((artifact) => artifact.sourceUrl.endsWith("retained-example.txt"))!;
   expect(attachment.blocks[0]?.text).toBe("retained evidence");
   expect(attachment.provenance.contentHash).toBe(attachment.contentHash); expect(attachment.provenance.sourceUrl).toBe(attachment.sourceUrl);
@@ -99,7 +101,7 @@ it("attachment retry: official detail reference with restricted first fetch → 
   detailRestricted = true;
   await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: "2026-10-04T05:30:00.000Z", acquisitionRunId: "job1" });
   const afterFailure = await persistence.listResearchAnnouncements(query);
-  expect(afterFailure).toEqual(records);
+  expect(afterFailure).toEqual(recoveredRecords);
   expect(await persistence.listResearchDisclosureArtifacts(query)).toEqual(artifacts);
   const finalScans = (await persistence.listResearchDisclosureScans(query)).filter((scan) => scan.listingId === identity.listing.id);
   expect(finalScans).toHaveLength(3); expect(new Set(finalScans.map((scan) => scan.provenance.id)).size).toBe(3);
@@ -236,7 +238,7 @@ it.each([
     const later = "2026-10-04T05:15:00.000Z";
     await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: later, acquisitionRunId: "body_recovery" });
     const afterRetry = await persistence.listResearchDisclosureArtifacts({ ...query, knowledgeAt: later, effectiveAt: later });
-    expect(afterRetry).toHaveLength(2);
+    expect(afterRetry).toHaveLength(3);
     expect(afterRetry.find((artifact) => artifact.sourceUrl.endsWith("attachment.pdf"))?.blocks[0]?.text).toBe("Recovered issuer evidence");
   }
 });
@@ -269,14 +271,12 @@ it.each(["declared", "streamed", "physical_page"] as const)("oversized %s attach
   expect(result.quality.reasonCodes).toContain(reasonCode);
   expect(result.quality.recovery[0]).toContain("Operator action required");
   if (mode === "streamed") expect(cancel).toHaveBeenCalledOnce();
-  const explanation = (await persistence.listResearchDisclosureArtifacts(query))[0]!;
-  const retained = { ...explanation, id: attempts[0]!.artifactId, sourceUrl: attempts[0]!.sourceUrl };
-  await persistence.appendResearchDisclosureArtifacts([retained]);
   await runOfficialDisclosureAcquisition(persistence, { fetchImpl, retrievedAt: "2026-10-04T05:15:00.000Z", acquisitionRunId: "retained_retry" });
-  expect(vi.mocked(fetchImpl).mock.calls.filter(([url]) => String(url).endsWith("oversized.pdf"))).toHaveLength(1);
-  const preserved = await getDisclosureArtifact(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: "2026-10-04T05:15:00.000Z" }, artifactId: retained.id });
-  expect(preserved.quality.status).toBe("available");
-  expect(preserved.quality.reasonCodes).toEqual([]);
+  expect(vi.mocked(fetchImpl).mock.calls.filter(([url]) => String(url).endsWith("oversized.pdf"))).toHaveLength(2);
+  expect(await persistence.listResearchDisclosureArtifacts(query)).toHaveLength(1);
+  const retried = await getDisclosureArtifact(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: "2026-10-04T05:15:00.000Z" }, artifactId: attempts[0]!.artifactId });
+  expect(retried.quality.status).toBe("processing_failed");
+  expect(retried.quality.reasonCodes).toContain(reasonCode);
 });
 
 it.each(["collection", "detail", "attachment"] as const)("lease abort during %s request → stop acquisition without a completed scan", async (stage) => {
@@ -516,4 +516,57 @@ it.each([
     const read = await getDisclosureArtifact(persistence, { subject: { kind: "listing_id", listingId: identity.listing.id }, context: { knowledgeAt: at }, artifactId: artifact.id });
     expect(read.artifact?.blocks[0]?.text).toBe("重大訊息");
   }
+});
+
+  it.each(["TWSE", "TPEX"] as const)("%s same URL attachment A→B→B→failure→failure→A: immutable revisions and replay", async (venue) => {
+    for (const persistence of [new MemoryPersistence()]) {
+      const result = await disclosureAttachmentRevisionScenario(persistence, venue);
+      expect(result.requests).toBe(7);
+      expect(result.failureReport.assessments.map((assessment) => assessment.support)).toEqual(["provisional", "withheld", "withheld"]);
+      expect(result.failureReport.assessments[0]!.sourceSupport).toBe("supported");
+      expect(result.failureReport.assessments[1]!.reasonCodes).toContain("artifact_not_returned");
+      expect(result.failureReport.assessments[2]!.reasonCodes).toContain("artifact_parent_not_returned");
+      expect(result.counts).toEqual([1, 1, 0, 1, 0, 1, 0]);
+      expect(result.records).toHaveLength(4);
+      expect(result.artifacts).toHaveLength(7);
+      expect(result.reads.map((read) => read.artifact?.blocks[0]?.text ?? null)).toEqual(["A", "B", "B", null, null, "A", "A"]);
+      expect(result.reads[0]!.artifact!.id).not.toBe(result.reads[5]!.artifact!.id);
+      expect(result.reads[0]!.artifact!.contentHash).toBe(result.reads[5]!.artifact!.contentHash);
+      expect(result.reads[2]).toMatchObject({ artifact: result.reads[1]!.artifact });
+      expect(result.reads[6]).toMatchObject({ artifact: result.reads[5]!.artifact });
+      expect(result.oldRead.artifact).toEqual(result.reads[0]!.artifact);
+      expect(result.historical.items[0]!.id).toBe(result.pages[1]!.items[0]!.id);
+      for (const step of [3, 4]) {
+        expect(result.pages[step]!.scan.status).toBe("current");
+        expect(result.pages[step]!.quality.readiness.currentAssessment).toBe("degraded");
+        expect(result.pages[step]!.quality.reasonCodes).toContain("attachment_refresh_failed");
+        expect(result.pages[step]!.items[0]!.quality).toBe("available");
+        expect(result.pages[step]!.items[0]!.explanation.text).toBe(result.pages[0]!.items[0]!.explanation.text);
+        expect(result.reads[step]!.quality.status).toBe("restricted");
+        expect(result.reads[step]!.artifact).toBeNull();
+      }
+      for (const step of [1, 3, 5]) {
+        expect(result.pages[step]!.items[0]!.relations).toEqual([{ kind: "supersedes", targetAnnouncementId: result.pages[step - 1]!.items[0]!.id }]);
+      }
+      expect(result.pages[6]!.quality.readiness.currentAssessment).toBe("ready");
+    }
+  });
+
+it("duplicate attachment locator: one response per scan → consistent content identities", async () => {
+  const original = announcementDetails.enrichOfficialAnnouncement;
+  const spy = vi.spyOn(announcementDetails, "enrichOfficialAnnouncement").mockImplementation(async (...args) => {
+    const result = await original(...args);
+    const attachment = result.record.attachments.find((entry) => entry.sourceUrl.endsWith("unchanged.txt"));
+    if (attachment) result.record.attachments.push({ ...attachment, id: "duplicate_locator" });
+    return result;
+  });
+  try {
+    const result = await disclosureAttachmentRevisionScenario(new MemoryPersistence(), "TWSE");
+    expect(result.requests).toBe(7);
+    for (const page of result.pages) {
+      const attachments = page.items[0]!.attachments.filter((entry) => entry.sourceUrl.endsWith("unchanged.txt"));
+      expect(attachments).toHaveLength(2);
+      expect(attachments[0]!.contentIdentity).toEqual(attachments[1]!.contentIdentity);
+    }
+  } finally { spy.mockRestore(); }
 });

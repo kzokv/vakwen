@@ -44,7 +44,7 @@ function announcementContentVariant(record: ResearchAnnouncementRecord): string 
     content: [record.subject, record.ruleClause, record.eventDate, record.explanation], parserVersion: record.provenance.parserVersion,
     detailQuality: record.detailQuality ? { ...record.detailQuality, reasonCodes: [...record.detailQuality.reasonCodes].sort() } : undefined,
     attachments: record.attachments.map((attachment) => ({ title: attachment.title, sourceUrl: attachment.sourceUrl,
-      mediaType: attachment.mediaType, hasArtifact: attachment.artifactId !== null })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+      mediaType: attachment.mediaType, contentIdentity: attachment.contentIdentity, hasArtifact: attachment.artifactId !== null })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     relations: record.relations.filter((relation) => relation.kind !== "supersedes").sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     unresolvedRelations: record.unresolvedRelations, unknownRelationTargets: record.unknownRelationTargets,
   }));
@@ -102,54 +102,76 @@ export async function runOfficialDisclosureAcquisition(persistence: Persistence,
         if (activeRecords.length !== tips.length) throw new Error("disclosure_revision_lineage_unresolved");
         const current = activeRecords.length === 1 ? activeRecords[0] : undefined;
         const priorSuccessfulDetail = enriched.detailStatus !== "available" && current?.collectionRecordId === collectionRecordId && current.detailQuality?.status === "available" ? current : undefined;
-        const variant = announcementContentVariant(enriched.record);
-        const retainedRecord = priorSuccessfulDetail ?? (current?.collectionRecordId === collectionRecordId && announcementContentVariant(current) === variant ? current : undefined);
-        record = retainedRecord ? structuredClone(retainedRecord) : { ...enriched.record, collectionRecordId,
-          id: disclosureId("ann", collectionRecordId, variant, ...tips.map((tip) => tip.id)) };
-        if (!retainedRecord) {
-          record.provenance = { ...record.provenance, id: disclosureId("pr", record.id, record.provenance.id) };
-          if (record.collectionProvenance) record.collectionProvenance = { ...record.collectionProvenance,
-            id: disclosureId("pr", record.id, record.collectionProvenance.id, "collection") };
-          record.attachments = record.attachments.map((attachment) => attachment.id === disclosureId("att", collectionRecordId, "explanation")
-            ? { ...attachment, id: disclosureId("att", record.id, "explanation"), artifactId: disclosureId("art", record.id, "explanation") }
-            : { ...attachment, id: disclosureId("att", record.id, attachment.sourceUrl), artifactId: attachment.artifactId ? disclosureId("art", record.id, attachment.sourceUrl) : null });
-          for (const prior of tips) record.relations.push({ kind: "supersedes", targetAnnouncementId: prior.id });
-        }
-        detailAttempts[detailAttempts.length - 1]!.announcementId = record.id;
-        options.signal?.throwIfAborted();
-        if (!retainedRecord) await persistence.appendResearchAnnouncements([record]);
-        const stableRecord = retainedRecord ?? record;
-        const explanation = retainAnnouncementExplanation(stableRecord);
-        const artifactQuery = { issuerId: record.issuerId, effectiveAt: readAt, knowledgeAt: readAt };
-        if ((await persistence.listResearchDisclosureArtifacts({ ...artifactQuery, artifactId: explanation.id })).length === 0) await persistence.appendResearchDisclosureArtifacts([explanation]);
-        for (const attachment of record.attachments.filter((item) => item.artifactId !== explanation.id && item.artifactId !== null)) {
-          artifactOwners.set(attachment.artifactId!, listingKey);
-          if ((await persistence.listResearchDisclosureArtifacts({ ...artifactQuery, artifactId: attachment.artifactId! })).some((artifact) => artifact.state === "available")) continue;
-          let attemptStatus: NonNullable<ResearchDisclosureScan["artifactAttempts"]>[number]["status"] = "unavailable";
+        // Refresh every external attachment before deciding whether this observation
+        // is a replay. A locator is not immutable source content.
+        const candidate = structuredClone(priorSuccessfulDetail ?? enriched.record);
+        const candidateExplanationId = retainAnnouncementExplanation(candidate).id;
+        const fetchedAttachments = new Map<string, {
+          bytes?: Uint8Array; extracted?: Awaited<ReturnType<typeof extractDisclosureContent>>;
+          observedAt?: string; processedAt: string;
+          identity: NonNullable<ResearchAnnouncementRecord["attachments"][number]["contentIdentity"]>;
+        }>();
+        for (const attachment of candidate.attachments.filter((item) => item.artifactId !== candidateExplanationId && item.artifactId !== null)) {
+          const alreadyFetched = fetchedAttachments.get(attachment.sourceUrl);
+          if (alreadyFetched) { attachment.contentIdentity = alreadyFetched.identity; continue; }
           let fetched = false;
-          let reasonCode: "disclosure_source_too_large" | "disclosure_extraction_physical_page_limit" | undefined;
-          let artifact: ResearchDisclosureArtifact | undefined;
           try {
             const retained = await officialResponse(fetchImpl, attachment.sourceUrl, options.signal);
             const artifactObservedAt = options.retrievedAt ?? new Date().toISOString();
             fetched = true;
             const mediaType = resolveDisclosureMediaType(retained.bytes, retained.mediaType, attachment.mediaType);
-            const extracted = await extractDisclosureContent(retained.bytes, `${mediaType}${retained.mediaType.includes(";") ? retained.mediaType.slice(retained.mediaType.indexOf(";")) : ""}`, record.issuerId, attachment.artifactId!);
-            artifact = { ...explanation, ...extracted, id: attachment.artifactId!, sourceUrl: attachment.sourceUrl,
-              contentHash: createHash("sha256").update(retained.bytes).digest("hex"), retainedBytesBase64: Buffer.from(retained.bytes).toString("base64"), mediaType, sourceMediaType: retained.mediaType, state: "available", verifiedClaims: [],
-              parentProvenance: record.provenance,
-              provenance: { ...record.provenance, id: disclosureId("pr", attachment.artifactId!, createHash("sha256").update(retained.bytes).digest("hex")), sourceUrl: attachment.sourceUrl, contentHash: createHash("sha256").update(retained.bytes).digest("hex"), parserVersion: extracted.extractionVersion, retrievedAt: artifactObservedAt, processedAt: options.retrievedAt ?? new Date().toISOString(), acquisitionRunId } };
-            attemptStatus = "retained";
+            const extracted = await extractDisclosureContent(retained.bytes, `${mediaType}${retained.mediaType.includes(";") ? retained.mediaType.slice(retained.mediaType.indexOf(";")) : ""}`, candidate.issuerId, attachment.artifactId!);
+            attachment.contentIdentity = { status: "retained", contentHash: createHash("sha256").update(retained.bytes).digest("hex"),
+              extractionVersion: extracted.extractionVersion, mediaType, sourceMediaType: retained.mediaType };
+            fetchedAttachments.set(attachment.sourceUrl, { bytes: retained.bytes, extracted, observedAt: artifactObservedAt,
+              processedAt: options.retrievedAt ?? new Date().toISOString(), identity: attachment.contentIdentity });
           } catch (error) {
             options.signal?.throwIfAborted();
-            reasonCode = error instanceof Error && (error.message === "disclosure_source_too_large" || error.message === "disclosure_extraction_physical_page_limit") ? error.message : undefined;
-            attemptStatus = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : fetched || reasonCode ? "processing_failed" : "unavailable";
+            const reasonCode = error instanceof Error && (error.message === "disclosure_source_too_large" || error.message === "disclosure_extraction_physical_page_limit") ? error.message : undefined;
+            const status = error instanceof Error && error.message === "disclosure_access_restricted" ? "restricted" : fetched || reasonCode ? "processing_failed" : "unavailable";
+            attachment.contentIdentity = { status, ...(reasonCode ? { reasonCode } : {}) };
+            fetchedAttachments.set(attachment.sourceUrl, { processedAt: options.retrievedAt ?? new Date().toISOString(), identity: attachment.contentIdentity });
           }
-          options.signal?.throwIfAborted();
-          if (artifact) await persistence.appendResearchDisclosureArtifacts([artifact]);
-          // A failed request is an acquisition attempt, never a retained empty
-          // artifact. Subsequent scheduled runs retry unresolved references.
-          artifactAttempts.push({ artifactId: attachment.artifactId!, sourceUrl: attachment.sourceUrl, attemptedAt: options.retrievedAt ?? new Date().toISOString(), status: attemptStatus, ...(reasonCode ? { reasonCode } : {}) });
+        }
+        const variant = announcementContentVariant(candidate);
+        const retainedRecord = current?.collectionRecordId === collectionRecordId && announcementContentVariant(current) === variant ? current : undefined;
+        record = retainedRecord ? structuredClone(retainedRecord) : { ...candidate, collectionRecordId,
+          id: disclosureId("ann", collectionRecordId, variant, ...tips.map((tip) => tip.id)) };
+        if (!retainedRecord) {
+          record.provenance = { ...record.provenance, id: disclosureId("pr", record.id, record.provenance.id), processedAt: options.retrievedAt ?? new Date().toISOString() };
+          if (record.collectionProvenance) record.collectionProvenance = { ...record.collectionProvenance,
+            id: disclosureId("pr", record.id, record.collectionProvenance.id, "collection") };
+          record.attachments = record.attachments.map((attachment) => attachment.artifactId === candidateExplanationId
+            ? { ...attachment, id: disclosureId("att", record.id, "explanation"), artifactId: disclosureId("art", record.id, "explanation") }
+            : { ...attachment, id: disclosureId("att", record.id, attachment.sourceUrl), artifactId: attachment.artifactId ? disclosureId("art", record.id, attachment.sourceUrl) : null });
+          record.relations = record.relations.filter((relation) => relation.kind !== "supersedes");
+          for (const prior of tips) record.relations.push({ kind: "supersedes", targetAnnouncementId: prior.id });
+        }
+        detailAttempts[detailAttempts.length - 1]!.announcementId = record.id;
+        options.signal?.throwIfAborted();
+        if (!retainedRecord) await persistence.appendResearchAnnouncements([record]);
+        const explanation = retainAnnouncementExplanation(record);
+        const artifactReadAt = options.retrievedAt ?? new Date().toISOString();
+        const artifactQuery = { issuerId: record.issuerId, effectiveAt: artifactReadAt, knowledgeAt: artifactReadAt };
+        if ((await persistence.listResearchDisclosureArtifacts({ ...artifactQuery, artifactId: explanation.id })).length === 0) await persistence.appendResearchDisclosureArtifacts([explanation]);
+        for (const attachment of record.attachments.filter((item) => item.artifactId !== explanation.id && item.artifactId !== null)) {
+          const retained = fetchedAttachments.get(attachment.sourceUrl)!;
+          const identity = retained.identity;
+          artifactOwners.set(attachment.artifactId!, listingKey);
+          if (identity.status === "retained" && (await persistence.listResearchDisclosureArtifacts({ ...artifactQuery, artifactId: attachment.artifactId! })).length === 0) {
+            const artifact: ResearchDisclosureArtifact = { ...explanation, ...retained.extracted!, id: attachment.artifactId!, sourceUrl: attachment.sourceUrl,
+              blocks: retained.extracted!.blocks.map((block, index) => ({ ...block, id: disclosureId("block", attachment.artifactId!, JSON.stringify([block.page, block.table, index, block.text])) })),
+              contentHash: identity.contentHash, retainedBytesBase64: Buffer.from(retained.bytes!).toString("base64"), mediaType: identity.mediaType, sourceMediaType: identity.sourceMediaType, state: "available", verifiedClaims: [],
+              parentProvenance: record.provenance,
+              provenance: { ...record.provenance, id: disclosureId("pr", attachment.artifactId!, identity.contentHash), sourceUrl: attachment.sourceUrl, contentHash: identity.contentHash,
+                parserVersion: identity.extractionVersion, retrievedAt: retained.observedAt!, processedAt: retained.processedAt, acquisitionRunId } };
+            options.signal?.throwIfAborted();
+            await persistence.appendResearchDisclosureArtifacts([artifact]);
+          }
+          // Failure gets an unresolved reference in its own immutable observation,
+          // not an empty artifact or a claim that cached bytes are still current.
+          artifactAttempts.push({ artifactId: attachment.artifactId!, sourceUrl: attachment.sourceUrl, attemptedAt: retained.processedAt, status: identity.status,
+            ...(identity.status !== "retained" && identity.reasonCode ? { reasonCode: identity.reasonCode } : {}) });
         }
         if (!retainedRecord) count++;
       }

@@ -11,7 +11,12 @@ export const disclosureProvenanceSchema = z.object({
   parserVersion: z.string().min(1), usagePolicyVersion: z.literal("taiwan-open-data/1.0.0"),
 }).strict();
 export const disclosureRelationSchema = z.object({ kind: z.enum(["corrects", "retracts", "supersedes"]), targetAnnouncementId: id }).strict();
-export const disclosureAttachmentSchema = z.object({ id, artifactId: id.nullable(), title: z.string(), sourceUrl: safeUrl, mediaType: z.string() }).strict();
+export const disclosureAttachmentSchema = z.object({ id, artifactId: id.nullable(), title: z.string(), sourceUrl: safeUrl, mediaType: z.string(),
+  contentIdentity: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("retained"), contentHash: z.string().regex(/^[a-f0-9]{64}$/), extractionVersion: z.string(), mediaType: z.string(), sourceMediaType: z.string() }).strict(),
+    z.object({ status: z.enum(["restricted", "processing_failed", "unavailable"]), reasonCode: z.enum(["disclosure_source_too_large", "disclosure_extraction_physical_page_limit"]).optional() }).strict(),
+  ]).optional(),
+}).strict();
 export const disclosureUnresolvedRelationSchema = z.object({
   kind: z.enum(["corrects", "retracts"]),
   candidateAnnouncementIds: z.array(id).min(2).refine((ids) => ids.every((value, index) => index === 0 || ids[index - 1]! < value), "Candidate IDs must be unique and sorted"),

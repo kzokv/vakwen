@@ -131,15 +131,16 @@ export async function listMaterialAnnouncements(persistence: Persistence, input:
   const more = offset + items.length < rows.length;
   const nextCursor = more ? encode({ version: VERSION, purpose: "announcements", auth: options.authorizationBinding ?? "internal", issuedAt: cursor?.issuedAt ?? Date.now(), query: { ...query, subject: identity.selector }, requestedSubject: cursor?.requestedSubject ?? parsed.subject, after: items.at(-1)!.id }, options) : null;
   const status = applicable ? scanState(selectedScan, query.context.effectiveAt) : "not_applicable";
+  const attachmentRefreshFailed = latestAttempt?.artifactAttempts?.some((attempt) => attempt.status !== "retained") ?? false;
   const quality: MaterialAnnouncementsOutput["quality"] = {
     freshness: status === "current" ? "current" : status === "stale" ? "stale" : !applicable ? "not_applicable" : "indeterminate",
     completeness: !applicable ? "not_applicable" : exhaustive ? more || offset > 0 ? "partial" : "complete" : "indeterminate",
     confidence: selectedScan?.status === "success" ? "supported" : "indeterminate",
-    readiness: { factualUse: !applicable ? "not_applicable" : items.some((item) => item.quality === "available") ? "degraded" : "blocked", currentAssessment: !applicable ? "not_applicable" : status === "current" ? latestAttempt?.status === "success" ? "ready" : "degraded" : "blocked", exhaustiveConclusion: !applicable ? "not_applicable" : exhaustive && !more && offset === 0 ? "ready" : "blocked" },
+    readiness: { factualUse: !applicable ? "not_applicable" : items.some((item) => item.quality === "available") ? "degraded" : "blocked", currentAssessment: !applicable ? "not_applicable" : status === "current" ? latestAttempt?.status === "success" && !attachmentRefreshFailed ? "ready" : "degraded" : "blocked", exhaustiveConclusion: !applicable ? "not_applicable" : exhaustive && !more && offset === 0 ? "ready" : "blocked" },
     versions: { contract: VERSION, freshnessPolicy: "official-scan/1.0.0", exposurePolicy: "retained-disclosures/1.0.0" },
     status: !applicable ? "not_applicable" : status === "not_acquired" ? "not_acquired" : status === "restricted" || status === "processing_failed" ? status : status === "current" ? "available" : "indeterminate",
-    reasonCodes: [...(latestAttempt && latestAttempt.status !== "success" ? ["latest_refresh_failed"] : []), ...(!exhaustive ? ["non_exhaustive_window"] : []), ...(status !== "current" ? [`official_scan_${status}`] : [])],
-    recovery: applicable && (status !== "current" || latestAttempt?.status !== "success") ? ["Wait for a successful scheduled official announcement scan."] : [],
+    reasonCodes: [...(attachmentRefreshFailed ? ["attachment_refresh_failed"] : []), ...(latestAttempt && latestAttempt.status !== "success" ? ["latest_refresh_failed"] : []), ...(!exhaustive ? ["non_exhaustive_window"] : []), ...(status !== "current" ? [`official_scan_${status}`] : [])],
+    recovery: [...(applicable && (status !== "current" || latestAttempt?.status !== "success") ? ["Wait for a successful scheduled official announcement scan."] : []), ...(attachmentRefreshFailed ? ["Retained artifact content is unavailable; dependent claims must remain withheld."] : [])],
   };
   const provenanceById = new Map(all.map((record) => [record.provenance.id, record.provenance]));
   const pageProvenance = (page: Pick<MaterialAnnouncementsOutput, "items" | "relationIndex" | "unresolvedRelationIndex" | "unknownRelationIndex">) => {
