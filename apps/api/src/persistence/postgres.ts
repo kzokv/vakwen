@@ -2400,6 +2400,37 @@ export class PostgresPersistence implements Persistence {
         [ownerUserId],
       );
       const result = await execute({
+        saveCapitalReductionStore: async (userId, store, commitAccounting = false) => {
+          if (userId !== ownerUserId || store.userId !== userId) throw new Error("transaction writer owner mismatch");
+          validateAccountingStoreInvariants(store.accounting);
+          if (commitAccounting) await this.saveAccountingStoreTx(client, userId, store.accounting, store.accounts.map((account) => account.id));
+          await client.query(`INSERT INTO capital_reduction_state(user_id, facts) VALUES ($1,$2::jsonb)
+            ON CONFLICT(user_id) DO UPDATE SET facts = EXCLUDED.facts`, [userId, JSON.stringify(store.accounting.facts.capitalReductions)]);
+          for (const announcement of [...(store.accounting.facts.capitalReductions?.announcements ?? [])].sort((a,b) => `${a.eventId}:${a.version}:${a.ticker}:${a.venue}`.localeCompare(`${b.eventId}:${b.version}:${b.ticker}:${b.venue}`))) {
+            await client.query(`SELECT pg_advisory_xact_lock(hashtext('capital_reduction_event:' || $1))`,[announcement.eventId]);
+            const identity = await client.query(`SELECT ticker,venue FROM capital_reduction_announcements WHERE event_id=$1 LIMIT 1`,[announcement.eventId]);
+            if (identity.rows[0] && (identity.rows[0].ticker!==announcement.ticker || identity.rows[0].venue!==announcement.venue)) throw routeError(409,"announcement_identity_conflict","Announcement identity belongs to another security or venue");
+            await client.query(`SELECT pg_advisory_xact_lock(hashtext('capital_reduction_announcement:' || $1 || ':' || $2))`,[announcement.ticker,announcement.venue]);
+            const duplicate = await client.query(`SELECT event_id FROM capital_reduction_announcements WHERE event_id<>$1 AND ticker=$2 AND venue=$3 AND
+              (official_reference=$4 OR terms->>'conversionDate'=$5 OR terms->>'exchangeRecordDate'=$6) LIMIT 1`,
+              [announcement.eventId,announcement.ticker,announcement.venue,announcement.officialReference,announcement.conversionDate,announcement.exchangeRecordDate]);
+            if (duplicate.rowCount) throw routeError(409,"announcement_ambiguous","Resolve the existing announcement identity before publishing new terms");
+            await client.query(`INSERT INTO capital_reduction_announcements(event_id,version,ticker,venue,official_reference,terms)
+              VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT(event_id,version) DO NOTHING`,
+              [announcement.eventId,announcement.version,announcement.ticker,announcement.venue,announcement.officialReference,JSON.stringify(announcement)]);
+            const stored = await client.query(`SELECT terms FROM capital_reduction_announcements WHERE event_id=$1 AND version=$2`,[announcement.eventId,announcement.version]);
+            if (JSON.stringify(stored.rows[0]?.terms) !== JSON.stringify(JSON.parse(JSON.stringify(announcement)))) {
+              // JSONB key order differs from JS object order; compare structurally through PostgreSQL.
+              const equal = await client.query(`SELECT terms=$3::jsonb AS equal FROM capital_reduction_announcements WHERE event_id=$1 AND version=$2`,[announcement.eventId,announcement.version,JSON.stringify(announcement)]);
+              if (!equal.rows[0]?.equal) throw routeError(409,"announcement_immutable","Announcement version already contains different terms");
+            }
+          }
+          for (const action of store.accounting.facts.capitalReductions?.actions ?? []) {
+            await client.query(`INSERT INTO account_capital_reductions(id,user_id,account_id,event_id,current_revision,status,history)
+              VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT(id) DO UPDATE SET current_revision=EXCLUDED.current_revision,status=EXCLUDED.status,history=EXCLUDED.history`,
+              [action.id,userId,action.accountId,action.eventId,action.revision,action.status,JSON.stringify(action)]);
+          }
+        },
         loadStore: async (userId) => {
           if (userId !== ownerUserId) throw new Error("transaction writer owner mismatch");
           return this.loadStoreWithClient(userId, client);
@@ -6895,7 +6926,7 @@ export class PostgresPersistence implements Persistence {
         `SELECT id, user_id, account_id, entry_date, entry_type, amount, currency,
                 related_trade_event_id, related_dividend_ledger_entry_id, source,
                 source_reference, note, booked_at, reversal_of_cash_ledger_entry_id,
-                fx_rate_to_usd, fx_transfer_id::text AS fx_transfer_id
+                fx_rate_to_usd, fx_transfer_id::text AS fx_transfer_id, related_capital_reduction_id
          FROM cash_ledger_entries
          WHERE user_id = $1
            AND account_id IN (SELECT id FROM accounts WHERE user_id = $1 AND deleted_at IS NULL)
@@ -6971,7 +7002,7 @@ export class PostgresPersistence implements Persistence {
                     booked_at, quantity, ratio_numerator, ratio_denominator, cash_in_lieu_quantity,
                     cash_in_lieu_amount, cash_in_lieu_currency, par_value_per_share,
                     premium_base_amount, nhi_premium_base_amount, related_dividend_ledger_entry_id,
-                    source, source_reference, reversal_of_position_action_id, superseded_at
+                    source, source_reference, reversal_of_position_action_id, superseded_at, capital_reduction_detail
              FROM position_actions
              WHERE account_id = ANY($1)
              ORDER BY action_date, action_timestamp NULLS FIRST, booked_at NULLS FIRST, id`,
@@ -7135,6 +7166,7 @@ export class PostgresPersistence implements Persistence {
       bookedAt: normalizeDateTime(row.booked_at),
       fxRateToUsd: row.fx_rate_to_usd != null ? Number(row.fx_rate_to_usd) : null,
       fxTransferId: row.fx_transfer_id ?? null,
+      relatedCapitalReductionId: row.related_capital_reduction_id ?? undefined,
     }));
     const dividendEvents: DividendEvent[] = dividendEventsResult.rows.map((row) => ({
       id: row.id,
@@ -7278,6 +7310,10 @@ export class PostgresPersistence implements Persistence {
       recomputeJobs: [],
       idempotencyKeys: new Set<string>(),
     };
+    const capitalState = await this.pool.query(`SELECT facts FROM capital_reduction_state WHERE user_id=$1`, [userId]);
+    store.accounting.facts.capitalReductions = capitalState.rows[0]?.facts ?? { announcements: [], actions: [], previews: [] };
+    const publicAnnouncements = await this.pool.query(`SELECT terms FROM capital_reduction_announcements ORDER BY event_id,version`);
+    store.accounting.facts.capitalReductions!.announcements = publicAnnouncements.rows.map((row) => row.terms);
     syncTradeEventRealizedPnl(store.accounting);
     rebuildHoldingProjection(store);
     return store;
@@ -7444,7 +7480,7 @@ export class PostgresPersistence implements Persistence {
         `SELECT id, user_id, account_id, entry_date, entry_type, amount, currency,
                 related_trade_event_id, related_dividend_ledger_entry_id, source,
                 source_reference, note, booked_at, reversal_of_cash_ledger_entry_id,
-                fx_rate_to_usd, fx_transfer_id::text AS fx_transfer_id
+                fx_rate_to_usd, fx_transfer_id::text AS fx_transfer_id, related_capital_reduction_id
          FROM cash_ledger_entries
          WHERE user_id = $1
            AND account_id IN (SELECT id FROM accounts WHERE user_id = $1 AND deleted_at IS NULL)
@@ -7521,7 +7557,7 @@ export class PostgresPersistence implements Persistence {
                     booked_at, quantity, ratio_numerator, ratio_denominator, cash_in_lieu_quantity,
                     cash_in_lieu_amount, cash_in_lieu_currency, par_value_per_share,
                     premium_base_amount, nhi_premium_base_amount, related_dividend_ledger_entry_id,
-                    source, source_reference, reversal_of_position_action_id, superseded_at
+                    source, source_reference, reversal_of_position_action_id, superseded_at, capital_reduction_detail
              FROM position_actions
              WHERE account_id = ANY($1)
              ORDER BY action_date, action_timestamp NULLS FIRST, booked_at NULLS FIRST, id`,
@@ -7665,6 +7701,7 @@ export class PostgresPersistence implements Persistence {
       bookedAt: normalizeDateTime(row.booked_at),
       fxRateToUsd: row.fx_rate_to_usd != null ? Number(row.fx_rate_to_usd) : null,
       fxTransferId: row.fx_transfer_id ?? null,
+      relatedCapitalReductionId: row.related_capital_reduction_id ?? undefined,
     }));
 
     const dividendEvents: DividendEvent[] = dividendEventsResult.rows.map((row) => ({
@@ -7881,6 +7918,10 @@ export class PostgresPersistence implements Persistence {
       recomputeJobs,
       idempotencyKeys: new Set<string>(),
     };
+    const capitalState = await client.query(`SELECT facts FROM capital_reduction_state WHERE user_id=$1`, [userId]);
+    store.accounting.facts.capitalReductions = capitalState.rows[0]?.facts ?? { announcements: [], actions: [], previews: [] };
+    const publicAnnouncements = await client.query(`SELECT terms FROM capital_reduction_announcements ORDER BY event_id,version`);
+    store.accounting.facts.capitalReductions!.announcements = publicAnnouncements.rows.map((row) => row.terms);
     syncTradeEventRealizedPnl(store.accounting);
     rebuildHoldingProjection(store);
     return store;
@@ -9016,11 +9057,12 @@ export class PostgresPersistence implements Persistence {
       reversal_of_cash_ledger_entry_id: string | null;
       fx_rate_to_usd: string | null;
       fx_transfer_id: string | null;
+      related_capital_reduction_id?: string | null;
     }>(
       `SELECT id, user_id, account_id, entry_date::text, entry_type, amount::text, currency,
               related_trade_event_id, related_dividend_ledger_entry_id, source,
               source_reference, note, booked_at::text, reversal_of_cash_ledger_entry_id,
-              fx_rate_to_usd::text, fx_transfer_id::text
+              fx_rate_to_usd::text, fx_transfer_id::text, related_capital_reduction_id
        FROM cash_ledger_entries
        WHERE user_id = $1
          AND fx_transfer_id = $2::uuid
@@ -9045,6 +9087,7 @@ export class PostgresPersistence implements Persistence {
       reversalOfCashLedgerEntryId: row.reversal_of_cash_ledger_entry_id ?? undefined,
       fxRateToUsd: row.fx_rate_to_usd != null ? Number(row.fx_rate_to_usd) : null,
       fxTransferId: row.fx_transfer_id ?? null,
+      relatedCapitalReductionId: row.related_capital_reduction_id ?? undefined,
     }));
     return {
       legs,
@@ -9083,6 +9126,7 @@ export class PostgresPersistence implements Persistence {
       amount: string;
       fx_rate_to_usd: string | null;
       fx_transfer_id: string | null;
+      related_capital_reduction_id?: string | null;
       entry_type: string;
       reversal_of_cash_ledger_entry_id: string | null;
       booked_at: string | null;
@@ -9092,7 +9136,7 @@ export class PostgresPersistence implements Persistence {
       // Postgres backend agree on the active-only invariant.
       // [active-only filter ADDED]
       `SELECT id, account_id, currency, entry_date::text, amount::text,
-              fx_rate_to_usd::text, fx_transfer_id::text, entry_type,
+              fx_rate_to_usd::text, fx_transfer_id::text, related_capital_reduction_id, entry_type,
               reversal_of_cash_ledger_entry_id, booked_at
        FROM cash_ledger_entries c
        WHERE user_id = $1
@@ -9114,6 +9158,7 @@ export class PostgresPersistence implements Persistence {
       amount: Number(row.amount),
       fxRateToUsd: row.fx_rate_to_usd != null ? Number(row.fx_rate_to_usd) : null,
       fxTransferId: row.fx_transfer_id ?? null,
+      relatedCapitalReductionId: row.related_capital_reduction_id ?? undefined,
       entryType: row.entry_type as import("../types/store.js").CashLedgerEntryType,
       reversalOfCashLedgerEntryId: row.reversal_of_cash_ledger_entry_id ?? undefined,
       bookedAt: row.booked_at ?? undefined,
@@ -9208,7 +9253,16 @@ export class PostgresPersistence implements Persistence {
       divParams,
     );
 
+    const actionRows = await this.pool.query(`SELECT action.* FROM position_actions action JOIN accounts account ON account.id=action.account_id
+      WHERE account.user_id=$1 AND account.deleted_at IS NULL AND ($2::text IS NULL OR action.account_id=$2) AND ($3::text IS NULL OR action.ticker=$3)
+        AND ($4::text IS NULL OR action.market_code=$4) ORDER BY action.action_date,action.action_timestamp NULLS FIRST,action.booked_at,action.id`,
+      [userId,scope?.accountId ?? null,scope?.ticker ?? null,scope?.marketCode ?? null]);
+    const capitalState = await this.pool.query(`SELECT facts FROM capital_reduction_state WHERE user_id=$1`,[userId]);
+    const publicAnnouncements = await this.pool.query(`SELECT terms FROM capital_reduction_announcements ORDER BY event_id,version`);
     return {
+      capitalReductionAnnouncements: publicAnnouncements.rows.map((row) => row.terms),
+      positionActions: actionRows.rows.map(mapPositionActionRow),
+      capitalReductions: (capitalState.rows[0]?.facts?.actions ?? []).filter((action: import("@vakwen/shared-types").AccountCapitalReductionDto) => !scope || (action.accountId===scope.accountId && action.ticker===scope.ticker)),
       trades: tradesResult.rows.map(row => ({
         id: row.id,
         accountId: row.account_id,
@@ -11107,12 +11161,12 @@ export class PostgresPersistence implements Persistence {
            id, user_id, account_id, entry_date, entry_type, amount, currency,
            related_trade_event_id, related_dividend_ledger_entry_id, source,
            source_reference, note, booked_at, reversal_of_cash_ledger_entry_id,
-           fx_rate_to_usd, fx_transfer_id
+           fx_rate_to_usd, fx_transfer_id, related_capital_reduction_id
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7,
            $8, $9, $10,
            $11, $12, $13, $14,
-           $15, $16
+           $15, $16, $17
          )`,
         [
           cashEntry.id,
@@ -11131,6 +11185,7 @@ export class PostgresPersistence implements Persistence {
           cashEntry.reversalOfCashLedgerEntryId ?? null,
           cashEntry.fxRateToUsd ?? null,
           cashEntry.fxTransferId ?? null,
+          cashEntry.relatedCapitalReductionId ?? null,
         ],
       );
 
@@ -11258,12 +11313,12 @@ export class PostgresPersistence implements Persistence {
          id, user_id, account_id, entry_date, entry_type, amount, currency,
          related_trade_event_id, related_dividend_ledger_entry_id, source,
          source_reference, note, booked_at, reversal_of_cash_ledger_entry_id,
-         fx_rate_to_usd, fx_transfer_id
+         fx_rate_to_usd, fx_transfer_id, related_capital_reduction_id
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7,
          $8, $9, $10,
          $11, $12, $13, $14,
-         $15, $16
+         $15, $16, $17
        )`,
       [
         cashEntry.id,
@@ -11282,6 +11337,7 @@ export class PostgresPersistence implements Persistence {
         cashEntry.reversalOfCashLedgerEntryId ?? null,
         cashEntry.fxRateToUsd ?? null,
         cashEntry.fxTransferId ?? null,
+          cashEntry.relatedCapitalReductionId ?? null,
       ],
     );
 
@@ -11384,10 +11440,10 @@ export class PostgresPersistence implements Persistence {
            id, user_id, account_id, entry_date, entry_type, amount, currency,
            related_trade_event_id, related_dividend_ledger_entry_id, source,
            source_reference, note, booked_at, reversal_of_cash_ledger_entry_id,
-           fx_rate_to_usd, fx_transfer_id
+           fx_rate_to_usd, fx_transfer_id, related_capital_reduction_id
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7,
-           $8, $9, $10, $11, $12, $13, $14, $15, $16
+           $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
          )`,
         [
           cashEntry.id,
@@ -11406,6 +11462,7 @@ export class PostgresPersistence implements Persistence {
           cashEntry.reversalOfCashLedgerEntryId ?? null,
           cashEntry.fxRateToUsd ?? null,
           cashEntry.fxTransferId ?? null,
+          cashEntry.relatedCapitalReductionId ?? null,
         ],
       );
     }
@@ -11471,13 +11528,13 @@ export class PostgresPersistence implements Persistence {
          booked_at, quantity, ratio_numerator, ratio_denominator, cash_in_lieu_quantity,
          cash_in_lieu_amount, cash_in_lieu_currency, par_value_per_share,
          premium_base_amount, nhi_premium_base_amount, related_dividend_ledger_entry_id,
-         source, source_reference, reversal_of_position_action_id, superseded_at
+         source, source_reference, reversal_of_position_action_id, superseded_at, capital_reduction_detail
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7,
          $8, $9, $10, $11, $12,
          $13, $14, $15,
          $16, $17, $18,
-         $19, $20, $21, $22
+         $19, $20, $21, $22, $23
        )`,
       [
         action.id,
@@ -11502,6 +11559,7 @@ export class PostgresPersistence implements Persistence {
         action.sourceReference ?? null,
         action.reversalOfPositionActionId ?? null,
         action.supersededAt ?? null,
+            action.capitalReduction ? JSON.stringify(action.capitalReduction) : null,
       ],
     );
   }
@@ -11800,12 +11858,12 @@ export class PostgresPersistence implements Persistence {
              id, user_id, account_id, entry_date, entry_type, amount, currency,
              related_trade_event_id, related_dividend_ledger_entry_id, source,
              source_reference, note, booked_at, reversal_of_cash_ledger_entry_id,
-             fx_rate_to_usd, fx_transfer_id
+             fx_rate_to_usd, fx_transfer_id, related_capital_reduction_id
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7,
              $8, $9, $10,
              $11, $12, $13, $14,
-             $15, $16
+             $15, $16, $17
            )`,
           [
             cashEntry.id,
@@ -11824,6 +11882,7 @@ export class PostgresPersistence implements Persistence {
             cashEntry.reversalOfCashLedgerEntryId ?? null,
             cashEntry.fxRateToUsd ?? null,
             cashEntry.fxTransferId ?? null,
+          cashEntry.relatedCapitalReductionId ?? null,
           ],
         );
       }
@@ -11841,13 +11900,13 @@ export class PostgresPersistence implements Persistence {
              booked_at, quantity, ratio_numerator, ratio_denominator, cash_in_lieu_quantity,
              cash_in_lieu_amount, cash_in_lieu_currency, par_value_per_share,
              premium_base_amount, nhi_premium_base_amount, related_dividend_ledger_entry_id,
-             source, source_reference, reversal_of_position_action_id, superseded_at
+             source, source_reference, reversal_of_position_action_id, superseded_at, capital_reduction_detail
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7,
              $8, $9, $10, $11, $12,
              $13, $14, $15,
              $16, $17, $18,
-             $19, $20, $21, $22
+             $19, $20, $21, $22, $23
            )`,
           [
             action.id,
@@ -11872,6 +11931,7 @@ export class PostgresPersistence implements Persistence {
             action.sourceReference ?? null,
             action.reversalOfPositionActionId ?? null,
             action.supersededAt ?? null,
+            action.capitalReduction ? JSON.stringify(action.capitalReduction) : null,
           ],
         );
       }
@@ -12409,12 +12469,12 @@ export class PostgresPersistence implements Persistence {
              id, user_id, account_id, entry_date, entry_type, amount, currency,
              related_trade_event_id, related_dividend_ledger_entry_id, source,
              source_reference, note, booked_at, reversal_of_cash_ledger_entry_id,
-             fx_rate_to_usd, fx_transfer_id
+             fx_rate_to_usd, fx_transfer_id, related_capital_reduction_id
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7,
              $8, $9, $10,
              $11, $12, $13, $14,
-             $15, $16
+             $15, $16, $17
            )`,
           [
             cashEntry.id,
@@ -12433,6 +12493,7 @@ export class PostgresPersistence implements Persistence {
             cashEntry.reversalOfCashLedgerEntryId ?? null,
             cashEntry.fxRateToUsd ?? null,
             cashEntry.fxTransferId ?? null,
+          cashEntry.relatedCapitalReductionId ?? null,
           ],
         );
       }
@@ -12450,13 +12511,13 @@ export class PostgresPersistence implements Persistence {
              booked_at, quantity, ratio_numerator, ratio_denominator, cash_in_lieu_quantity,
              cash_in_lieu_amount, cash_in_lieu_currency, par_value_per_share,
              premium_base_amount, nhi_premium_base_amount, related_dividend_ledger_entry_id,
-             source, source_reference, reversal_of_position_action_id, superseded_at
+             source, source_reference, reversal_of_position_action_id, superseded_at, capital_reduction_detail
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7,
              $8, $9, $10, $11, $12,
              $13, $14, $15,
              $16, $17, $18,
-             $19, $20, $21, $22
+             $19, $20, $21, $22, $23
            )
            ON CONFLICT (id) DO UPDATE SET
              account_id = EXCLUDED.account_id,
@@ -12479,7 +12540,7 @@ export class PostgresPersistence implements Persistence {
              source = EXCLUDED.source,
              source_reference = EXCLUDED.source_reference,
              reversal_of_position_action_id = EXCLUDED.reversal_of_position_action_id,
-             superseded_at = EXCLUDED.superseded_at`,
+             superseded_at = EXCLUDED.superseded_at, capital_reduction_detail = EXCLUDED.capital_reduction_detail`,
           [
             action.id,
             action.accountId,
@@ -12503,6 +12564,7 @@ export class PostgresPersistence implements Persistence {
             action.sourceReference ?? null,
             action.reversalOfPositionActionId ?? null,
             action.supersededAt ?? null,
+            action.capitalReduction ? JSON.stringify(action.capitalReduction) : null,
           ],
         );
       }
@@ -12963,7 +13025,7 @@ export class PostgresPersistence implements Persistence {
                 action.par_value_per_share, action.premium_base_amount,
                 action.nhi_premium_base_amount, action.related_dividend_ledger_entry_id,
                 action.source, action.source_reference,
-                action.reversal_of_position_action_id, action.superseded_at
+                action.reversal_of_position_action_id, action.superseded_at, action.capital_reduction_detail
          FROM position_actions AS action
          JOIN accounts AS account
            ON account.id = action.account_id
@@ -13670,7 +13732,7 @@ export class PostgresPersistence implements Persistence {
                )::int AS sequence,
                entry_date, entry_id, booking_sequence, lot_sequence,
                entry_kind, trade_type, action_type, quantity,
-               ratio_numerator, ratio_denominator, cash_in_lieu_amount
+               ratio_numerator, ratio_denominator, cash_in_lieu_amount, capital_reduction_detail
         FROM (
           SELECT candidate.candidate_key, trade.trade_date AS entry_date,
                  trade.trade_timestamp AS entry_timestamp, 1 AS kind_order,
@@ -13679,7 +13741,7 @@ export class PostgresPersistence implements Persistence {
                  trade.booked_at, trade.id AS entry_id,
                  'trade'::text AS entry_kind, trade.trade_type, NULL::text AS action_type,
                  trade.quantity, NULL::numeric AS ratio_numerator,
-                 NULL::numeric AS ratio_denominator, NULL::numeric AS cash_in_lieu_amount
+                 NULL::numeric AS ratio_denominator, NULL::numeric AS cash_in_lieu_amount, NULL::jsonb AS capital_reduction_detail
           FROM expected_candidates AS candidate
           JOIN trade_events AS trade
             ON trade.user_id = $1
@@ -13699,7 +13761,7 @@ export class PostgresPersistence implements Persistence {
                  action.booked_at, action.id AS entry_id,
                  'action'::text AS entry_kind, NULL::text AS trade_type, action.action_type,
                  action.quantity, action.ratio_numerator, action.ratio_denominator,
-                 action.cash_in_lieu_amount
+                 action.cash_in_lieu_amount, action.capital_reduction_detail
           FROM expected_candidates AS candidate
           JOIN position_actions AS action
             ON action.account_id = candidate.account_id
@@ -13728,6 +13790,7 @@ export class PostgresPersistence implements Persistence {
         SELECT replay.candidate_key,
                CASE
                  WHEN replay.invalid THEN entry.sequence
+                 WHEN replay.mode = 'advance' AND entry.action_type = 'CASH_CAPITAL_REDUCTION' THEN entry.sequence
                  WHEN replay.mode = 'advance' AND (
                    (entry.entry_kind = 'trade' AND entry.trade_type = 'BUY')
                    OR (entry.entry_kind = 'action'
@@ -13822,6 +13885,8 @@ export class PostgresPersistence implements Persistence {
                END AS best_key,
                CASE
                  WHEN replay.invalid THEN replay.lot_quantities
+                 WHEN replay.mode = 'advance' AND entry.action_type = 'CASH_CAPITAL_REDUCTION'
+                   THEN capital_reduction_share_allocation(replay.lot_quantities,replay.lot_dates,replay.lot_sequences,replay.lot_ids,entry.capital_reduction_detail)
                  WHEN replay.mode = 'advance' AND entry.entry_kind = 'trade' AND entry.trade_type = 'BUY'
                    THEN replay.lot_quantities || ARRAY[entry.quantity]
                  WHEN replay.mode = 'stock_scan'
@@ -14936,7 +15001,7 @@ export class PostgresPersistence implements Persistence {
       SELECT id, user_id, account_id, entry_date, entry_type, amount, currency,
              related_trade_event_id, related_dividend_ledger_entry_id, source,
              source_reference, note, booked_at, reversal_of_cash_ledger_entry_id,
-             fx_rate_to_usd, fx_transfer_id::text AS fx_transfer_id
+             fx_rate_to_usd, fx_transfer_id::text AS fx_transfer_id, related_capital_reduction_id
       FROM cash_ledger_entries ${whereClause}
       ORDER BY ${sortColumn} ${sortDirection}, booked_at DESC NULLS LAST, id ASC
       LIMIT $6 OFFSET $7
@@ -14987,6 +15052,7 @@ export class PostgresPersistence implements Persistence {
       bookedAt: row.booked_at ? normalizeDateTime(row.booked_at) : undefined,
       fxRateToUsd: row.fx_rate_to_usd != null ? Number(row.fx_rate_to_usd) : null,
       fxTransferId: row.fx_transfer_id ?? null,
+      relatedCapitalReductionId: row.related_capital_reduction_id ?? undefined,
     }));
 
     return { entries, total, summary };
@@ -15461,10 +15527,14 @@ export class PostgresPersistence implements Persistence {
     const manifest = await loadMigrationManifest(migrationsDir);
 
     const client = await this.pool.connect();
+    let migrationLockHeld = false;
     try {
+      // Historical migration bodies contain COMMIT, so a transaction-scoped
+      // lock cannot protect the entire recovery and its deferred ledger writes.
+      await client.query("SELECT pg_advisory_lock(hashtext($1))", ["vakwen_schema_migrations"]);
+      migrationLockHeld = true;
       await client.query("BEGIN");
       await this.ensureMigrationLedger(client);
-      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["vakwen_schema_migrations"]);
 
       const appliedResult = await client.query<{ name: string; checksum: string | null }>(
         "SELECT name, checksum FROM schema_migrations",
@@ -15478,6 +15548,27 @@ export class PostgresPersistence implements Persistence {
 
       // Verify checksums of already-applied migrations against files on disk
       await this.verifyMigrationChecksums(migrationsDir, appliedChecksums);
+
+      // These historical bodies can narrow decimal values or replace cash
+      // checks, and some contain their own COMMIT. Prove their complete later-
+      // compatible schema before executing any body on a post-124 database.
+      const criticalRecoveryFiles = ["020_decimal_prices.sql", "021_instruments_catalog_columns.sql",
+        "022_cash_ledger_decimal_amount.sql", "043_kzo168_fx_transfer.sql"];
+      const reflectedAtEntry = new Set<string>();
+      const deferredMigrations = new Map<string, string>();
+      if (await this.hasMigration124Footprint(client)) {
+        for (const file of criticalRecoveryFiles) {
+          if (!applied.has(file)) {
+            if (!(await this.isMigrationAlreadyReflected(client, file))) {
+              throw new Error(`Cannot safely recover migration ledger: ${file} is not fully reflected in the post-124 schema`);
+            }
+            reflectedAtEntry.add(file);
+          }
+        }
+        if (!applied.has("124_cash_capital_reduction.sql") && await this.isMigration124Reflected(client)) {
+          reflectedAtEntry.add("124_cash_capital_reduction.sql");
+        }
+      }
 
       if (await this.shouldBootstrapFromBaseline(client, applied, manifest.baselineMigration)) {
         const baselineSql = await fs.readFile(
@@ -15504,28 +15595,70 @@ export class PostgresPersistence implements Persistence {
 
       for (const file of manifest.numberedMigrations) {
         if (applied.has(file)) continue;
+        if (reflectedAtEntry.has(file)) {
+          // Older audit migrations temporarily remove later audit enum values.
+          // Keep the complete entry proof, then verify again at the end rather
+          // than replaying a destructive body after an intermediate downgrade.
+          const reflectedSql = await fs.readFile(path.join(migrationsDir, file), "utf8");
+          deferredMigrations.set(file, computeChecksum(reflectedSql));
+          applied.add(file);
+          continue;
+        }
         if (await this.isMigrationAlreadyReflected(client, file)) {
           const reflectedSql = await fs.readFile(path.join(migrationsDir, file), "utf8");
-          await this.recordAppliedMigrations(client, [
-            { name: file, checksum: computeChecksum(reflectedSql) },
-          ]);
+          if (file === "124_cash_capital_reduction.sql") {
+            deferredMigrations.set(file, computeChecksum(reflectedSql));
+          } else {
+            await this.recordAppliedMigrations(client, [
+              { name: file, checksum: computeChecksum(reflectedSql) },
+            ]);
+          }
           applied.add(file);
           continue;
         }
         const migrationSql = await fs.readFile(path.join(migrationsDir, file), "utf8");
         await client.query(migrationSql);
-        await this.recordAppliedMigrations(client, [
-          { name: file, checksum: computeChecksum(migrationSql) },
-        ]);
+        if (file === "124_cash_capital_reduction.sql" && !(await this.isMigration124Reflected(client, migrationSql))) {
+          throw new Error("Migration 124 did not establish the complete cash capital reduction schema");
+        }
+        if (file === "124_cash_capital_reduction.sql") {
+          deferredMigrations.set(file, computeChecksum(migrationSql));
+        } else {
+          await this.recordAppliedMigrations(client, [
+            { name: file, checksum: computeChecksum(migrationSql) },
+          ]);
+        }
         applied.add(file);
       }
 
+      if (deferredMigrations.size > 0) {
+        // Restore a transaction if an old body committed it. If one is still
+        // active, BEGIN preserves it and pending changes remain rollbackable.
+        await client.query("BEGIN");
+        for (const file of [...criticalRecoveryFiles, "124_cash_capital_reduction.sql"]) {
+          if (!(await this.isMigrationAlreadyReflected(client, file))) {
+            throw new Error(`Migration recovery final schema verification failed: ${file}`);
+          }
+        }
+        await this.recordAppliedMigrations(client, [...deferredMigrations].map(([name, checksum]) => ({ name, checksum })));
+      }
       await client.query("COMMIT");
     } catch (error) {
-      await client.query("ROLLBACK");
+      await client.query("ROLLBACK").catch(() => undefined);
       throw error;
     } finally {
-      client.release();
+      let discardClient = true;
+      try {
+        if (migrationLockHeld) {
+          const result = await client.query<{ unlocked: boolean }>(
+            "SELECT pg_advisory_unlock(hashtext($1)) AS unlocked", ["vakwen_schema_migrations"],
+          );
+          discardClient = !result.rows[0]?.unlocked;
+        }
+      } finally {
+        // A failed/uncertain unlock must never return a locked session to pool.
+        client.release(discardClient);
+      }
     }
   }
 
@@ -15911,16 +16044,334 @@ export class PostgresPersistence implements Persistence {
         return this.isMigration012Reflected(client);
       case "013_symbol_sync_metadata.sql":
         return this.isMigration013Reflected(client);
+      case "020_decimal_prices.sql":
+        return this.isMigration020Reflected(client);
+      case "021_instruments_catalog_columns.sql":
+        return this.isMigration021Reflected(client);
+      case "022_cash_ledger_decimal_amount.sql":
+        return this.isMigration022Reflected(client);
       case "042_kzo183_account_scoped_fee_profiles.sql":
         return this.isMigration042Reflected(client);
+      case "043_kzo168_fx_transfer.sql":
+        return this.isMigration043Reflected(client);
       case "094_mcp_replay_preview_single_use.sql":
       case "096_mcp_replay_preview_constraint_guard.sql":
         return this.isMcpReplayPreviewConstraintReflected(client);
       case "095_ai_connector_identity_and_bearer_policy.sql":
         return this.isMigration095Reflected(client);
+      case "124_cash_capital_reduction.sql":
+        return this.isMigration124Reflected(client);
       default:
         return false;
     }
+  }
+
+  private async hasMigration124Footprint(client: PoolClient): Promise<boolean> {
+    const result = await client.query<{ present: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_class r JOIN pg_namespace n ON n.oid = r.relnamespace
+          WHERE n.nspname = 'public' AND r.relname IN
+            ('capital_reduction_state', 'account_capital_reductions', 'capital_reduction_announcements')
+       ) OR EXISTS (
+         SELECT 1 FROM pg_attribute a JOIN pg_class r ON r.oid = a.attrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+          WHERE n.nspname = 'public' AND a.attnum > 0 AND NOT a.attisdropped
+            AND ((r.relname = 'position_actions' AND a.attname = 'capital_reduction_detail')
+              OR (r.relname = 'cash_ledger_entries' AND a.attname = 'related_capital_reduction_id'))
+       ) AS present`,
+    );
+    return Boolean(result.rows[0]?.present);
+  }
+
+  private async hasCompatibleMigrationDecimalColumns(
+    client: PoolClient,
+    expected: Array<[string, string, string[]]>,
+  ): Promise<boolean> {
+    const result = await client.query<{ table_name: string; column_name: string; type: string; not_null: boolean }>(
+      `SELECT r.relname AS table_name, a.attname AS column_name,
+              format_type(a.atttypid, a.atttypmod) AS type, a.attnotnull AS not_null
+         FROM pg_attribute a JOIN pg_class r ON r.oid = a.attrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+        WHERE n.nspname = 'public' AND r.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped
+          AND r.relname = ANY($1::text[])`,
+      [expected.map(([table]) => table)],
+    );
+    return expected.every(([table, column, types]) => result.rows.some(row =>
+      row.table_name === table && row.column_name === column && row.not_null && types.includes(row.type)));
+  }
+
+  private async isMigration020Reflected(client: PoolClient): Promise<boolean> {
+    return this.hasCompatibleMigrationDecimalColumns(client, [
+      ["trade_events", "unit_price", ["numeric(20,2)"]],
+      ["lots", "total_cost_amount", ["numeric(20,2)", "numeric(20,4)"]],
+      ["lot_allocations", "allocated_cost_amount", ["numeric(20,2)", "numeric(20,4)"]],
+    ]);
+  }
+
+  private async isMigration021Reflected(client: PoolClient): Promise<boolean> {
+    const result = await client.query<{ name: string; type: string; not_null: boolean }>(
+      `SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnotnull AS not_null
+         FROM pg_attribute a JOIN pg_class r ON r.oid = a.attrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+        WHERE n.nspname = 'market_data' AND r.relname = 'instruments' AND r.relkind = 'r'
+          AND a.attnum > 0 AND NOT a.attisdropped
+          AND a.attname IN ('type_raw', 'industry_category_raw', 'finmind_date', 'instrument_type', 'listed_date')`,
+    );
+    return result.rows.length === 4 && ["type_raw", "industry_category_raw", "finmind_date", "instrument_type"]
+      .every(name => result.rows.some(row => row.name === name && row.type === "text" && !row.not_null))
+      && await this.isMigration022Reflected(client);
+  }
+
+  private async isMigration022Reflected(client: PoolClient): Promise<boolean> {
+    return this.hasCompatibleMigrationDecimalColumns(client, [
+      ["cash_ledger_entries", "amount", ["numeric(20,2)", "numeric(20,4)"]],
+    ]);
+  }
+
+  private async isMigration043Reflected(client: PoolClient): Promise<boolean> {
+    const column = await client.query<{ present: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_attribute a JOIN pg_class r ON r.oid = a.attrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+          WHERE n.nspname = 'public' AND r.relname = 'cash_ledger_entries' AND r.relkind = 'r'
+            AND a.attname = 'fx_transfer_id' AND a.attnum > 0 AND NOT a.attisdropped
+            AND format_type(a.atttypid, a.atttypmod) = 'uuid' AND NOT a.attnotnull
+            AND NOT a.atthasdef AND a.attidentity = '' AND a.attgenerated = ''
+       ) AS present`,
+    );
+    if (!column.rows[0]?.present) return false;
+    const checks = await client.query<{
+      table_name: string; name: string; definition: string; validated: boolean;
+      is_deferrable: boolean; initially_deferred: boolean;
+    }>(
+      `SELECT r.relname AS table_name, c.conname AS name, pg_get_constraintdef(c.oid) AS definition,
+              c.convalidated AS validated, c.condeferrable AS is_deferrable, c.condeferred AS initially_deferred
+         FROM pg_constraint c JOIN pg_class r ON r.oid = c.conrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+        WHERE n.nspname = 'public' AND c.contype = 'c' AND r.relname IN ('cash_ledger_entries', 'audit_log')`,
+    );
+    const check = (table: string, name: string) => checks.rows.find(row => row.table_name === table
+      && row.name === name && row.validated && !row.is_deferrable && !row.initially_deferred);
+    const originalCashChecks: Array<[string, string]> = [["cash_ledger_entries_entry_type_check", "CHECK ((entry_type = ANY (ARRAY['TRADE_SETTLEMENT_IN'::text, 'TRADE_SETTLEMENT_OUT'::text, 'DIVIDEND_RECEIPT'::text, 'DIVIDEND_DEDUCTION'::text, 'MANUAL_ADJUSTMENT'::text, 'REVERSAL'::text, 'FX_TRANSFER_OUT'::text, 'FX_TRANSFER_IN'::text])))"], ["ck_cash_ledger_entries_entry_type_amount_direction", "CHECK ((((entry_type = 'TRADE_SETTLEMENT_IN'::text) AND (amount > (0)::numeric)) OR ((entry_type = 'TRADE_SETTLEMENT_OUT'::text) AND (amount < (0)::numeric)) OR ((entry_type = 'DIVIDEND_RECEIPT'::text) AND (amount > (0)::numeric)) OR ((entry_type = 'DIVIDEND_DEDUCTION'::text) AND (amount < (0)::numeric)) OR ((entry_type = 'FX_TRANSFER_OUT'::text) AND (amount < (0)::numeric)) OR ((entry_type = 'FX_TRANSFER_IN'::text) AND (amount > (0)::numeric)) OR (entry_type = ANY (ARRAY['MANUAL_ADJUSTMENT'::text, 'REVERSAL'::text]))))"], ["ck_cash_ledger_entries_entry_type_links", "CHECK ((((entry_type = ANY (ARRAY['TRADE_SETTLEMENT_IN'::text, 'TRADE_SETTLEMENT_OUT'::text])) AND (related_trade_event_id IS NOT NULL) AND (related_dividend_ledger_entry_id IS NULL)) OR ((entry_type = ANY (ARRAY['DIVIDEND_RECEIPT'::text, 'DIVIDEND_DEDUCTION'::text])) AND (related_trade_event_id IS NULL) AND (related_dividend_ledger_entry_id IS NOT NULL)) OR ((entry_type = ANY (ARRAY['MANUAL_ADJUSTMENT'::text, 'REVERSAL'::text, 'FX_TRANSFER_OUT'::text, 'FX_TRANSFER_IN'::text])) AND (related_trade_event_id IS NULL) AND (related_dividend_ledger_entry_id IS NULL))))"]];
+    const capitalCashChecks = new Map(this.migration124CheckDefinitions()
+      .filter(([table]) => table === 'cash_ledger_entries').map(([, name, definition]) => [name, definition]));
+    if (!originalCashChecks.every(([name, original]) => {
+      const actual = check('cash_ledger_entries', name)?.definition;
+      return actual !== undefined && (actual === original || actual === capitalCashChecks.get(name));
+    })) return false;
+    if (check('cash_ledger_entries', 'ck_cash_ledger_entries_fx_transfer_id_entry_type')?.definition !== "CHECK (((fx_transfer_id IS NULL) OR (entry_type = ANY (ARRAY['FX_TRANSFER_OUT'::text, 'FX_TRANSFER_IN'::text, 'REVERSAL'::text]))))") return false;
+
+    // A later migration may extend the audit enum. Only a complete literal ANY
+    // set is compatible; accepting a substring would also accept an OR TRUE.
+    const audit = check('audit_log', 'audit_log_action_check')?.definition ?? '';
+    const literals = /^CHECK \(\(action = ANY \(ARRAY\[('[a-z][a-z0-9_]*'::text(?:, '[a-z][a-z0-9_]*'::text)*)\]\)\)\)$/.exec(audit)?.[1];
+    if (!literals) return false;
+    const actions = [...literals.matchAll(/'([a-z][a-z0-9_]*)'::text/g)].map(match => match[1]!);
+    const requiredActions = ["admin_promote_cli", "admin_promote_startup", "admin_promote_first_signin", "admin_role_change", "admin_disable_user", "admin_enable_user", "admin_delete_user", "admin_hard_purge_user", "admin_invite_issued", "admin_invite_revoked", "share_granted", "share_revoked", "share_token_created", "share_token_revoked", "impersonation_start", "impersonation_end", "impersonation_blocked_write", "session_force_logout", "app_config_updated", "admin_fx_rates_refresh", "fx_transfer_created", "fx_transfer_updated", "fx_transfer_reversed"];
+    const knownActions = new Set(["admin_promote_cli", "admin_promote_startup", "admin_promote_first_signin", "admin_role_change", "admin_disable_user", "admin_enable_user", "admin_delete_user", "admin_hard_purge_user", "admin_invite_issued", "admin_invite_revoked", "share_granted", "share_revoked", "share_capabilities_updated", "ai_connector_connected", "ai_connector_revoked", "ai_connector_expired", "share_token_created", "share_token_revoked", "impersonation_start", "impersonation_end", "impersonation_blocked_write", "session_force_logout", "app_config_updated", "admin_fx_rates_refresh", "fx_transfer_created", "fx_transfer_updated", "fx_transfer_reversed", "provider_health_rerun", "provider_fixer_operation", "instrument_undelete", "instrument_exclusion_toggle", "instrument_delisted_via_absence", "instrument_absence_streak_bumped", "instrument_absence_guard_tripped", "delegated_portfolio_write", "market_calendar_previewed", "market_calendar_confirmed", "market_calendar_invalidated", "market_calendar_source_updated", "account_created", "account_updated", "account_soft_deleted", "account_restored", "account_hard_purged", "quote_fallback_policy_created", "quote_fallback_policy_updated", "quote_fallback_policy_deactivated", "quote_fallback_manual_refresh_requested", "dividend_destructive_confirmed", "dividend_destructive_failed", "dividend_destructive_preview_created", "dividend_legacy_stock_purge_migrated", "dividend_calculation_confirmed", "dividend_calculation_reset", "dividend_calculation_amended", "dividend_stock_reconciliation_updated", "account_market_dividend_settings_updated"]);
+    if (new Set(actions).size !== actions.length || !requiredActions.every(action => actions.includes(action))
+      || !actions.every(action => knownActions.has(action))) return false;
+
+    const indexes = await client.query<{ definition: string; valid: boolean }>(
+      `SELECT pg_get_indexdef(i.indexrelid) AS definition,
+              i.indisunique AND NOT i.indisprimary AND i.indisvalid AND i.indisready AND i.indislive
+                AND i.indexprs IS NULL AS valid
+         FROM pg_index i JOIN pg_class r ON r.oid = i.indexrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+        WHERE n.nspname = 'public' AND r.relname = ANY($1::text[])`,
+      [['idx_cash_ledger_fx_transfer_leg_originals', 'ux_cash_ledger_entries_account_source_reference',
+        'ux_cash_ledger_entries_reversal_of_cash_ledger_entry_id']],
+    );
+    const expectedIndexes = ["CREATE UNIQUE INDEX idx_cash_ledger_fx_transfer_leg_originals ON public.cash_ledger_entries USING btree (fx_transfer_id, entry_type) WHERE ((fx_transfer_id IS NOT NULL) AND (reversal_of_cash_ledger_entry_id IS NULL))", "CREATE UNIQUE INDEX ux_cash_ledger_entries_account_source_reference ON public.cash_ledger_entries USING btree (account_id, source, source_reference) WHERE (source_reference IS NOT NULL)", "CREATE UNIQUE INDEX ux_cash_ledger_entries_reversal_of_cash_ledger_entry_id ON public.cash_ledger_entries USING btree (reversal_of_cash_ledger_entry_id) WHERE (reversal_of_cash_ledger_entry_id IS NOT NULL)"];
+    return indexes.rows.length === expectedIndexes.length && expectedIndexes.every(definition =>
+      indexes.rows.some(row => row.valid && row.definition === definition));
+  }
+
+  private migration124CheckDefinitions(): Array<[string, string, string]> {
+    return [
+      ["account_capital_reductions", "account_capital_reductions_current_revision_check", "CHECK ((current_revision > 0))"],
+      ["account_capital_reductions", "account_capital_reductions_status_check", "CHECK ((status = ANY (ARRAY['POSTED'::text, 'VOIDED'::text])))"],
+      ["capital_reduction_announcements", "capital_reduction_announcements_venue_check", "CHECK ((venue = ANY (ARRAY['TWSE'::text, 'TPEX'::text])))"],
+      ["capital_reduction_announcements", "capital_reduction_announcements_version_check", "CHECK ((version > 0))"],
+      ["capital_reduction_state", "capital_reduction_state_facts_check", "CHECK ((jsonb_typeof(facts) = 'object'::text))"],
+      ["cash_ledger_entries", "cash_ledger_entries_entry_type_check", "CHECK ((entry_type = ANY (ARRAY['TRADE_SETTLEMENT_IN'::text, 'TRADE_SETTLEMENT_OUT'::text, 'DIVIDEND_RECEIPT'::text, 'DIVIDEND_DEDUCTION'::text, 'MANUAL_ADJUSTMENT'::text, 'REVERSAL'::text, 'FX_TRANSFER_OUT'::text, 'FX_TRANSFER_IN'::text, 'CAPITAL_REPAYMENT_RECEIPT'::text, 'CAPITAL_FRACTION_RECEIPT'::text, 'CAPITAL_REDUCTION_FEE_PAYMENT'::text])))"],
+      ["cash_ledger_entries", "ck_cash_ledger_entries_entry_type_amount_direction", "CHECK ((((entry_type = ANY (ARRAY['TRADE_SETTLEMENT_IN'::text, 'DIVIDEND_RECEIPT'::text, 'FX_TRANSFER_IN'::text, 'CAPITAL_REPAYMENT_RECEIPT'::text, 'CAPITAL_FRACTION_RECEIPT'::text])) AND (amount > (0)::numeric)) OR ((entry_type = ANY (ARRAY['TRADE_SETTLEMENT_OUT'::text, 'DIVIDEND_DEDUCTION'::text, 'FX_TRANSFER_OUT'::text, 'CAPITAL_REDUCTION_FEE_PAYMENT'::text])) AND (amount < (0)::numeric)) OR (entry_type = ANY (ARRAY['MANUAL_ADJUSTMENT'::text, 'REVERSAL'::text]))))"],
+      ["cash_ledger_entries", "ck_cash_ledger_entries_entry_type_links", "CHECK ((((entry_type = ANY (ARRAY['TRADE_SETTLEMENT_IN'::text, 'TRADE_SETTLEMENT_OUT'::text])) AND (related_trade_event_id IS NOT NULL) AND (related_dividend_ledger_entry_id IS NULL) AND (related_capital_reduction_id IS NULL)) OR ((entry_type = ANY (ARRAY['DIVIDEND_RECEIPT'::text, 'DIVIDEND_DEDUCTION'::text])) AND (related_trade_event_id IS NULL) AND (related_dividend_ledger_entry_id IS NOT NULL) AND (related_capital_reduction_id IS NULL)) OR ((entry_type = ANY (ARRAY['MANUAL_ADJUSTMENT'::text, 'REVERSAL'::text, 'FX_TRANSFER_OUT'::text, 'FX_TRANSFER_IN'::text])) AND (related_trade_event_id IS NULL) AND (related_dividend_ledger_entry_id IS NULL) AND (related_capital_reduction_id IS NULL)) OR ((entry_type = ANY (ARRAY['CAPITAL_REPAYMENT_RECEIPT'::text, 'CAPITAL_FRACTION_RECEIPT'::text, 'CAPITAL_REDUCTION_FEE_PAYMENT'::text])) AND (related_trade_event_id IS NULL) AND (related_dividend_ledger_entry_id IS NULL) AND (related_capital_reduction_id IS NOT NULL) AND (source_reference IS NOT NULL))))"],
+      ["position_actions", "position_actions_action_type_check", "CHECK ((action_type = ANY (ARRAY['STOCK_DIVIDEND'::text, 'SPLIT'::text, 'REVERSE_SPLIT'::text, 'CASH_CAPITAL_REDUCTION'::text])))"],
+      ["position_actions", "position_actions_cash_capital_reduction_shape", "CHECK ((((action_type = 'CASH_CAPITAL_REDUCTION'::text) AND (capital_reduction_detail IS NOT NULL)) OR ((action_type = 'STOCK_DIVIDEND'::text) AND (quantity > (0)::numeric)) OR ((action_type = ANY (ARRAY['SPLIT'::text, 'REVERSE_SPLIT'::text])) AND (ratio_numerator IS NOT NULL) AND (ratio_denominator IS NOT NULL))))"],
+    ];
+  }
+
+  private async isMigration124Reflected(client: PoolClient, migrationSql?: string): Promise<boolean> {
+    // A missing ledger row is recoverable only when every part of 124 is already
+    // present. A partial schema must follow the normal transactional migration
+    // path and must never receive a checksum merely because one table exists.
+    const tables = ["capital_reduction_state", "account_capital_reductions", "capital_reduction_announcements"];
+    const columns = await client.query<{
+      table_name: string; column_name: string; type: string; not_null: boolean;
+      has_default: boolean; identity: string; generated: string; relation_kind: string;
+    }>(
+      `SELECT r.relname AS table_name, a.attname AS column_name,
+              format_type(a.atttypid, a.atttypmod) AS type, a.attnotnull AS not_null,
+              a.atthasdef AS has_default, a.attidentity AS identity,
+              a.attgenerated AS generated, r.relkind AS relation_kind
+         FROM pg_attribute a JOIN pg_class r ON r.oid = a.attrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+        WHERE n.nspname = 'public' AND a.attnum > 0 AND NOT a.attisdropped
+          AND (r.relname = ANY($1::text[])
+            OR (r.relname = 'position_actions' AND a.attname = 'capital_reduction_detail')
+            OR (r.relname = 'cash_ledger_entries' AND a.attname = 'related_capital_reduction_id'))`,
+      [tables],
+    );
+    const expectedColumns: Array<[string, string, string, boolean]> = [
+      [tables[0]!, "user_id", "text", true], [tables[0]!, "facts", "jsonb", true],
+      [tables[1]!, "id", "text", true], [tables[1]!, "user_id", "text", true],
+      [tables[1]!, "account_id", "text", true], [tables[1]!, "event_id", "text", true],
+      [tables[1]!, "current_revision", "integer", true], [tables[1]!, "status", "text", true],
+      [tables[1]!, "history", "jsonb", true],
+      [tables[2]!, "event_id", "text", true], [tables[2]!, "version", "integer", true],
+      [tables[2]!, "ticker", "text", true], [tables[2]!, "venue", "text", true],
+      [tables[2]!, "official_reference", "text", true], [tables[2]!, "terms", "jsonb", true],
+      ["position_actions", "capital_reduction_detail", "jsonb", false],
+      ["cash_ledger_entries", "related_capital_reduction_id", "text", false],
+    ];
+    if (columns.rows.length !== expectedColumns.length || !expectedColumns.every(([table, name, type, notNull]) =>
+      columns.rows.some(row => row.table_name === table && row.column_name === name && row.type === type
+        && row.not_null === notNull && !row.has_default && row.identity === "" && row.generated === ""
+        && row.relation_kind === "r"))) return false;
+
+    const constraints = await client.query<{
+      table_name: string; name: string; type: string; definition: string; validated: boolean;
+      is_deferrable: boolean; initially_deferred: boolean; columns: string[];
+      reference_schema: string | null; reference_table: string | null; reference_columns: string[];
+      delete_action: string; update_action: string; match_type: string; valid_index: boolean;
+    }>(
+      `SELECT r.relname AS table_name, c.conname AS name, c.contype AS type,
+              pg_get_constraintdef(c.oid) AS definition, c.convalidated AS validated,
+              c.condeferrable AS is_deferrable, c.condeferred AS initially_deferred,
+              ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(attnum, ordinal)
+                    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum ORDER BY k.ordinal) AS columns,
+              rn.nspname AS reference_schema, rr.relname AS reference_table,
+              ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(attnum, ordinal)
+                    JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.attnum ORDER BY k.ordinal) AS reference_columns,
+              c.confdeltype AS delete_action, c.confupdtype AS update_action, c.confmatchtype AS match_type,
+              CASE WHEN c.contype IN ('p', 'u') THEN i.indisvalid AND i.indisready AND i.indislive
+                AND i.indpred IS NULL AND i.indexprs IS NULL ELSE true END AS valid_index
+         FROM pg_constraint c JOIN pg_class r ON r.oid = c.conrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+         LEFT JOIN pg_class rr ON rr.oid = c.confrelid
+         LEFT JOIN pg_namespace rn ON rn.oid = rr.relnamespace
+         LEFT JOIN pg_index i ON i.indexrelid = c.conindid
+        WHERE n.nspname = 'public' AND r.relname = ANY($1::text[])`,
+      [[...tables, "position_actions", "cash_ledger_entries"]],
+    );
+    const sameColumns = (actual: string[], expected: string[]) =>
+      actual.length === expected.length && actual.every((name, index) => name === expected[index]);
+    const constraint = (table: string, name: string, type: string) => constraints.rows.find(row =>
+      row.table_name === table && row.name === name && row.type === type && row.validated && row.valid_index);
+    const keys: Array<[string, string, string, string[]]> = [
+      [tables[0]!, "capital_reduction_state_pkey", "p", ["user_id"]],
+      [tables[1]!, "account_capital_reductions_pkey", "p", ["id"]],
+      [tables[1]!, "account_capital_reductions_account_id_event_id_key", "u", ["account_id", "event_id"]],
+      [tables[1]!, "account_capital_reductions_owner_account_id_unique", "u", ["user_id", "account_id", "id"]],
+      [tables[2]!, "capital_reduction_announcements_pkey", "p", ["event_id", "version"]],
+    ];
+    if (!keys.every(([table, name, type, expected]) => {
+      const row = constraint(table, name, type);
+      return row && sameColumns(row.columns, expected) && !row.is_deferrable && !row.initially_deferred;
+    })) return false;
+    const foreignKeys: Array<[string, string, string[], string, string[], boolean, string]> = [
+      [tables[0]!, "capital_reduction_state_user_id_fkey", ["user_id"], "users", ["id"], false, "c"],
+      [tables[1]!, "account_capital_reductions_user_id_fkey", ["user_id"], "users", ["id"], false, "c"],
+      [tables[1]!, "account_capital_reductions_account_id_fkey", ["account_id"], "accounts", ["id"], false, "c"],
+      ["cash_ledger_entries", "cash_ledger_entries_capital_reduction_owner_fk",
+        ["user_id", "account_id", "related_capital_reduction_id"], tables[1]!, ["user_id", "account_id", "id"], true, "a"],
+    ];
+    if (!foreignKeys.every(([table, name, expected, referencedTable, referencedColumns, deferred, onDelete]) => {
+      const row = constraint(table, name, "f");
+      return row && sameColumns(row.columns, expected) && row.reference_schema === "public"
+        && row.reference_table === referencedTable && sameColumns(row.reference_columns, referencedColumns)
+        && row.is_deferrable === deferred && row.initially_deferred === deferred
+        && row.delete_action === onDelete && row.update_action === "a" && row.match_type === "s";
+    })) return false;
+
+    // Exact deparsed expressions preserve boolean grouping and every permitted
+    // enum/link/direction branch; substring or parenthesis-stripping tests do not.
+    const expectedChecks = this.migration124CheckDefinitions();
+    if (expectedChecks.length !== 10 || !expectedChecks.every(([table, name, definition]) => {
+      const row = constraint(table, name, "c");
+      return row && row.definition === definition && !row.is_deferrable && !row.initially_deferred;
+    }) || constraints.rows.some(row => row.table_name === "position_actions" && row.name === "position_actions_check1")) return false;
+
+    const indexes = await client.query<{ definition: string; valid: boolean }>(
+      `SELECT pg_get_indexdef(i.indexrelid) AS definition,
+              i.indisvalid AND i.indisready AND i.indislive AND NOT i.indisunique AND NOT i.indisprimary
+                AND i.indpred IS NULL AND i.indexprs IS NULL AS valid
+         FROM pg_index i JOIN pg_class r ON r.oid = i.indexrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+        WHERE n.nspname = 'public' AND r.relname = ANY($1::text[])`,
+      [["idx_account_capital_reductions_owner", "idx_capital_reduction_announcement_identity"]],
+    );
+    const expectedIndexes = [
+      "CREATE INDEX idx_account_capital_reductions_owner ON public.account_capital_reductions USING btree (user_id, account_id)",
+      "CREATE INDEX idx_capital_reduction_announcement_identity ON public.capital_reduction_announcements USING btree (ticker, venue, official_reference)",
+    ];
+    if (indexes.rows.length !== 2 || !expectedIndexes.every(definition =>
+      indexes.rows.some(row => row.valid && row.definition === definition))) return false;
+
+    const functions = await client.query<{
+      name: string; arguments: string; result: string; language: string; volatility: string; strict: boolean;
+      argument_names: string[] | null; body: string; ordinary: boolean;
+    }>(
+      `SELECT p.proname AS name, oidvectortypes(p.proargtypes) AS arguments,
+              format_type(p.prorettype, NULL) AS result, l.lanname AS language,
+              p.provolatile AS volatility, p.proisstrict AS strict, p.proargnames AS argument_names, p.prosrc AS body,
+              p.prokind = 'f' AND NOT p.proretset AND NOT p.prosecdef AND NOT p.proleakproof
+                AND p.proparallel = 'u' AND p.proconfig IS NULL AND p.pronargdefaults = 0
+                AND p.proargmodes IS NULL AND p.proallargtypes IS NULL AND p.prosupport = 0 AS ordinary
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         JOIN pg_language l ON l.oid = p.prolang
+        WHERE n.nspname = 'public' AND p.proname = ANY($1::text[])`,
+      [["capital_reduction_share_allocation", "guard_capital_reduction_history", "guard_capital_reduction_announcement_version"]],
+    );
+    const sql = migrationSql ?? await fs.readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../../db/migrations/124_cash_capital_reduction.sql"), "utf8");
+    const canonicalBody = (value: string) => value.replace(/\r\n/g, "\n").trim();
+    const expectedFunctions: Array<[string, string, string, string, string, boolean]> = [
+      ["capital_reduction_share_allocation", "numeric[], date[], numeric[], text[], jsonb", "numeric[]", "sql", "i", true],
+      ["guard_capital_reduction_history", "", "trigger", "plpgsql", "v", false],
+      ["guard_capital_reduction_announcement_version", "", "trigger", "plpgsql", "v", false],
+    ];
+    if (functions.rows.length !== 3 || !expectedFunctions.every(([name, args, result, language, volatility, strict]) => {
+      const body = new RegExp(`CREATE OR REPLACE FUNCTION\\s+${name}\\s*\\([\\s\\S]*?\\bAS\\s+\\$\\$([\\s\\S]*?)\\$\\$`, "i").exec(sql)?.[1];
+      const argumentNames = name === "capital_reduction_share_allocation"
+        ? ["quantities", "opening_dates", "opening_sequences", "lot_ids", "detail"] : [];
+      return body !== undefined && functions.rows.some(row => row.name === name && row.arguments === args
+        && row.result === result && row.language === language && row.volatility === volatility
+        && row.strict === strict && sameColumns(row.argument_names ?? [], argumentNames)
+        && row.ordinary && canonicalBody(row.body) === canonicalBody(body));
+    })) return false;
+
+    const triggers = await client.query<{
+      name: string; table_name: string; function_name: string; function_schema: string; type: number;
+      enabled: string; ordinary: boolean;
+    }>(
+      `SELECT t.tgname AS name, r.relname AS table_name, p.proname AS function_name,
+              pn.nspname AS function_schema, t.tgtype::integer AS type, t.tgenabled AS enabled,
+              NOT t.tgisinternal AND t.tgconstraint = 0 AND t.tgnargs = 0 AND t.tgqual IS NULL
+                AND t.tgattr::text = '' AND t.tgoldtable IS NULL AND t.tgnewtable IS NULL AS ordinary
+         FROM pg_trigger t JOIN pg_class r ON r.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+         JOIN pg_proc p ON p.oid = t.tgfoid JOIN pg_namespace pn ON pn.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND t.tgname = ANY($1::text[])`,
+      [["capital_reduction_history_guard", "capital_reduction_announcement_guard"]],
+    );
+    return triggers.rows.length === 2 && [
+      ["capital_reduction_history_guard", tables[1]!, "guard_capital_reduction_history", 23],
+      ["capital_reduction_announcement_guard", tables[2]!, "guard_capital_reduction_announcement_version", 19],
+    ].every(([name, table, fn, type]) => triggers.rows.some(row => row.name === name && row.table_name === table
+      && row.function_schema === "public" && row.function_name === fn && row.type === type
+      && row.enabled === "O" && row.ordinary));
   }
 
   private async isMigration009Reflected(client: PoolClient): Promise<boolean> {
@@ -16804,12 +17255,12 @@ export class PostgresPersistence implements Persistence {
            id, user_id, account_id, entry_date, entry_type, amount, currency,
            related_trade_event_id, related_dividend_ledger_entry_id, source,
            source_reference, note, booked_at, reversal_of_cash_ledger_entry_id,
-           fx_rate_to_usd, fx_transfer_id
+           fx_rate_to_usd, fx_transfer_id, related_capital_reduction_id
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7,
            $8, $9, $10,
            $11, $12, $13, $14,
-           $15, $16
+           $15, $16, $17
          )`,
         [
           entry.id,
@@ -16828,6 +17279,7 @@ export class PostgresPersistence implements Persistence {
           entry.reversalOfCashLedgerEntryId ?? null,
           entry.fxRateToUsd ?? null,
           entry.fxTransferId ?? null,
+          entry.relatedCapitalReductionId ?? null,
         ],
       );
     }
@@ -16878,13 +17330,13 @@ export class PostgresPersistence implements Persistence {
              booked_at, quantity, ratio_numerator, ratio_denominator, cash_in_lieu_quantity,
              cash_in_lieu_amount, cash_in_lieu_currency, par_value_per_share,
              premium_base_amount, nhi_premium_base_amount, related_dividend_ledger_entry_id,
-             source, source_reference, reversal_of_position_action_id, superseded_at
+             source, source_reference, reversal_of_position_action_id, superseded_at, capital_reduction_detail
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7,
              $8, $9, $10, $11, $12,
              $13, $14, $15,
              $16, $17, $18,
-             $19, $20, $21, $22
+             $19, $20, $21, $22, $23
            )`,
           [
             action.id,
@@ -16909,6 +17361,7 @@ export class PostgresPersistence implements Persistence {
             action.sourceReference ?? null,
             action.reversalOfPositionActionId ?? null,
             action.supersededAt ?? null,
+            action.capitalReduction ? JSON.stringify(action.capitalReduction) : null,
           ],
         );
       }
@@ -17175,7 +17628,7 @@ export class PostgresPersistence implements Persistence {
               pa.cash_in_lieu_quantity, pa.cash_in_lieu_amount, pa.cash_in_lieu_currency,
               pa.par_value_per_share, pa.premium_base_amount, pa.nhi_premium_base_amount,
               pa.related_dividend_ledger_entry_id, pa.source, pa.source_reference,
-              pa.reversal_of_position_action_id, pa.superseded_at
+              pa.reversal_of_position_action_id, pa.superseded_at, pa.capital_reduction_detail
        FROM position_actions pa
        JOIN accounts a ON a.id = pa.account_id
        WHERE a.user_id = $1 AND pa.account_id = $2 AND pa.ticker = $3
@@ -17466,11 +17919,11 @@ export class PostgresPersistence implements Persistence {
            id, user_id, account_id, entry_date, entry_type, amount, currency,
            related_trade_event_id, related_dividend_ledger_entry_id, source,
            source_reference, note, booked_at, reversal_of_cash_ledger_entry_id,
-           fx_rate_to_usd, fx_transfer_id
+           fx_rate_to_usd, fx_transfer_id, related_capital_reduction_id
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7,
            $8, $9, $10, $11, $12, $13, $14,
-           $15, $16
+           $15, $16, $17
          )`,
         [
           entry.id,
@@ -17489,6 +17942,7 @@ export class PostgresPersistence implements Persistence {
           entry.reversalOfCashLedgerEntryId ?? null,
           entry.fxRateToUsd ?? null,
           entry.fxTransferId ?? null,
+          entry.relatedCapitalReductionId ?? null,
         ],
       );
     }
@@ -21220,6 +21674,16 @@ export class PostgresPersistence implements Persistence {
       await client.query("DELETE FROM corporate_actions WHERE account_id = $1", [accountId]);
       await client.query("DELETE FROM trade_events WHERE account_id = $1", [accountId]);
 
+      await client.query(`UPDATE capital_reduction_state SET facts=jsonb_set(jsonb_set(facts,'{actions}',
+        COALESCE((SELECT jsonb_agg(action) FROM jsonb_array_elements(facts->'actions') action WHERE action->>'accountId'<>$2),'[]'::jsonb)),
+        '{previews}',COALESCE((SELECT jsonb_agg(preview) FROM jsonb_array_elements(facts->'previews') preview WHERE preview->'preview'->'input'->>'accountId'<>$2),'[]'::jsonb))
+        WHERE user_id=$1`,[userId,accountId]);
+
+      await client.query(`UPDATE capital_reduction_state SET facts=jsonb_set(jsonb_set(facts,'{announcementPreviews}',
+        COALESCE((SELECT jsonb_agg(preview) FROM jsonb_array_elements(facts->'announcementPreviews') preview WHERE preview->'preview'->'input'->>'accountId'<>$2),'[]'::jsonb)),
+        '{announcementGenerations}',COALESCE((SELECT jsonb_agg(entry) FROM jsonb_array_elements(facts->'announcementGenerations') entry WHERE entry->>'accountId'<>$2),'[]'::jsonb))
+        WHERE user_id=$1`,[userId,accountId]);
+
       // 4. fee_profiles + tax_rules + account_fee_profile_overrides cascade
       // automatically via ON DELETE CASCADE on fee_profiles.account_id.
       await client.query("DELETE FROM accounts WHERE id = $1 AND user_id = $2", [accountId, userId]);
@@ -24824,6 +25288,7 @@ function mapPositionActionRow(row: Record<string, unknown>): PositionAction {
     ticker: String(row.ticker),
     marketCode: String(row.market_code) as PositionAction["marketCode"],
     actionType: String(row.action_type) as PositionAction["actionType"],
+    capitalReduction: row.capital_reduction_detail as PositionAction["capitalReduction"],
     actionDate: normalizeDate(String(row.action_date)),
     actionTimestamp: row.action_timestamp ? normalizeDateTime(String(row.action_timestamp)) : undefined,
     bookedAt: row.booked_at ? normalizeDateTime(String(row.booked_at)) : undefined,

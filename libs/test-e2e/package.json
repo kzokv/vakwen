@@ -99,6 +99,14 @@
       "types": "./dist/fixtures/appPages.d.ts",
       "default": "./dist/fixtures/appPages.js"
     },
+    "./fixtures/capitalReductions": {
+      "types": "./dist/fixtures/capitalReductions.d.ts",
+      "default": "./dist/fixtures/capitalReductions.js"
+    },
+    "./fixtures/capitalReductionsOAuth": {
+      "types": "./dist/fixtures/capitalReductionsOAuth.d.ts",
+      "default": "./dist/fixtures/capitalReductionsOAuth.js"
+    },
     "./fixtures/authPages": {
       "types": "./dist/fixtures/authPages.d.ts",
       "default": "./dist/fixtures/authPages.js"

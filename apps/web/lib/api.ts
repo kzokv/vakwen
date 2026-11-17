@@ -402,6 +402,10 @@ const DELEGATED_PORTFOLIO_WRITE_PATHS = {
     /^\/fee-profiles$/,
     /^\/portfolio\/refresh-closes$/,
     /^\/portfolio\/transactions$/,
+    /^\/portfolio\/capital-reductions\/confirm$/,
+    /^\/portfolio\/capital-reductions\/announcements\/confirm$/,
+    /^\/portfolio\/capital-reductions\/announcements\/retry-generation$/,
+    /^\/portfolio\/capital-reductions\/[^/]+\/retry-generation$/,
   ],
   patch: [
     /^\/accounts\/[^/]+$/,

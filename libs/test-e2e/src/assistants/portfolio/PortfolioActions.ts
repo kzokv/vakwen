@@ -16,6 +16,54 @@ export class PortfolioActions extends AppBaseActions {
   }
 
   @Step()
+  async openHoldingActivity(ticker = "SYNTH", marketCode = "TW", accountId = "acc-1"): Promise<void> {
+    await this.mxClick(this.el.holdingDetailButton(ticker, marketCode, accountId));
+    await this.el.holdingActivity.waitFor({ state: "visible" });
+  }
+
+  @Step()
+  async capitalReductionClick(name: string): Promise<void> {
+    await this.mxClick(this.el.capitalReduction(name));
+  }
+
+  @Step()
+  async fillCapitalReduction(fields: Record<string, string>): Promise<void> {
+    for (const [name, value] of Object.entries(fields)) await this.mxFill(this.el.capitalReduction(name), value);
+  }
+
+  @Step()
+  async previewCapitalReduction(): Promise<void> {
+    await this.mxClick(this.el.capitalReduction("preview-button"));
+  }
+
+  @Step()
+  async confirmCapitalReduction(): Promise<void> {
+    await this.submitCapitalReduction();
+    await this.el.capitalReduction("editor").waitFor({ state: "hidden" });
+  }
+
+  @Step()
+  async submitCapitalReduction(): Promise<void> {
+    await this.mxCheck(this.el.capitalReduction("accept"));
+    await this.mxClick(this.el.capitalReduction("confirm"));
+  }
+
+  @Step()
+  async editCapitalReductionPreview(): Promise<void> {
+    await this.mxClick(this.el.capitalReductionEditPreview);
+  }
+
+  @Step()
+  async classifyCapitalReductionReceipt(index: number): Promise<void> {
+    await this.mxCheck(this.el.capitalReduction(`receipt-${index}-classification`));
+  }
+
+  @Step()
+  async captureCapitalReduction(path: string, section = "panel"): Promise<void> {
+    await this._instance.captureCapitalReduction(path, section);
+  }
+
+  @Step()
   async openHoldingByTicker(symbol: string): Promise<void> {
     await Promise.all([
       this.page.waitForURL(new RegExp(`/tickers/${symbol}(?:\\?|$)`)),

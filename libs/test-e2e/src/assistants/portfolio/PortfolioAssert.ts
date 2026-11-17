@@ -12,6 +12,47 @@ export class PortfolioAssert extends BaseAssert {
   }
 
   @Step()
+  async capitalReductionVisible(name: string): Promise<void> {
+    await expect(this.el.capitalReduction(name)).toBeVisible();
+  }
+
+  @Step()
+  async capitalReductionCount(name: string, count: number): Promise<void> {
+    await expect(this.el.capitalReduction(name)).toHaveCount(count);
+  }
+
+  @Step()
+  async capitalReductionContains(name: string, text: string | RegExp): Promise<void> {
+    await expect(this.el.capitalReduction(name)).toContainText(text);
+  }
+
+  @Step()
+  async capitalReductionMetric(section: string, label: string, value: string | RegExp | number, locale: "en" | "zh-TW" = "en"): Promise<void> {
+    const expected = typeof value === "number" ? new Intl.NumberFormat(locale === "en" ? "en-US" : "zh-TW", { style: "currency", currency: "TWD", minimumFractionDigits: Number.isInteger(value) ? 0 : 2, maximumFractionDigits: Number.isInteger(value) ? 0 : 2 }).format(value) : value;
+    await expect(this.el.capitalReductionMetric(section, label)).toHaveText(expected);
+  }
+
+  @Step()
+  async capitalReductionDisabled(name: string): Promise<void> {
+    await expect(this.el.capitalReduction(name)).toBeDisabled();
+  }
+
+  @Step()
+  async capitalReductionValue(name: string, value: string): Promise<void> {
+    await expect(this.el.capitalReduction(name)).toHaveValue(value);
+  }
+
+  @Step()
+  async capitalReductionError(text: string | RegExp): Promise<void> {
+    await expect(this.el.capitalReductionAlert).toContainText(text);
+  }
+
+  @Step()
+  async capitalReductionFitsViewport(): Promise<void> {
+    await expect.poll(() => this._instance.capitalReductionOverflow()).toBeLessThanOrEqual(1);
+  }
+
+  @Step()
   async holdingsTableIsVisible(): Promise<void> {
     await expect(this.el.holdingsTable).toBeVisible({ timeout: 20_000 });
   }

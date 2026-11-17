@@ -359,6 +359,7 @@ export interface ReplayedPositionScopeInput {
 }
 
 export interface TransactionWriteContext {
+  saveCapitalReductionStore(userId: string, store: Store, commitAccounting?: boolean): Promise<void>;
   loadStore(userId: string): Promise<Store>;
   getInstrument(ticker: string, marketCode?: string): Promise<InstrumentRow | null>;
   upsertInstruments(userId: string, instruments: Store["instruments"]): Promise<void>;
@@ -2668,6 +2669,9 @@ export interface SnapshotLotAllocationInput {
 }
 
 export interface SnapshotGenerationInputs {
+  capitalReductionAnnouncements?: import("@vakwen/shared-types").CapitalReductionAnnouncementDto[];
+  positionActions?: PositionAction[];
+  capitalReductions?: import("@vakwen/shared-types").AccountCapitalReductionDto[];
   trades: SnapshotTradeInput[];
   postedDividends: SnapshotDividendInput[];
   lotAllocations: SnapshotLotAllocationInput[];

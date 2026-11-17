@@ -1,4 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { retryCapitalReductionAnnouncementGeneration, regenerateCapitalReductionAnnouncement, confirmCapitalReductionAnnouncement, previewCapitalReductionAnnouncement, confirmCapitalReduction, previewCapitalReduction, listCapitalReductions, retryCapitalReductionGeneration } from "../services/capitalReduction.js";
+import type { CapitalReductionInputDto, CapitalReductionConfirmDto, CapitalReductionAnnouncementInputDto } from "@vakwen/shared-types";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AiConnectorScope } from "@vakwen/shared-types";
@@ -496,6 +498,13 @@ function requiresExplicitPortfolioSelector(toolName: McpToolName): boolean {
     "delete_posted_transactions",
     "get_posted_transaction_mutation_preview",
     "get_posted_transaction_mutation_run",
+    "retry_capital_reduction_announcement_generation",
+    "preview_capital_reduction_announcement",
+    "confirm_capital_reduction_announcement",
+    "get_capital_reductions",
+    "preview_capital_reduction",
+    "confirm_capital_reduction",
+    "retry_capital_reduction_generation",
   ].includes(toolName);
 }
 
@@ -797,6 +806,52 @@ export async function registerMcpRoutes(
               },
             };
           }
+          break;
+        }
+        case "retry_capital_reduction_announcement_generation":
+        case "preview_capital_reduction_announcement":
+        case "confirm_capital_reduction_announcement":
+        case "get_capital_reductions":
+        case "preview_capital_reduction":
+        case "confirm_capital_reduction":
+        case "retry_capital_reduction_generation": {
+          const parsed = tool.inputSchema.parse(args) as { accountId?: string; eventId?:string;version?:number;ticker?: string; input?: CapitalReductionInputDto | CapitalReductionAnnouncementInputDto; confirmation?: CapitalReductionConfirmDto; actionId?: string };
+          const context = {
+            ownerUserId: resolvedContext.portfolioContextUserId,
+            actorId: auth.sessionUserId,
+            publish: async (change: {accountId:string;ticker:string;actionId:string;generationStatus:string;kind:"action"|"announcement"}) => {
+              await app.eventBus.publishEvent(resolvedContext!.portfolioContextUserId,"capital_reduction_changed",change);
+              if (change.kind==="action" && change.generationStatus==="current") await app.eventBus.publishEvent(resolvedContext!.portfolioContextUserId,"currency_wallet_recomputed",{accountId:change.accountId,reason:"capital_reduction"});
+            },
+            authorize: async () => {
+              let currentAuth = auth;
+              if (auth.connection) {
+                const connection = await app.persistence.getAiConnectorConnection(auth.connection.id);
+                if (!connection || connection.revokedAt || connection.status !== "active" || (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now())) throw routeError(403,"mcp_connection_revoked","Connector authorization changed");
+                currentAuth = { ...auth, connection, scopes: connection.scopes, toolToggles: connection.toolToggles };
+              }
+              const active = await policyService.assertToolAccess(app, pending.req, currentAuth, toolName, tool.accessKind, resolvedContext!.portfolioContextUserId);
+              if (tool.accessKind !== "read") {
+                assertMcpScopesGranted(currentAuth, ["transaction:write"]);
+                assertMcpShareCapabilities(active, ["transaction:write"]);
+              }
+              return JSON.stringify({ actor: active.sessionUserId, owner: active.portfolioContextUserId, share: active.shareId, capabilities: active.shareCapabilities, scopes: currentAuth.scopes });
+            },
+          };
+          if (toolName === "retry_capital_reduction_announcement_generation") result = await retryCapitalReductionAnnouncementGeneration(app.persistence,context,parsed.accountId!,parsed.eventId!,parsed.version!);
+          else if (toolName === "preview_capital_reduction_announcement") result = await previewCapitalReductionAnnouncement(app.persistence, context, parsed.input as CapitalReductionAnnouncementInputDto);
+          else if (toolName === "confirm_capital_reduction_announcement") {
+            const announcement = await confirmCapitalReductionAnnouncement(app.persistence,context,parsed.confirmation!);
+            result = announcement;
+            setImmediate(() => { void regenerateCapitalReductionAnnouncement(app.persistence,context,announcement).catch((error:unknown) => app.log.error({error},"announcement regeneration failed")); });
+          }
+          else if (toolName === "get_capital_reductions") result = await listCapitalReductions(app.persistence, context, parsed.accountId, parsed.ticker);
+          else if (toolName === "preview_capital_reduction") result = await previewCapitalReduction(app.persistence, context, parsed.input as CapitalReductionInputDto);
+          else if (toolName === "confirm_capital_reduction") {
+            result = await confirmCapitalReduction(app.persistence, context, parsed.confirmation!);
+            const action = result as { id: string; generation: { status: string } };
+            if (action.generation.status === "stale") setImmediate(() => { void retryCapitalReductionGeneration(app.persistence, context, action.id).catch((error: unknown) => app.log.error({ error }, "capital reduction regeneration failed")); });
+          } else result = await retryCapitalReductionGeneration(app.persistence, context, parsed.actionId!);
           break;
         }
         case "get_portfolio_overview":
@@ -1391,7 +1446,7 @@ export async function registerMcpRoutes(
         tool.name,
         {
           description: tool.description,
-          inputSchema: unwrapZodObjectShape(tool.inputSchema),
+          inputSchema: tool.name.includes("capital_reduction") ? tool.inputSchema : unwrapZodObjectShape(tool.inputSchema),
           outputSchema: tool.outputSchema,
           annotations: tool.annotations,
           _meta: tool._meta

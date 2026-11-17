@@ -24,6 +24,9 @@ import {
   type HoldingActivityPageSize,
 } from "../../features/portfolio/services/holdingActivityService";
 import { Button } from "../ui/Button";
+import { CapitalReductionPanel } from "../../features/capital-reduction/CapitalReductionPanel";
+import { getCapitalReductionCopy } from "../../features/capital-reduction/i18n";
+import { CapitalReductionValuation } from "../../features/capital-reduction/CapitalReductionValuation";
 
 type HoldingRow = DashboardOverviewHoldingGroupDto | DashboardOverviewHoldingChildDto;
 
@@ -56,6 +59,8 @@ export function HoldingActivityDetail({
     () => parseHoldingActivityRouteState(new URLSearchParams(searchParamKey), scope),
     [scope, searchParamKey],
   );
+  const capitalReductionAccounts = useMemo(() => ("children" in row ? row.children : [row]).map(child => ({ id: child.accountId, name: child.accountName?.trim() || child.accountId, currency: child.currency })), [row]);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [data, setData] = useState<HoldingActivityDividendsDto | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
@@ -95,7 +100,7 @@ export function HoldingActivityDetail({
         if (!controller.signal.aborted) setIsLoading(false);
       });
     return () => controller.abort();
-  }, [routeState.positionActionsLimit, routeState.positionActionsPage, routeState.postedLimit, routeState.postedPage, scope]);
+  }, [routeState.positionActionsLimit, routeState.positionActionsPage, routeState.postedLimit, routeState.postedPage, scope, refreshVersion]);
 
   function updateRouteState(patch: Partial<HoldingActivityRouteState>) {
     const nextState: HoldingActivityRouteState = { ...routeState, ...patch };
@@ -126,6 +131,9 @@ export function HoldingActivityDetail({
           </div>
         </div>
       </section>
+
+      {row.capitalReductionValuation ? <CapitalReductionValuation valuation={row.capitalReductionValuation} locale={locale} copy={getCapitalReductionCopy(locale)} /> : null}
+      {row.marketCode === "TW" ? <CapitalReductionPanel ticker={row.ticker} accounts={capitalReductionAccounts} locale={locale} onChanged={() => setRefreshVersion(value => value + 1)} /> : null}
 
       {isLoading ? (
         <section className="rounded-lg border border-border/70 bg-background px-4 py-6 text-sm text-muted-foreground">
@@ -231,7 +239,7 @@ function PositionActionList({
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="font-semibold text-foreground">{resolvePositionActionTitle(dict, item.actionType)}</p>
+              <p className="font-semibold text-foreground">{resolvePositionActionTitle(dict, item.actionType, locale)}</p>
               {item.ratioNumerator && item.ratioDenominator ? (
                 <span className="rounded-md border border-border bg-muted/30 px-2 py-0.5 text-xs text-muted-foreground">
                   {item.ratioNumerator}:{item.ratioDenominator}
@@ -349,7 +357,9 @@ function EmptyState({ label }: { label: string }) {
 function resolvePositionActionTitle(
   dict: AppDictionary,
   actionType: HoldingActivityPositionActionDto["actionType"],
+  locale: LocaleCode,
 ): string {
+  if (actionType === "CASH_CAPITAL_REDUCTION") return getCapitalReductionCopy(locale).title;
   if (actionType === "STOCK_DIVIDEND") return dict.tickerHistory.actionTimelineStockDividendPosted;
   if (actionType === "SPLIT") return dict.holdings.actionDetail.splitMode;
   return dict.holdings.actionDetail.reverseSplitMode;

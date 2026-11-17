@@ -1,3 +1,4 @@
+import { capitalReductionEffectsAtDate } from "./capitalReductionReporting.js";
 import type { FastifyInstance } from "fastify";
 import type {
   DashboardOverviewHoldingGroupDto,
@@ -20,6 +21,8 @@ interface BuildValuationHealthInput {
   currentValueAmount: number | null;
   holdingGroups: ReadonlyArray<DashboardOverviewHoldingGroupDto>;
   performance: DashboardPerformanceDto;
+  /** Full performance charts include pending fractions; lightweight snapshot reads do not. */
+  includesCapitalReductionPendingValue?: boolean;
   asOf: string;
 }
 
@@ -27,7 +30,10 @@ export async function buildValuationHealth(input: BuildValuationHealthInput): Pr
   const thresholds = getEffectiveValuationHealthThresholds();
   const minorUnitTolerance = minorUnitToleranceFor(input.reportingCurrency);
   const latestPerformancePoint = findLatestPerformancePoint(input.performance);
-  const snapshotValueAmount = latestPerformancePoint?.marketValueAmount ?? null;
+  const capitalEffects = capitalReductionEffectsAtDate(input.store, latestPerformancePoint?.date ?? input.asOf);
+  const rawSnapshotValue = latestPerformancePoint?.marketValueAmount ?? null;
+  // Compare delivered securities on both sides; pending fraction value belongs to NAV.
+  const snapshotValueAmount = !capitalEffects.generationCurrent ? null : rawSnapshotValue === null ? null : rawSnapshotValue - (input.includesCapitalReductionPendingValue && input.reportingCurrency === "TWD" ? capitalEffects.pendingValue ?? 0 : 0);
   const latestUsableSnapshotDate = input.performance.diagnostics?.latestReliableValuationDate ?? input.performance.lastReliableDate ?? null;
   const latestSnapshotDate = input.performance.diagnostics?.latestSnapshotDate ?? null;
   const latestComparableSnapshotDate =

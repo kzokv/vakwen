@@ -18,6 +18,7 @@ import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Input } from "../ui/shadcn/input";
 import { Tabs, TabsList, TabsTrigger } from "../ui/shadcn/tabs";
+import { CapitalReductionPanel } from "../../features/capital-reduction/CapitalReductionPanel";
 
 interface HoldingActionDetailProps {
   dict: AppDictionary;
@@ -27,6 +28,7 @@ interface HoldingActionDetailProps {
   row: DashboardOverviewHoldingGroupDto | DashboardOverviewHoldingChildDto;
   transactions?: TransactionHistoryItemDto[];
   allowAuthoring?: boolean;
+  showCapitalReduction?: boolean;
 }
 
 type ActionMode = "SPLIT" | "REVERSE_SPLIT";
@@ -52,6 +54,7 @@ export function HoldingActionDetail({
   row,
   transactions,
   allowAuthoring = false,
+  showCapitalReduction = true,
 }: HoldingActionDetailProps) {
   const children = useMemo(() => getHoldingChildren(row), [row]);
   const [timelineTransactions, setTimelineTransactions] = useState<TransactionHistoryItemDto[]>(transactions ?? []);
@@ -207,6 +210,8 @@ export function HoldingActionDetail({
           />
         </div>
       ) : null}
+
+      {showCapitalReduction && marketCode === "TW" ? <CapitalReductionPanel ticker={row.ticker} accounts={children.map(child => ({ id: child.accountId, name: child.accountName?.trim() || child.accountId, currency: child.currency }))} locale={locale} onChanged={() => { void onActionPosted?.(); }} /> : null}
 
       <Card className="rounded-lg border border-border/70 bg-card p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">

@@ -668,7 +668,7 @@ export interface HoldingActivityPositionActionDto {
   accountName: string;
   ticker: string;
   marketCode: MarketCode;
-  actionType: "STOCK_DIVIDEND" | "SPLIT" | "REVERSE_SPLIT";
+  actionType: "STOCK_DIVIDEND" | "SPLIT" | "REVERSE_SPLIT" | "CASH_CAPITAL_REDUCTION";
   actionDate: string;
   actionTimestamp: string | null;
   bookedAt: string | null;
@@ -1123,6 +1123,7 @@ export interface DashboardOverviewMarketValueDto {
 }
 
 export interface DashboardOverviewHoldingDto {
+  capitalReductionValuation?: import("./capital-reduction.js").CapitalReductionValuationDto;
   accountId: string;
   accountName?: string;
   ticker: string;
@@ -1146,6 +1147,7 @@ export interface DashboardOverviewHoldingDto {
 }
 
 export interface DashboardOverviewHoldingChildDto {
+  capitalReductionValuation?: import("./capital-reduction.js").CapitalReductionValuationDto;
   accountId: string;
   accountName?: string;
   ticker: string;
@@ -1180,6 +1182,7 @@ export interface DashboardOverviewHoldingChildDto {
 }
 
 export interface DashboardOverviewHoldingGroupDto {
+  capitalReductionValuation?: import("./capital-reduction.js").CapitalReductionValuationDto;
   ticker: string;
   instrumentName?: string | null;
   marketCode: MarketCode;
@@ -1259,6 +1262,7 @@ export interface InstrumentOptionDto {
 }
 
 export interface DashboardOverviewDto {
+  capitalReductions?: import("./capital-reduction.js").CapitalReductionPortfolioSummaryDto;
   capabilities?: PortfolioCapabilitiesDto;
   settings: UserSettings;
   summary: DashboardOverviewSummaryDto;
@@ -1998,6 +2002,7 @@ export interface ReportSummaryTotalsDto {
 }
 
 export interface ReportHoldingRowDto {
+  capitalReductionValuation?: import("./capital-reduction.js").CapitalReductionValuationDto;
   ticker: string;
   instrumentName?: string | null;
   marketCode: MarketCode;
@@ -2042,6 +2047,7 @@ export interface DailyReviewSuggestionDto {
 }
 
 export interface DailyReviewReportDto {
+  capitalReductions?: import("./capital-reduction.js").CapitalReductionPortfolioSummaryDto;
   capabilities?: PortfolioCapabilitiesDto;
   query: ReportQueryStateDto;
   summary: ReportSummaryTotalsDto;
@@ -2077,6 +2083,7 @@ export interface ReportTickerAllocationRowDto {
 }
 
 export interface PortfolioReportDto {
+  capitalReductions?: import("./capital-reduction.js").CapitalReductionPortfolioSummaryDto;
   capabilities?: PortfolioCapabilitiesDto;
   query: ReportQueryStateDto;
   summary: ReportSummaryTotalsDto;
@@ -2102,6 +2109,7 @@ export interface PortfolioReportDto {
 }
 
 export interface MarketReportDto {
+  capitalReductions?: import("./capital-reduction.js").CapitalReductionPortfolioSummaryDto;
   capabilities?: PortfolioCapabilitiesDto;
   query: ReportQueryStateDto;
   summary: ReportSummaryTotalsDto;
@@ -2610,6 +2618,7 @@ export interface TickerDetailsChartMetadataDto {
 }
 
 export interface TickerDetailsDto {
+  capitalReductions?: import("./capital-reduction.js").AccountCapitalReductionDto[];
   identity: {
     ticker: string;
     marketCode: MarketCode;
@@ -5623,3 +5632,5 @@ export interface DividendLedgerAggregates {
   byTicker: Record<string, CurrencyExpectedReceived>;
   hero?: DividendReviewHeroAggregatesDto;
 }
+
+export type * from "./capital-reduction.js";

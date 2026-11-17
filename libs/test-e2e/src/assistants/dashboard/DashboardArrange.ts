@@ -19,6 +19,8 @@ interface TSeedDailyBar {
 }
 
 interface TSeedTradeOptions {
+  commissionAmount?: number;
+  taxAmount?: number;
   accountId?: string;
   ticker?: string;
   marketCode?: "TW" | "US" | "AU";

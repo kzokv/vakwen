@@ -1,3 +1,4 @@
+import { calculateCashCapitalReduction } from "@vakwen/domain";
 import {
   applyBuyToLots,
   allocateSellLots,
@@ -376,6 +377,13 @@ function buildLotsBeforePositionAction(store: Store, input: PositionActionInput)
 function applyPositionActionPreviewToLots(currentLots: Lot[], action: PositionAction): Lot[] {
   if (action.reversalOfPositionActionId || action.supersededAt) {
     return currentLots;
+  }
+  if (action.actionType === "CASH_CAPITAL_REDUCTION") {
+    const detail = action.capitalReduction;
+    if (!detail) throw new Error(`Capital reduction ${action.id} is missing source details`);
+    const eligible = currentLots.filter((lot) => lot.accountId === action.accountId && lot.ticker === action.ticker);
+    const calculation = calculateCashCapitalReduction({ lots: eligible, ...detail.announcement, confirmedWholeQuantity: detail.confirmedWholeQuantity });
+    return currentLots.map((lot) => calculation.lots.find((updated) => updated.id === lot.id) ?? lot);
   }
   if (action.actionType === "STOCK_DIVIDEND") {
     const nextSequence =

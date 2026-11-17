@@ -1,3 +1,6 @@
+import { buildCapitalReductionValuation, aggregateCapitalReductionValuations, capitalReductionInput, registeredCapitalReductionValuation, registeredCapitalReductionValuationKey } from "./capitalReductionValuation.js";
+import type { CapitalReductionValuationDto } from "@vakwen/shared-types";
+import { buildCapitalReductionPortfolioSummary, selectCapitalReductionAction, selectRegisteredCapitalReductionAnnouncement } from "./capitalReductionReporting.js";
 import type {
   DashboardMarketStateDto,
   DashboardOverviewDto,
@@ -30,6 +33,7 @@ interface BuildDashboardOverviewOptions {
   integrityIssue: IntegrityIssueDto | null;
   marketStates?: DashboardMarketStateDto[];
   quotes?: Array<QuoteSnapshot | ResolvedQuoteSnapshot>;
+  capitalReductionValuations?: ReadonlyMap<string, CapitalReductionValuationDto>;
   regularSessionOnly?: boolean;
   summaryAsOf?: string;
 }
@@ -74,6 +78,7 @@ export function buildDashboardOverview(
     quotes = [],
     regularSessionOnly = true,
     summaryAsOf,
+    capitalReductionValuations,
   }: BuildDashboardOverviewOptions,
 ): RawDashboardOverview {
   const capabilities = derivePortfolioCapabilities(store.accounts);
@@ -88,13 +93,13 @@ export function buildDashboardOverview(
   };
   const totalCostAmount = store.accounting.projections.holdings.reduce((sum, holding) => sum + holding.costBasisAmount, 0);
   const marketStateByMarket = new Map((marketStatesOverride ?? []).map((state) => [state.marketCode, state]));
-  const holdings = buildOverviewHoldings(store, totalCostAmount, quoteByKey, dividends, marketStateByMarket);
+  const holdings = buildOverviewHoldings(store, totalCostAmount, quoteByKey, dividends, marketStateByMarket, summaryAsOf ?? new Date().toISOString().slice(0, 10), capitalReductionValuations);
   const marketStates = marketStatesOverride ?? buildDashboardMarketStates(holdings, regularSessionOnly);
   const hasCompleteQuotes = holdings.length > 0 && holdings.every((holding) => holding.currentUnitPrice !== null);
   const marketValueAmount = hasCompleteQuotes
     ? holdings.reduce((sum, holding) => sum + (holding.marketValueAmount ?? 0), 0)
     : null;
-  const unrealizedPnlAmount = hasCompleteQuotes
+  const unrealizedPnlAmount = hasCompleteQuotes && holdings.every((holding) => holding.unrealizedPnlAmount !== null)
     ? holdings.reduce((sum, holding) => sum + (holding.unrealizedPnlAmount ?? 0), 0)
     : null;
 
@@ -121,6 +126,7 @@ export function buildDashboardOverview(
   // The route handler pipes the summary through `translateOverviewSummary` to
   // produce the final wire shape with FX-translated KPIs.
   return {
+    capitalReductions: buildCapitalReductionPortfolioSummary(store, quotes, summaryAsOf, capitalReductionValuations),
     capabilities,
     settings: withTickerPriceFreshnessSettings(store.settings),
     summary: {
@@ -186,6 +192,8 @@ function buildOverviewHoldings(
   quoteByKey: Map<string, QuoteSnapshot | ResolvedQuoteSnapshot>,
   dividends: DashboardOverviewDividends,
   marketStateByMarket: ReadonlyMap<MarketCode, DashboardMarketStateDto>,
+  asOf: string,
+  valuations?: ReadonlyMap<string, CapitalReductionValuationDto>,
 ): DashboardOverviewHoldingDto[] {
   const accountById = new Map(store.accounts.map((account) => [account.id, account]));
   const accountMarket = new Map(store.accounts.map((account) => [
@@ -218,9 +226,23 @@ function buildOverviewHoldings(
     .map((holding) => {
       const market = resolveHoldingMarketCode(store, holding, accountMarket);
       const quote = quoteByKey.get(quoteSnapshotKey(holding.ticker, market)) ?? quoteByKey.get(holding.ticker);
-      const marketValueAmount = quote ? roundToDecimal(quote.close * holding.quantity, 2) : null;
+      const capitalAction = market === "TW" ? selectCapitalReductionAction(store, holding.accountId, holding.ticker, asOf) : undefined;
+      const loadedValuation = capitalAction ? valuations?.get(capitalAction.id) : undefined;
+      const quotedValuation = capitalAction && quote ? buildCapitalReductionValuation(store, capitalAction, asOf, { price: quote.close, date: quote.asOf }, loadedValuation?.status === "SUSPENDED" && loadedValuation.deliveredShareValue !== null && loadedValuation.valuationDate ? { value: loadedValuation.deliveredShareValue, date: loadedValuation.valuationDate, price: loadedValuation.sharePrice ?? undefined } : undefined) : undefined;
+      const actionValuation = capitalAction ? quotedValuation?.status === "MARKET" ? quotedValuation : loadedValuation ?? quotedValuation ?? buildCapitalReductionValuation(store, capitalAction, asOf) : undefined;
+      const registered = market === "TW" ? selectRegisteredCapitalReductionAnnouncement(store, holding.accountId, holding.ticker, asOf) : undefined;
+      const registrationApplies = registered && (!capitalAction || registered.suspensionStartDate > capitalReductionInput(capitalAction).announcement.suspensionStartDate);
+      const capitalValuation = registrationApplies ? valuations?.get(registeredCapitalReductionValuationKey(holding.accountId, registered)) ?? registeredCapitalReductionValuation(registered, asOf) : actionValuation;
+      const registeredGeneration = registrationApplies ? store.accounting.facts.capitalReductions?.announcementGenerations?.find((row) => row.accountId === holding.accountId && row.eventId === registered.eventId && row.version === registered.version)?.generation : undefined;
+      const returnsCurrent = (!capitalValuation || capitalValuation.totalAssetValue !== null)
+        && (!capitalAction || capitalAction.generation.status === "current" || capitalAction.generation.fromDate > asOf.slice(0, 10))
+        && (!registeredGeneration || registeredGeneration.status === "current" || registeredGeneration.fromDate > asOf.slice(0, 10));
+      const matchingQuote = !capitalValuation ? quote : capitalValuation === quotedValuation && capitalValuation.status === "MARKET" ? quote : undefined;
+      const effectivePrice = capitalValuation ? capitalValuation.sharePrice : quote?.close ?? null;
+      const marketValueAmount = capitalValuation ? capitalValuation.deliveredShareValue : effectivePrice === null ? null : roundToDecimal(effectivePrice * holding.quantity, 2);
       const instrumentName = instrumentNameByKey.get(`${market}:${holding.ticker}`) ?? instrumentNameByKey.get(holding.ticker) ?? null;
       return {
+        ...(capitalValuation ? { capitalReductionValuation: capitalValuation } : {}),
         accountId: holding.accountId,
         accountName: accountById.get(holding.accountId)?.name ?? holding.accountId,
         ticker: holding.ticker,
@@ -230,17 +252,19 @@ function buildOverviewHoldings(
         costBasisAmount: holding.costBasisAmount,
         currency: holding.currency,
         averageCostPerShare: holding.quantity > 0 ? roundToDecimal(holding.costBasisAmount / holding.quantity, 2) : 0,
-        currentUnitPrice: quote?.close ?? null,
+        currentUnitPrice: effectivePrice,
         marketValueAmount,
-        unrealizedPnlAmount: marketValueAmount === null ? null : marketValueAmount - holding.costBasisAmount,
+        unrealizedPnlAmount: marketValueAmount === null || !returnsCurrent ? null : marketValueAmount - holding.costBasisAmount,
         allocationPct: totalCostAmount > 0 ? (holding.costBasisAmount / totalCostAmount) * 100 : null,
-        change: quote?.change ?? null,
-        changePercent: quote?.changePercent ?? null,
-        previousClose: quote?.previousClose ?? null,
-        quoteStatus: !quote ? "missing" as const : quote.isProvisional ? "provisional" as const : "current" as const,
+        change: returnsCurrent ? matchingQuote?.change ?? null : null,
+        changePercent: returnsCurrent ? matchingQuote?.changePercent ?? null : null,
+        previousClose: matchingQuote?.previousClose ?? null,
+        quoteStatus: !matchingQuote ? (effectivePrice === null ? "missing" as const : "provisional" as const) : matchingQuote.isProvisional ? "provisional" as const : "current" as const,
         nextDividendDate: upcomingDividendDates.get(`${holding.accountId}:${holding.ticker}`) || null,
         lastDividendPostedDate: recentPostedDividends.get(`${holding.accountId}:${holding.ticker}`) ?? null,
-        priceState: resolvePriceState(quote, market, marketStateByMarket.get(market)),
+        priceState: capitalValuation && (!matchingQuote || capitalValuation.status !== "MARKET")
+          ? { ...buildMissingPriceState(market), source: `capital_reduction:${capitalValuation.status.toLowerCase()}`, asOfDate: capitalValuation.valuationDate?.slice(0, 10) ?? null }
+          : resolvePriceState(matchingQuote, market, marketStateByMarket.get(market)),
       };
     })
     .sort((left, right) => right.costBasisAmount - left.costBasisAmount || left.ticker.localeCompare(right.ticker));
@@ -259,6 +283,7 @@ export function buildOverviewHoldingGroups(
     const marketCode = holding.marketCode;
     const groupKey = `${holding.ticker}:${marketCode}:${holding.currency}`;
     const child: DashboardOverviewHoldingChildDto = {
+      ...(holding.capitalReductionValuation ? { capitalReductionValuation: holding.capitalReductionValuation } : {}),
       accountId: holding.accountId,
       accountName: holding.accountName,
       ticker: holding.ticker,
@@ -352,6 +377,7 @@ export function buildOverviewHoldingGroups(
   return [...groups.values()]
     .map((group) => ({
       ...group,
+      capitalReductionValuation: aggregateCapitalReductionValuations(group.children.flatMap((child) => child.capitalReductionValuation ? [child.capitalReductionValuation] : [])),
       children: [...group.children].sort(
         (left, right) => right.costBasisAmount - left.costBasisAmount || left.accountId.localeCompare(right.accountId),
       ),

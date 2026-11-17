@@ -1,4 +1,6 @@
 import { apiAssistantRegistry } from "@vakwen/test-framework/config";
+import { capitalReductionsApiAssistantFactory } from "../assistants/capitalReductions/index.js";
+import { CapitalReductionsEndpoint } from "../endpoints/CapitalReductionsEndpoint.js";
 import { accountsApiAssistantFactory } from "../assistants/accounts/index.js";
 import { adminApiAssistantFactory } from "../assistants/admin/index.js";
 import { anonymousShareTokensApiAssistantFactory } from "../assistants/anonymous-share-tokens/index.js";
@@ -42,6 +44,7 @@ export function registerTestApiAssistants(): void {
   }
 
   apiAssistantRegistry.register(AccountsEndpoint, accountsApiAssistantFactory);
+  apiAssistantRegistry.register(CapitalReductionsEndpoint, capitalReductionsApiAssistantFactory);
   apiAssistantRegistry.register(AdminEndpoint, adminApiAssistantFactory);
   apiAssistantRegistry.register(AnonymousShareTokensEndpoint, anonymousShareTokensApiAssistantFactory);
   apiAssistantRegistry.register(DividendsEndpoint, dividendsApiAssistantFactory);

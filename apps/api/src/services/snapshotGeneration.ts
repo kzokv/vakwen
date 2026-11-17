@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { roundToDecimal } from "@vakwen/domain";
+import { applyBuyToLots, allocateSellLots, roundToDecimal, type Lot } from "@vakwen/domain";
+import { capitalReductionInput, capitalReductionValuation, registeredCapitalReductionValuation } from "./capitalReductionValuation.js";
+import { applyPositionActionToLots, compareReplayEntries } from "./replayPositionHistory.js";
+import type { PositionAction } from "../types/store.js";
+import type { AccountCapitalReductionDto, CapitalReductionAnnouncementDto } from "@vakwen/shared-types";
 import type { DailyBar, MarketCode } from "@vakwen/domain";
 import type {
   Persistence,
@@ -87,6 +91,9 @@ export async function generateHoldingSnapshots(
         marketCode,
         bars,
         dividends,
+        positionActions: inputs.positionActions,
+        capitalReductions: inputs.capitalReductions,
+        capitalReductionAnnouncements: inputs.capitalReductionAnnouncements,
         generationRunId,
         generatedAt: now,
         fromDate: null,
@@ -156,6 +163,9 @@ export async function recomputeSnapshotsForTicker(
     trades: inputs.trades,
     marketCode: scopedMarketCode,
     bars,
+    positionActions: inputs.positionActions,
+    capitalReductions: inputs.capitalReductions,
+        capitalReductionAnnouncements: inputs.capitalReductionAnnouncements,
     dividends: inputs.postedDividends.filter((dividend) => dividend.marketCode === scopedMarketCode),
     generationRunId,
     generatedAt: now,
@@ -196,13 +206,16 @@ interface WalkerParams {
   trades: SnapshotTradeInput[];
   bars: DailyBar[];
   dividends: SnapshotDividendInput[];
+  positionActions?: PositionAction[];
+  capitalReductions?: AccountCapitalReductionDto[];
+  capitalReductionAnnouncements?: CapitalReductionAnnouncementDto[];
   generationRunId: string;
   generatedAt: string;
   /** When non-null, only emit snapshots whose date ≥ fromDate. */
   fromDate: string | null;
 }
 
-function walkPositionHistory(params: WalkerParams): HoldingSnapshot[] {
+export function walkPositionHistory(params: WalkerParams): HoldingSnapshot[] {
   const { userId, accountId, ticker, marketCode, trades, bars, dividends, generationRunId, generatedAt, fromDate } = params;
 
   // KZO-165: validate single priceCurrency across all trades for this (account, ticker).
@@ -234,40 +247,55 @@ function walkPositionHistory(params: WalkerParams): HoldingSnapshot[] {
   // trade date. Snapshots are only emitted on trading days (unless the ticker
   // has no bars at all, in which case we emit a provisional row on each trade
   // date so the user still gets a visible data point).
-  const allDates = new Set([...tradingDays, ...trades.map(t => t.tradeDate)]);
+  const actions = (params.positionActions ?? []).filter((action) => action.accountId === accountId && action.ticker === ticker && action.marketCode === marketCode && !action.supersededAt && !action.reversalOfPositionActionId);
+  const capitalActions = (params.capitalReductions ?? []).filter((action) => action.accountId === accountId && action.ticker === ticker && action.status === "POSTED");
+  const allDates = new Set([...tradingDays, ...trades.map(t => t.tradeDate), ...actions.map(action => action.actionDate), ...capitalActions.flatMap((action) => {
+    const input = action.revisions[action.revisions.length - 1].input;
+    const dates = [input.announcement.suspensionStartDate, input.announcement.conversionDate, ...input.repaymentReceipts.map((receipt) => receipt.receivedDate), ...(input.fractionSettlement ? [input.fractionSettlement.receivedDate] : []), ...(input.fractionAdjustments ?? []).map((row) => row.occurredDate)];
+    // Suspension must remain visible even when the exchange publishes no bars.
+    for (let cursor = new Date(`${input.announcement.suspensionStartDate}T00:00:00Z`); cursor.toISOString().slice(0, 10) < input.announcement.conversionDate && cursor.toISOString().slice(0, 10) <= generatedAt.slice(0, 10); cursor.setUTCDate(cursor.getUTCDate() + 1)) dates.push(cursor.toISOString().slice(0, 10));
+    return dates.filter((date) => date <= generatedAt.slice(0, 10));
+  })]);
+  const registeredAnnouncements = (params.capitalReductionAnnouncements ?? []).filter((row) => marketCode === "TW" && row.ticker === ticker && !capitalActions.some((action) => action.eventId === row.eventId));
+  for (const announcement of registeredAnnouncements) {
+    for (let cursor = new Date(`${announcement.suspensionStartDate}T00:00:00Z`); cursor.toISOString().slice(0, 10) <= announcement.conversionDate && cursor.toISOString().slice(0, 10) <= generatedAt.slice(0, 10); cursor.setUTCDate(cursor.getUTCDate() + 1)) allDates.add(cursor.toISOString().slice(0, 10));
+  }
+  const stream = [...trades.map((trade) => ({ kind: "trade" as const, trade })), ...actions.map((action) => ({ kind: "action" as const, action }))].sort(compareReplayEntries);
+  let lots: Lot[] = [];
+  let streamIndex = 0;
   const sortedDates = [...allDates].sort();
 
   let quantity = 0;
   let costBasis = 0;
   let cumulativeRealizedPnl = 0;
-  let tradeIdx = 0;
   let dividendIdx = 0;
   let cumulativeDividends = 0;
 
   const snapshots: HoldingSnapshot[] = [];
+  const suspensionValues = new Map<string, { price: number; date: string; value: number }>();
+  let lastDatedValue: { price: number; date: string; value: number } | undefined;
+  let lastBar: DailyBar | undefined;
 
   for (const date of sortedDates) {
-    // Apply every trade on or before this date.
-    while (tradeIdx < trades.length && trades[tradeIdx].tradeDate <= date) {
-      const trade = trades[tradeIdx];
-      if (trade.type === "BUY") {
-        const tradeCost = roundToDecimal(trade.quantity * trade.unitPrice, 2) + trade.commissionAmount + trade.taxAmount;
-        costBasis = roundToDecimal(costBasis + tradeCost, 2);
-        quantity += trade.quantity;
-      } else if (quantity > 0) {
-        // SELL — proportional cost basis reduction. If quantity is already 0
-        // we silently skip (long-only tracker; shorting is out of scope).
-        const costPerShare = costBasis / quantity;
-        const allocatedCost = roundToDecimal(costPerShare * trade.quantity, 2);
-        const proceeds = roundToDecimal(trade.quantity * trade.unitPrice, 2) - trade.commissionAmount - trade.taxAmount;
-        cumulativeRealizedPnl = roundToDecimal(cumulativeRealizedPnl + (proceeds - allocatedCost), 2);
-        costBasis = Math.max(0, roundToDecimal(costBasis - allocatedCost, 2));
-        quantity = Math.max(0, quantity - trade.quantity);
-      } else {
-        quantity = Math.max(0, quantity - trade.quantity);
+    while (streamIndex < stream.length) {
+      const entry = stream[streamIndex];
+      if ((entry.kind === "trade" ? entry.trade.tradeDate : entry.action.actionDate) > date) break;
+      if (entry.kind === "action") lots = applyPositionActionToLots(lots, entry.action);
+      else {
+        const trade = entry.trade;
+        if (trade.type === "BUY") lots = applyBuyToLots(lots, { id: `lot-${trade.id}`, accountId, ticker, openQuantity: trade.quantity,
+          totalCostAmount: roundToDecimal(trade.quantity * trade.unitPrice, 2) + trade.commissionAmount + trade.taxAmount,
+          costCurrency: trade.priceCurrency, openedAt: trade.tradeDate, openedSequence: trade.bookingSequence ?? 1 }).updatedLots;
+        else {
+          const allocation = allocateSellLots(lots.filter((lot) => lot.openQuantity > 0), trade.quantity);
+          lots = lots.map((lot) => allocation.updatedLots.find((next) => next.id === lot.id) ?? lot);
+          cumulativeRealizedPnl = roundToDecimal(cumulativeRealizedPnl + roundToDecimal(trade.quantity * trade.unitPrice, 2) - trade.commissionAmount - trade.taxAmount - allocation.allocatedCostAmount, 2);
+        }
       }
-      tradeIdx++;
+      streamIndex++;
     }
+    quantity = lots.reduce((sum, lot) => sum + lot.openQuantity, 0);
+    costBasis = roundToDecimal(lots.reduce((sum, lot) => sum + lot.totalCostAmount, 0), 2);
 
     // Accumulate dividends paid on or before this date.
     while (dividendIdx < dividends.length && dividends[dividendIdx].paymentDate <= date) {
@@ -275,26 +303,47 @@ function walkPositionHistory(params: WalkerParams): HoldingSnapshot[] {
       dividendIdx++;
     }
 
-    // Emit snapshots: skip trade-only dates unless the ticker has no bars at
-    // all (provisional fallback), and respect the fromDate gate.
     const bar = barByDate.get(date);
-    if (!bar && hasBars) continue;
+    const related = capitalActions.filter((action) => capitalReductionInput(action).announcement.suspensionStartDate <= date);
+    const capitalAction = related.filter((action) => capitalReductionInput(action).announcement.conversionDate <= date).sort((a, b) => capitalReductionInput(b).announcement.conversionDate.localeCompare(capitalReductionInput(a).announcement.conversionDate))[0]
+      ?? related.sort((a, b) => capitalReductionInput(a).announcement.conversionDate.localeCompare(capitalReductionInput(b).announcement.conversionDate))[0];
+    if (capitalAction && !suspensionValues.has(capitalAction.id) && lastDatedValue) suspensionValues.set(capitalAction.id, { ...lastDatedValue });
+    const registered = registeredAnnouncements.filter((row) => row.suspensionStartDate <= date).sort((a, b) => b.suspensionStartDate.localeCompare(a.suspensionStartDate) || b.version - a.version)[0];
+    const registrationApplies = registered && (!capitalAction || registered.suspensionStartDate > capitalReductionInput(capitalAction).announcement.suspensionStartDate);
+    const registeredKey = registered ? `${registered.eventId}:${registered.version}` : undefined;
+    if (registeredKey && !suspensionValues.has(registeredKey) && lastDatedValue) suspensionValues.set(registeredKey, { ...lastDatedValue });
+    const componentDate = !!(registered && date <= registered.conversionDate) || capitalActions.some((action) => {
+      const input = capitalReductionInput(action);
+      return date >= input.announcement.suspensionStartDate && date <= input.announcement.conversionDate
+        || input.repaymentReceipts.some((row) => row.receivedDate === date)
+        || input.fractionSettlement?.receivedDate === date
+        || input.fractionAdjustments?.some((row) => row.occurredDate === date);
+    });
+    if (bar) lastBar = bar;
+    // Capital components also need a snapshot on actual dates without an exchange bar.
+    if (!bar && hasBars && !actions.some((action) => action.actionDate === date) && !componentDate) continue;
+    const actionValuation = capitalAction ? capitalReductionValuation(capitalAction, date, {
+      remainingQuantity: quantity,
+      quote: lastBar ? { price: lastBar.close, date: lastBar.barDate } : undefined,
+      preConversion: suspensionValues.get(capitalAction.id),
+    }) : undefined;
+    const capitalValuation = registrationApplies ? registeredCapitalReductionValuation(registered, date, registeredKey ? suspensionValues.get(registeredKey) : undefined) : actionValuation;
+    const closePrice = capitalValuation ? capitalValuation.sharePrice : bar?.close ?? null;
+    if (bar && (!capitalValuation || capitalValuation.status === "MARKET")) lastDatedValue = { price: bar.close, date: bar.barDate, value: roundToDecimal(bar.close * quantity, 4) };
     if (fromDate !== null && date < fromDate) continue;
-
-    const closePrice = bar?.close ?? null;
     // KZO-165: compute native columns at the precision specified in D9.
     // value_native: 4-decimal precision (matches close_price * quantity granularity).
     // cost_basis_native: walker already accumulates in native — assign directly.
     // unrealized_pnl_native: 2-decimal precision; null when valueNative is null.
-    const valueNative = closePrice !== null && quantity > 0
+    const valueNative = capitalValuation ? capitalValuation.deliveredShareValue : closePrice !== null && quantity > 0
       ? roundToDecimal(closePrice * quantity, 4)
-      : null;
+      : quantity === 0 ? 0 : null;
     const costBasisNative = costBasis;
     const unrealizedPnlNative = valueNative !== null
       ? roundToDecimal(valueNative - costBasisNative, 2)
       : null;
-    const providerSource = bar?.source ?? null;
-    const isProvisional = closePrice === null;
+    const providerSource = capitalValuation && capitalValuation.status !== "MARKET" ? `capital_reduction:${capitalValuation.status.toLowerCase()}:${capitalValuation.valuationDate ?? "unknown"}` : (bar ?? lastBar)?.source ?? null;
+    const isProvisional = valueNative === null;
 
     // KZO-165 D6: dual-write legacy columns from native source values. For TWD-only
     // data this is a no-op behavioral change (legacy values were already native);

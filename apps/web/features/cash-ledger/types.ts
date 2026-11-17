@@ -1,4 +1,9 @@
+import type { CapitalReductionCashEffectLinkDto } from "@vakwen/shared-types";
+
 export type CashLedgerEntryType =
+  | "CAPITAL_REPAYMENT_RECEIPT"
+  | "CAPITAL_FRACTION_RECEIPT"
+  | "CAPITAL_REDUCTION_FEE_PAYMENT"
   | "TRADE_SETTLEMENT_IN"
   | "TRADE_SETTLEMENT_OUT"
   | "DIVIDEND_RECEIPT"
@@ -29,7 +34,7 @@ export interface FxTransferDetail {
   effectiveRate: number;
 }
 
-export interface EnrichedCashLedgerEntry {
+export interface EnrichedCashLedgerEntry extends CapitalReductionCashEffectLinkDto {
   id: string;
   userId: string;
   accountId: string;

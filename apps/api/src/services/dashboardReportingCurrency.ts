@@ -1,3 +1,4 @@
+import { capitalReductionEffectsAtDate, capitalReductionGenerationStates } from "./capitalReductionReporting.js";
 /**
  * KZO-180: FX-aware dashboard aggregation service.
  *
@@ -390,8 +391,14 @@ export async function translateDailyCompatibleCurrentValue(
   for (const child of children) {
     const quote = quoteByKey.get(quoteSnapshotKey(child.ticker, child.marketCode)) ?? quoteByKey.get(child.ticker);
     const fx = fxMap.get(child.currency) ?? null;
-    if (!quote || fx === null) return null;
-    total += child.quantity * quote.dailyCompatibleClose * fx;
+    if (fx === null) return null;
+    if (child.capitalReductionValuation) {
+      if (child.capitalReductionValuation.deliveredShareValue === null) return null;
+      total += child.capitalReductionValuation.deliveredShareValue * fx;
+    } else {
+      if (!quote) return null;
+      total += child.quantity * quote.dailyCompatibleClose * fx;
+    }
   }
   return roundToDecimal(total, 2);
 }
@@ -496,6 +503,13 @@ export async function translatePerformancePoints(
     const points: DashboardPerformancePointDto[] = coverage.points.map((p) => {
       const finance = datedFinance?.get(p.date) ?? null;
       const partialMetadata = partialMetadataForPoint(p, strictExpectedKeysByDate);
+      const capital = store ? capitalReductionEffectsAtDate(store, p.date) : null;
+      const capitalFx = reportingCurrency === "TWD";
+      const capitalApplies = !!store && capitalReductionGenerationStates(store, p.date).length > 0;
+      const capitalComplete = !capitalApplies || (capitalFx && capital?.complete && capital.generationCurrent);
+      if (capitalApplies && (!capitalComplete || !finance?.fxAvailable)) {
+        return buildPerformancePoint({ date: p.date, marketValueAmount: null, bookCostAmount: null, cumulativeRealizedPnlAmount: null, cumulativeDividendsAmount: finance?.cumulativeDividendsAmount ?? null, fxAvailable: p.fxAvailable }, { ...partialMetadata, isPartialMarketData: true });
+      }
       if (!finance) {
         return translateAggregatedPerformancePoint(p, partialMetadata);
       }
@@ -511,12 +525,12 @@ export async function translatePerformancePoints(
 
       return buildPerformancePoint({
         date: p.date,
-        marketValueAmount: p.totalMarketValue,
-        bookCostAmount: finance.bookCostAmount,
-        cumulativeRealizedPnlAmount: finance.cumulativeRealizedPnlAmount,
+        marketValueAmount: !capitalComplete || p.totalMarketValue === null ? null : roundToDecimal(p.totalMarketValue + (capitalFx ? capital?.pendingValue ?? 0 : 0),2),
+        bookCostAmount: finance.bookCostAmount === null ? null : roundToDecimal(finance.bookCostAmount - (capitalFx ? (capital?.repayments ?? 0) + (capital?.settledCost ?? 0) : 0),2),
+        cumulativeRealizedPnlAmount: finance.cumulativeRealizedPnlAmount === null ? null : roundToDecimal(finance.cumulativeRealizedPnlAmount + (capitalFx ? (capital?.fractionalResult ?? 0) - (capital?.fees ?? 0) : 0),2),
         cumulativeDividendsAmount: finance.cumulativeDividendsAmount,
         fxAvailable: true,
-      }, partialMetadata);
+      }, { ...partialMetadata, ...(!capitalComplete ? { isPartialMarketData: true } : {}) });
     });
     const fxStatus: "complete" | "partial" | "missing" = (() => {
       let allAvail = true;
@@ -541,7 +555,7 @@ export async function translatePerformancePoints(
       asOf,
       {
         hasFinanceFxGap: usedSnapshotFinanceFallback,
-        hasSnapshotCoverageGap: coverage.hasSnapshotCoverageGap,
+        hasSnapshotCoverageGap: coverage.hasSnapshotCoverageGap || points.some((point) => point.isPartialMarketData && point.marketValueAmount === null),
         latestPartialSnapshotDate: coverage.latestPartialSnapshotDate,
       },
     );

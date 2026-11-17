@@ -73,6 +73,7 @@ import { buildHoldingsTickerId } from "../holdings/holdingsPreferenceHelpers";
 import { HoldingsDetailSheet } from "../holdings/HoldingsDetailSheet";
 import { useHoldingsSelection } from "../holdings/useHoldingsSelection";
 import { HoldingActivityDetail } from "../holdings/HoldingActivityDetail";
+import { resolveCurrentHoldingDetail } from "../../features/portfolio/holdingDetailRow";
 import { buildPriceStateActivityPath, getPriceState, priceStateSortRank } from "../../features/price-state/priceState";
 
 type HoldingsDisplayMode = "aggregated" | "expanded" | "accounts";
@@ -973,7 +974,7 @@ export function HoldingsTable({
       <HoldingsDetailSheet
         description={dict.tickerHistory.actionTimelineSubtitle}
         onOpenChange={(open) => { if (!open) setSelectedHolding(null); }}
-        selected={selectedHolding}
+        selected={resolveCurrentHoldingDetail(selectedHolding, groups)}
         title={(selected) => "accountId" in selected
           ? `${selected.ticker} · ${selected.marketCode} · ${selected.accountName?.trim() || selected.accountId}`
           : `${selected.ticker} · ${selected.marketCode}`}

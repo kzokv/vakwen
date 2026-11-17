@@ -1,3 +1,4 @@
+import { capitalReductionInputSchema, capitalReductionConfirmSchema, capitalReductionAnnouncementInputSchema } from "../validation/capitalReduction.js";
 import { z } from "zod";
 import {
   ACCOUNT_DEFAULT_CURRENCIES,
@@ -294,6 +295,41 @@ const toolDefinitions = {
     outputSchema: researchFinancialStatementsToolOutputSchema,
     scope: "research:read" as const,
     accessKind: "read" as const,
+  },
+  retry_capital_reduction_announcement_generation: {
+    description: "Retry durable historical regeneration for one registered source-announcement version and owned account. This does not post a financial action.",
+    inputSchema: z.object({ ...mcpSharedInputShape,accountId:z.string().min(1),eventId:z.string().min(1),version:z.number().int().positive() }).strict(),
+    scope:"transaction:write" as const,accessKind:"write" as const,
+  },
+  preview_capital_reduction_announcement: {
+    description: "Preview publication of immutable public capital-reduction terms before conversion. This registers source terms only and has no account financial effect. Show all terms and wait for explicit confirmation.",
+    inputSchema: z.object({ ...mcpSharedInputShape, input: capitalReductionAnnouncementInputSchema }).strict(),
+    scope: "transaction:write" as const, accessKind: "write" as const,
+  },
+  confirm_capital_reduction_announcement: {
+    description: "Confirm exactly the latest source-announcement publication preview after explicit approval. This does not post an account conversion or settlement.",
+    inputSchema: z.object({ ...mcpSharedInputShape, confirmation: capitalReductionConfirmSchema }).strict(),
+    scope: "transaction:write" as const, accessKind: "write" as const,
+  },
+  get_capital_reductions: {
+    description: "List scoped account capital reductions, immutable announcement versions, reconciliation, valuation and snapshot-generation status.",
+    inputSchema: z.object({ ...mcpSharedInputShape, accountId: z.string().optional(), ticker: z.string().optional() }).strict(),
+    scope: "portfolio:mcp_read" as const, accessKind: "read" as const,
+  },
+  preview_capital_reduction: {
+    description: "Preview POST, RECONCILE, AMEND, VOID or RESTORE for an account capital reduction. Show expected quantities, fees, dependent effects and blockers, then wait for explicit user confirmation.",
+    inputSchema: z.object({ ...mcpSharedInputShape, input: capitalReductionInputSchema }).strict(),
+    scope: "transaction:write" as const, accessKind: "write" as const,
+  },
+  confirm_capital_reduction: {
+    description: "Confirm exactly the latest capital-reduction preview after explicit approval. Supply its complete confirmation fields; safe retries return the same result.",
+    inputSchema: z.object({ ...mcpSharedInputShape, confirmation: capitalReductionConfirmSchema }).strict(),
+    scope: "transaction:write" as const, accessKind: "write" as const,
+  },
+  retry_capital_reduction_generation: {
+    description: "Retry failed or stale historical snapshot regeneration for a posted account capital reduction.",
+    inputSchema: z.object({ ...mcpSharedInputShape, actionId: z.string().min(1) }).strict(),
+    scope: "transaction:write" as const, accessKind: "write" as const,
   },
   get_portfolio_overview: {
     description: `Return descriptive portfolio overview data with the user's default locale and reporting currency unless overridden. ${adviceBoundary}`,
@@ -1274,6 +1310,7 @@ function getToolAnnotations(name: McpToolName, accessKind: AiConnectorAccessKind
     return readOnlyToolAnnotations;
   }
   if (accessKind === "read") return readOnlyToolAnnotations;
+  if (name === "confirm_capital_reduction" || name === "confirm_capital_reduction_announcement") return idempotentBoundedWriteToolAnnotations;
   if (name === "update_posted_transactions") return idempotentBoundedWriteToolAnnotations;
   if (name === "delete_posted_transactions") return idempotentDestructiveWriteToolAnnotations;
   if (

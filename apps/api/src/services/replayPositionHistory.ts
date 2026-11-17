@@ -1,3 +1,4 @@
+import { calculateCashCapitalReduction } from "@vakwen/domain";
 import { applyBuyToLots, allocateSellLots, roundToDecimal } from "@vakwen/domain";
 import type { Lot, MarketCode } from "@vakwen/domain";
 import { currencyFor, MARKET_CODES, type MarketCode as SharedMarketCode } from "@vakwen/shared-types";
@@ -302,6 +303,13 @@ export function applyPositionActionToLots(currentLots: Lot[], action: PositionAc
     return currentLots;
   }
 
+  if (action.actionType === "CASH_CAPITAL_REDUCTION") {
+    const detail = action.capitalReduction;
+    if (!detail) throw new Error(`Capital reduction ${action.id} is missing source details`);
+    const eligible = currentLots.filter((lot) => lot.accountId === action.accountId && lot.ticker === action.ticker);
+    const calculation = calculateCashCapitalReduction({ lots: eligible, ...detail.announcement, confirmedWholeQuantity: detail.confirmedWholeQuantity });
+    return currentLots.map((lot) => calculation.lots.find((updated) => updated.id === lot.id) ?? lot);
+  }
   if (action.actionType === "STOCK_DIVIDEND") {
     const nextSequence =
       currentLots
@@ -394,7 +402,7 @@ export function deriveEligibleQuantityFromReplayStream(
     const trade = entry.trade;
     if (trade.type === "BUY") {
       const lot: Lot = {
-        id: `eligibility-lot-${trade.id}`,
+        id: `lot-${trade.id}`,
         accountId: trade.accountId,
         ticker: trade.ticker,
         openQuantity: trade.quantity,
@@ -462,7 +470,7 @@ export function buildReplayLotsBeforeBoundary(
 
     if (entry.trade.type === "BUY") {
       lots = applyBuyToLots(lots, {
-        id: `boundary-lot-${entry.trade.id}`,
+        id: `lot-${entry.trade.id}`,
         accountId: entry.trade.accountId,
         ticker: entry.trade.ticker,
         openQuantity: entry.trade.quantity,
@@ -687,7 +695,7 @@ type ReplayBoundaryStreamEntry =
   | ReplayStreamEntry
   | { kind: "boundary"; boundary: ReplayBoundary };
 
-function compareReplayEntries(left: ReplayStreamEntry, right: ReplayStreamEntry): number {
+export function compareReplayEntries(left: ReplayStreamEntry, right: ReplayStreamEntry): number {
   const leftDate = left.kind === "trade" ? left.trade.tradeDate : left.action.actionDate;
   const rightDate = right.kind === "trade" ? right.trade.tradeDate : right.action.actionDate;
   if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
@@ -763,8 +771,8 @@ function compareReplayEntriesWithBoundary(left: ReplayBoundaryStreamEntry, right
 }
 
 export function compareTrades(
-  left: Awaited<ReturnType<Persistence["getTradeEventsForAccountTicker"]>>[number],
-  right: Awaited<ReturnType<Persistence["getTradeEventsForAccountTicker"]>>[number],
+  left: Pick<BookedTradeEvent, "id" | "tradeDate" | "tradeTimestamp" | "bookingSequence" | "bookedAt">,
+  right: Pick<BookedTradeEvent, "id" | "tradeDate" | "tradeTimestamp" | "bookingSequence" | "bookedAt">,
 ): number {
   return (
     (left.tradeTimestamp ?? "").localeCompare(right.tradeTimestamp ?? "")

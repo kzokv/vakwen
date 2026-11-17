@@ -1,3 +1,5 @@
+import { capitalReductionAsOfDate, loadCapitalReductionValuations } from "../services/capitalReductionValuation.js";
+import { registerCapitalReductionRoutes } from "./capitalReduction.js";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -777,6 +779,9 @@ const dividendCalculationAmendSchema = z.object({
 }).superRefine(requireDividendCalculationExpectation);
 
 const cashLedgerEntryTypes = [
+  "CAPITAL_REPAYMENT_RECEIPT",
+  "CAPITAL_FRACTION_RECEIPT",
+  "CAPITAL_REDUCTION_FEE_PAYMENT",
   "TRADE_SETTLEMENT_IN",
   "TRADE_SETTLEMENT_OUT",
   "DIVIDEND_RECEIPT",
@@ -935,6 +940,12 @@ const WRITER_ROLE_ROUTE_KEYS = new Set([
   "PATCH /fee-profiles/:id",
   "DELETE /fee-profiles/:id",
   "PUT /fee-profile-bindings",
+  "POST /portfolio/capital-reductions/announcements/preview",
+  "POST /portfolio/capital-reductions/announcements/confirm",
+  "POST /portfolio/capital-reductions/announcements/retry-generation",
+  "POST /portfolio/capital-reductions/preview",
+  "POST /portfolio/capital-reductions/confirm",
+  "POST /portfolio/capital-reductions/:actionId/retry-generation",
   "POST /portfolio/transactions",
   "GET /portfolio/transactions/sell-availability",
   "DELETE /portfolio/transactions/:tradeEventId",
@@ -1015,6 +1026,12 @@ const SHARED_CONTEXT_WRITE_ROUTE_KEYS = new Set([
   "PATCH /fee-profiles/:id",
   "DELETE /fee-profiles/:id",
   "PUT /fee-profile-bindings",
+  "POST /portfolio/capital-reductions/announcements/preview",
+  "POST /portfolio/capital-reductions/announcements/confirm",
+  "POST /portfolio/capital-reductions/announcements/retry-generation",
+  "POST /portfolio/capital-reductions/preview",
+  "POST /portfolio/capital-reductions/confirm",
+  "POST /portfolio/capital-reductions/:actionId/retry-generation",
   "POST /portfolio/transactions",
   "GET /portfolio/transactions/sell-availability",
   "DELETE /portfolio/transactions/:tradeEventId",
@@ -1067,6 +1084,12 @@ const SHARED_CONTEXT_WRITE_CAPABILITY_MATRIX: Readonly<Record<string, ShareCapab
   "PATCH /fee-profiles/:id": "account:manage",
   "DELETE /fee-profiles/:id": "account:manage",
   "PUT /fee-profile-bindings": "account:manage",
+  "POST /portfolio/capital-reductions/announcements/preview": "transaction:write",
+  "POST /portfolio/capital-reductions/announcements/confirm": "transaction:write",
+  "POST /portfolio/capital-reductions/announcements/retry-generation": "transaction:write",
+  "POST /portfolio/capital-reductions/preview": "transaction:write",
+  "POST /portfolio/capital-reductions/confirm": "transaction:write",
+  "POST /portfolio/capital-reductions/:actionId/retry-generation": "transaction:write",
   "POST /portfolio/transactions": "transaction:write",
   "GET /portfolio/transactions/sell-availability": "transaction:write",
   "DELETE /portfolio/transactions/:tradeEventId": "transaction:write",
@@ -3251,6 +3274,12 @@ async function attachInstrumentNamesToPrimaryHoldings<T extends ReturnType<typeo
   }));
 }
 
+function portfolioAsOfDate(store: Store): string {
+  const capital = store.accounting.facts.capitalReductions;
+  const relevant = capital && (capital.actions.some((action) => store.accounts.some((account) => account.id===action.accountId)) || capital.announcements.some((announcement) => store.accounting.projections.holdings.some((holding) => holding.ticker===announcement.ticker && holding.currency==="TWD")));
+  return relevant ? capitalReductionAsOfDate(new Date().toISOString()) : new Date().toISOString().slice(0,10);
+}
+
 async function buildDashboardPrimaryOverview(
   store: Store,
   userId: string,
@@ -3474,6 +3503,7 @@ function sortSnapshotTradesForPerformance<T extends SnapshotTradeInput>(trades: 
 }
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  registerCapitalReductionRoutes(app);
   registerInviteStatusEviction(app);
   registerAnonymousShareEviction(app);
   registerMarketDataPriceEviction(app);
@@ -3485,6 +3515,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     assertE2EResetEnabled();
     const identity = resolveUserId(req, app.oauthConfig?.sessionSecret);
     const store = createSeededStoreForUser(identity.userId);
+    store.accounting.facts.capitalReductions = { announcements: [], actions: [], previews: [] };
     await app.persistence.saveStore(store);
 
     // Ensure user identity exists for server-side getProfile()
@@ -6587,7 +6618,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       const quotes = Object.values(snapshotMap).filter((s): s is ResolvedQuoteSnapshot => s !== null);
       const marketStates = await timing.measure("build_market_states", "app", () =>
         buildHeldMarketStatesForStoreHoldings(app, store, holdings, true));
-      const summaryAsOf = new Date().toISOString().slice(0, 10);
+      const summaryAsOf = portfolioAsOfDate(store);
+      const capitalReductionValuations = await loadCapitalReductionValuations(store, app.persistence, summaryAsOf);
       const overview = await timing.measure("build_portfolio_page_data", "app", () =>
         Promise.resolve(buildDashboardOverview(store, {
           integrityIssue: null,
@@ -6595,6 +6627,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           quotes,
           regularSessionOnly: true,
           summaryAsOf,
+          capitalReductionValuations,
         })));
       const holdingGroups = await timing.measure("build_holding_groups", "app", () =>
         Promise.resolve(buildOverviewHoldingGroups(store, overview.holdings)));
@@ -6602,6 +6635,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return {
         capabilities: derivePortfolioCapabilities(store.accounts),
         settings: overview.settings,
+        capitalReductions: overview.capitalReductions,
         holdings: overview.holdings,
         holdingGroups,
         dividends: overview.dividends,
@@ -6688,7 +6722,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       const quotes = Object.values(snapshotMap).filter((s): s is ResolvedQuoteSnapshot => s !== null);
       const marketStates = await timing.measure("build_market_states", "app", () =>
         buildHeldMarketStatesForStoreHoldings(app, store, holdings, true));
-      const summaryAsOf = new Date().toISOString().slice(0, 10);
+      const summaryAsOf = portfolioAsOfDate(store);
+      const capitalReductionValuations = await loadCapitalReductionValuations(store, app.persistence, summaryAsOf);
       const overview = await timing.measure("build_portfolio_enrichment", "app", () =>
         Promise.resolve(buildDashboardOverview(store, {
           integrityIssue: null,
@@ -6696,6 +6731,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           quotes,
           regularSessionOnly: true,
           summaryAsOf,
+          capitalReductionValuations,
         })));
       const reportingCurrency = resolveReportingCurrency(prefs);
       const holdingAllocationBasis = resolveHoldingAllocationBasis(prefs);
@@ -6728,6 +6764,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return {
         capabilities: derivePortfolioCapabilities(store.accounts),
         settings: overview.settings,
+        capitalReductions: overview.capitalReductions,
         refreshPending,
         holdings: overview.holdings,
         holdingGroups: translatedHoldingGroups,
@@ -7146,13 +7183,15 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
       const marketStates = await timing.measure("build_market_states", "app", () =>
         buildHeldMarketStatesForStoreHoldings(app, store, holdings, true));
-      const summaryAsOf = new Date().toISOString().slice(0, 10);
+      const summaryAsOf = portfolioAsOfDate(store);
+      const capitalReductionValuations = await loadCapitalReductionValuations(store, app.persistence, summaryAsOf);
       const overview = await timing.measure("build_overview", "app", () => Promise.resolve(buildDashboardOverview(store, {
         integrityIssue: getStoreIntegrityIssue(store),
         marketStates,
         quotes,
         regularSessionOnly: true,
         summaryAsOf,
+        capitalReductionValuations,
       })));
       const reportingCurrency = resolveReportingCurrency(prefs);
       const holdingAllocationBasis = resolveHoldingAllocationBasis(prefs);
@@ -7253,13 +7292,15 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
       const marketStates = await timing.measure("build_market_states", "app", () =>
         buildHeldMarketStatesForStoreHoldings(app, store, holdings, true));
-      const summaryAsOf = new Date().toISOString().slice(0, 10);
+      const summaryAsOf = portfolioAsOfDate(store);
+      const capitalReductionValuations = await loadCapitalReductionValuations(store, app.persistence, summaryAsOf);
       const overview = await timing.measure("build_overview", "app", () => Promise.resolve(buildDashboardOverview(store, {
         integrityIssue: getStoreIntegrityIssue(store),
         marketStates,
         quotes,
         regularSessionOnly: true,
         summaryAsOf,
+        capitalReductionValuations,
       })));
       const reportingCurrency = resolveReportingCurrency(prefs);
       const holdingAllocationBasis = resolveHoldingAllocationBasis(prefs);

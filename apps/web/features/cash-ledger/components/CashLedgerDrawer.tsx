@@ -1,10 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import type { AppDictionary } from "../../../lib/i18n";
 import type { LocaleCode } from "@vakwen/shared-types";
 import { formatCurrencyAmount, formatDateLabel } from "../../../lib/utils";
 import { Drawer } from "../../../components/ui/Drawer";
 import type { EnrichedCashLedgerEntry } from "../types";
+import { cashLedgerEntryTypeLabel, isCapitalReductionCashType } from "../utils/entryTypes";
+import { capitalReductionCashReferences } from "../utils/capitalReductionCashReferences";
 
 interface CashLedgerDrawerProps {
   entry: EnrichedCashLedgerEntry | null;
@@ -17,6 +20,8 @@ export function CashLedgerDrawer({ entry, onClose, dict, locale }: CashLedgerDra
   if (!entry) return null;
 
   const d = dict.cashLedger;
+  const references = capitalReductionCashReferences(entry);
+  const isCapitalReduction = isCapitalReductionCashType(entry.entryType);
   const isSettlement = entry.entryType === "TRADE_SETTLEMENT_IN" || entry.entryType === "TRADE_SETTLEMENT_OUT";
   const isDividend = entry.entryType === "DIVIDEND_RECEIPT" || entry.entryType === "DIVIDEND_DEDUCTION";
 
@@ -24,7 +29,9 @@ export function CashLedgerDrawer({ entry, onClose, dict, locale }: CashLedgerDra
     ? d.drawerSettlementTitle
     : isDividend
       ? d.drawerDividendTitle
-      : d.pageTitle;
+      : isCapitalReduction
+        ? d.drawerCapitalReductionTitle
+        : d.pageTitle;
 
   return (
     <Drawer
@@ -54,6 +61,14 @@ export function CashLedgerDrawer({ entry, onClose, dict, locale }: CashLedgerDra
             <DetailRow label={d.drawerDeductionTotal} value={formatCurrencyAmount(entry.dividendDetail.deductionTotal, entry.currency, locale)} />
           </>
         )}
+
+        {isCapitalReduction ? <section className="space-y-3 rounded-lg border border-border bg-muted/20 p-3" data-testid="cash-ledger-capital-reduction-source">
+          <DetailRow label={d.columnType} value={cashLedgerEntryTypeLabel(entry.entryType, dict)} />
+          {references.actionReference ? <DetailRow label={d.drawerCapitalReductionReference} value={references.actionReference} /> : null}
+          {references.componentReference ? <DetailRow label={d.drawerCapitalReductionComponentReference} value={references.componentReference} /> : null}
+          <p className="text-sm text-muted-foreground">{d.capitalReductionSourceNotice}</p>
+          <Link href="/portfolio" className="text-sm underline">{d.capitalReductionViewHoldings}</Link>
+        </section> : null}
 
         {!isSettlement && !isDividend && (
           <DetailRow label={d.columnAmount} value={formatCurrencyAmount(entry.amount, entry.currency, locale)} />

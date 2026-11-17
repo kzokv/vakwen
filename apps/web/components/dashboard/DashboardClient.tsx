@@ -44,6 +44,7 @@ import {
   CardTitle,
 } from "../ui/shadcn/card";
 import type { DashboardSnapshot } from "../../features/dashboard/types";
+import { CAPITAL_REDUCTION_CHANGED_EVENT } from "../../features/capital-reduction/service";
 
 const DEFAULT_TRANSACTION = {
   accountId: "",
@@ -141,6 +142,12 @@ export function DashboardClient({
   refreshDashboardPricesRef.current = dashboard.refreshPrices;
   const refreshPerformanceRef = useRef(performance.refresh);
   refreshPerformanceRef.current = performance.refresh;
+  useEffect(() => {
+    const refresh = () => { void refreshDashboardRef.current(); void refreshPerformanceRef.current(); };
+    window.addEventListener(CAPITAL_REDUCTION_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(CAPITAL_REDUCTION_CHANGED_EVENT, refresh);
+  }, []);
+
   const refreshDashboardAndPerformance = () => {
     void dashboard.refresh();
     void performance.refresh();

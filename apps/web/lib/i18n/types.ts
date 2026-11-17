@@ -1865,6 +1865,14 @@ export interface AppDictionary {
     entryTypeDividendReceipt: string;
     entryTypeDividendDeduction: string;
     entryTypeManualAdjustment: string;
+    entryTypeCapitalRepaymentReceipt: string;
+    entryTypeCapitalFractionReceipt: string;
+    entryTypeCapitalReductionFeePayment: string;
+    drawerCapitalReductionTitle: string;
+    drawerCapitalReductionReference: string;
+    drawerCapitalReductionComponentReference: string;
+    capitalReductionSourceNotice: string;
+    capitalReductionViewHoldings: string;
     entryTypeFxTransferOut: string;
     entryTypeFxTransferIn: string;
     entryTypeFxTransferFilter: string;

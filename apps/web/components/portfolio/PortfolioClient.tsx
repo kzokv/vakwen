@@ -22,6 +22,7 @@ import { Button } from "../ui/Button";
 import { ToggleGroup, ToggleGroupItem } from "../ui/shadcn/toggle-group";
 import { shouldPollForOpenMarket } from "../../features/price-state/priceState";
 import type { AppDictionary } from "../../lib/i18n";
+import { CAPITAL_REDUCTION_CHANGED_EVENT } from "../../features/capital-reduction/service";
 
 export function PortfolioClient({
   initialPrimaryData = null,
@@ -65,6 +66,12 @@ export function PortfolioClient({
   const portfolioPollMs = resolveTickerPricePollMs(portfolio.data.settings, initialPrimaryData?.settings);
   const shouldPollPortfolioPrices = shouldPollForOpenMarket(portfolio.data.holdings)
     && isTickerPriceIntradayEnabled(portfolio.data.settings, initialPrimaryData?.settings);
+
+  useEffect(() => {
+    const refresh = () => { void refreshPortfolioRef.current(); };
+    window.addEventListener(CAPITAL_REDUCTION_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(CAPITAL_REDUCTION_CHANGED_EVENT, refresh);
+  }, []);
   const refreshPricesStatus = formatRefreshPricesPending(dict, portfolio.data.refreshPending ?? null);
 
   useEffect(() => {
