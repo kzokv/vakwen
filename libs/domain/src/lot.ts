@@ -21,8 +21,15 @@ export function allocateSellLots(lots: Lot[], quantityToSell: number): SellAlloc
     throw new Error("Insufficient quantity to sell");
   }
 
-  const allocatedCostAmount = roundToDecimal(averageCostAmount * quantityToSell, 2);
-  const remainingOpenCostAmount = Math.max(0, totalOpenCostAmount - allocatedCostAmount);
+  // The rounded average is for display only. Allocate the aggregate cost in
+  // cents so a sale cannot create cost or leave cost behind on liquidation.
+  const totalOpenCostMinorUnits = costToMinorUnits(totalOpenCostAmount);
+  const allocatedCostMinorUnits = roundNonNegativeRatio(
+    totalOpenCostMinorUnits * BigInt(quantityToSell),
+    BigInt(totalOpenQuantity),
+  );
+  const allocatedCostAmount = Number(allocatedCostMinorUnits) / 100;
+  const remainingOpenCostAmount = Number(totalOpenCostMinorUnits - allocatedCostMinorUnits) / 100;
 
   let remainingQty = quantityToSell;
   const matchedLotIds: string[] = [];
@@ -58,6 +65,24 @@ export function allocateSellLots(lots: Lot[], quantityToSell: number): SellAlloc
 
   const updatedLots = normalizedLots.map((lot) => updates.get(lot.id) ?? lot);
   return { matchedLotIds, matchedAllocations, allocatedCostAmount, averageCostAmount, updatedLots };
+}
+
+function roundNonNegativeRatio(numerator: bigint, denominator: bigint): bigint {
+  const quotient = numerator / denominator;
+  const remainder = numerator % denominator;
+  return quotient + (remainder * 2n >= denominator ? 1n : 0n);
+}
+
+function costToMinorUnits(amount: number): bigint {
+  // Parse the decimal representation rather than multiplying a binary float
+  // by 100; that multiplication can put an exact half-cent below the tie.
+  const [coefficient, exponent = "0"] = amount.toString().split(/e/i);
+  const [whole, fraction = ""] = coefficient.split(".");
+  const digits = BigInt(whole + fraction);
+  const scale = fraction.length - Number(exponent) - 2;
+  return scale <= 0
+    ? digits * 10n ** BigInt(-scale)
+    : roundNonNegativeRatio(digits, 10n ** BigInt(scale));
 }
 
 function normalizeLotsForWeightedAverage(lots: Lot[], forcedTotalCostAmount?: number): Lot[] {

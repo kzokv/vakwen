@@ -1,3 +1,4 @@
+import { capitalReductionAsOfDate, loadCapitalReductionValuations } from "./capitalReductionValuation.js";
 import { roundToDecimal, type CurrencyCode, type MarketCode } from "@vakwen/domain";
 import {
   ACCOUNT_DEFAULT_CURRENCIES,
@@ -151,10 +152,12 @@ export async function getPortfolioOverview(
     tradingCalendar: deps.tradingCalendar,
   });
   const quotes = Object.values(snapshotMap).filter((quote): quote is ResolvedQuoteSnapshot => quote !== null);
+  const capitalReductionValuations = await loadCapitalReductionValuations(store, deps.app.persistence);
   const overview = buildDashboardOverview(store, {
+    capitalReductionValuations,
     integrityIssue: null,
     quotes,
-    summaryAsOf: new Date().toISOString().slice(0, 10),
+    summaryAsOf: store.accounting.facts.capitalReductions?.actions.length || store.accounting.facts.capitalReductions?.announcements.some((announcement) => store.accounting.projections.holdings.some((holding) => holding.currency==="TWD" && holding.ticker===announcement.ticker)) ? capitalReductionAsOfDate(new Date().toISOString()) : new Date().toISOString().slice(0, 10),
   });
   const { reportingCurrency, locale } = resolveOverrides(prefs, overrides);
   const summary = await translateOverviewSummary(
@@ -170,6 +173,7 @@ export async function getPortfolioOverview(
     reportingCurrency,
     portfolioContextUserId: deps.requestContext.resolvedContext.portfolioContextUserId,
     summary,
+    capitalReductions: overview.capitalReductions,
     holdings: overview.holdings,
     dividends: overview.dividends,
   };

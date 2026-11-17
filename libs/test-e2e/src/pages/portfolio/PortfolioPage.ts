@@ -20,12 +20,34 @@ export interface TPortfolioElements extends TElementLocatorHelpers {
   allocationBasisSelect: Locator;
   allocationBasisMarketValue: Locator;
   allocationBasisCostBasis: Locator;
+  holdingDetailButton: (ticker: string, marketCode: string, accountId: string) => Locator;
+  capitalReduction: (name: string) => Locator;
+  capitalReductionMetric: (section: string, label: string) => Locator;
+  holdingActivity: Locator;
+  capitalReductionAlert: Locator;
+  capitalReductionEditPreview: Locator;
 }
 
 export class PortfolioPage extends BasePage<TPortfolioElements> {
+  async captureCapitalReduction(path: string, section = "panel"): Promise<void> {
+    const region = section === "valuation" ? this.locate("capital-reduction-action").getByTestId("capital-reduction-valuation") : this.locate(`capital-reduction-${section}`);
+    await region.getByRole("heading").first().scrollIntoViewIfNeeded();
+    await this.page.screenshot({ path, fullPage: true });
+  }
+
+  async capitalReductionOverflow(): Promise<number> {
+    return this.page.getByRole("dialog").evaluate(element => element.scrollWidth - element.clientWidth);
+  }
+
   protected initializeElements(): void {
     this._elements = {
       ...this.locatorHelpers(),
+      holdingDetailButton: (ticker, marketCode, accountId) => this.locate(`holding-child-open-detail-${ticker}-${marketCode}-${accountId}`).filter({ visible: true }),
+      capitalReduction: (name) => this.locate(`capital-reduction-${name}`),
+      capitalReductionMetric: (section, label) => this.withinByCss(this.locate(`capital-reduction-${section}`), section === "calculation" ? ":scope > div" : "dl > div").filter({ has: this.page.getByText(label, { exact: true }) }).locator("dd"),
+      holdingActivity: this.locate("holding-activity-detail"),
+      capitalReductionAlert: this.withinByRole(this.locate("capital-reduction-panel"), "alert"),
+      capitalReductionEditPreview: this.withinByRole(this.locate("capital-reduction-editor"), "button", { name: "Back to editing", exact: true }),
       holdingsTable: this.locate("holdings-table", "Holdings Table"),
       portfolioIntro: this.locate("portfolio-intro", "Portfolio Intro"),
       firstHoldingRow: this.nth(this.locate("holdings-table"), "tbody tr", 0, "First Holding Row"),

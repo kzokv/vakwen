@@ -1,3 +1,4 @@
+import { deriveEligibleQuantityFromReplayStream } from "./replayPositionHistory.js";
 import { randomUUID } from "node:crypto";
 import {
   calculateDividendCashReconciliation,
@@ -1193,6 +1194,11 @@ export function deriveEligibleQuantity(
   exDividendDate: string,
   marketCode: MarketCode,
 ): number {
+  const actions = store.accounting.facts.positionActions.filter((action) => action.accountId === accountId && action.ticker === ticker && action.marketCode === marketCode && action.actionDate < exDividendDate);
+  if (actions.some((action) => action.actionType === "CASH_CAPITAL_REDUCTION")) return deriveEligibleQuantityFromReplayStream(
+    store.accounting.facts.tradeEvents.filter((trade) => trade.accountId === accountId && trade.ticker === ticker && trade.marketCode === marketCode), actions,
+    accountId, ticker, marketCode, { exDividendDate },
+  );
   return Math.max(
     0,
     store.accounting.facts.tradeEvents

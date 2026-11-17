@@ -51,4 +51,19 @@ describe("fetchCashLedgerEntries", () => {
     expect(url).not.toContain("sortBy=");
     expect(url).not.toContain("sortOrder=");
   });
+  it("capital reduction filters: query actual receipt and fee-payment categories → preserve separate entry types", async () => {
+    await fetchCashLedgerEntries({ entryType: ["CAPITAL_REPAYMENT_RECEIPT", "CAPITAL_FRACTION_RECEIPT", "CAPITAL_REDUCTION_FEE_PAYMENT"] });
+    const url = mockGetJson.mock.calls[0]![0] as string;
+    const params = new URLSearchParams(url.split("?")[1]);
+    expect(params.getAll("entryType")).toEqual(["CAPITAL_REPAYMENT_RECEIPT", "CAPITAL_FRACTION_RECEIPT", "CAPITAL_REDUCTION_FEE_PAYMENT"]);
+    expect(params.getAll("entryType")).not.toContain("MANUAL_ADJUSTMENT");
+    expect(params.getAll("entryType")).not.toContain("FX_TRANSFER_IN");
+  });
+
+  it("cash response: retain explicit camel-case capital reduction parent → keep component reference independent", async () => {
+    mockGetJson.mockResolvedValue({ entries: [{ id: "synthetic-receipt", relatedCapitalReductionId: "synthetic-action", sourceReference: "synthetic-receipt-effect" }], summary: [], total: 1 });
+    const response = await fetchCashLedgerEntries();
+    expect(response.entries[0]).toMatchObject({ relatedCapitalReductionId: "synthetic-action", sourceReference: "synthetic-receipt-effect" });
+  });
+
 });

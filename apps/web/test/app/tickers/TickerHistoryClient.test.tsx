@@ -40,8 +40,8 @@ vi.mock("../../../features/portfolio/services/tickerDetailsService", async () =>
   };
 });
 
-vi.mock("../../../components/layout/AppShellDataContext", () => ({
-  useAppShellData: () => ({
+vi.mock("../../../components/layout/AppShellDataContext", () => {
+  const useAppShellData = () => ({
     canUseGlobalQuickActions: true,
     contextRefreshSignal: 0,
     locale: "en",
@@ -52,8 +52,9 @@ vi.mock("../../../components/layout/AppShellDataContext", () => ({
     reportingCurrencyError: "",
     sessionUserId: "user-1",
     uiDict: {},
-  }),
-}));
+  });
+  return { useAppShellData, useOptionalAppShellData: useAppShellData };
+});
 
 vi.mock("../../../components/layout/BreadcrumbProvider", () => ({
   useBreadcrumb: (items: unknown) => breadcrumbMocks.set(items),

@@ -8,3 +8,5 @@ export * from "./dividend-stock-calculation.js";
 export * from "./dividend-deductions.js";
 export * from "./performanceRange.js";
 export * from "./portfolioCapabilities.js";
+
+export * from "./cash-capital-reduction.js";

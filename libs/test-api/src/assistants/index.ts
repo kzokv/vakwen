@@ -15,3 +15,4 @@ export * from "./session/index.js";
 export * from "./shares/index.js";
 export * from "./settings/index.js";
 export * from "./transactions/index.js";
+export * from "./capitalReductions/index.js";

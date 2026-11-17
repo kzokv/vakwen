@@ -8,6 +8,7 @@ import type {
 } from "@playwright/test";
 import type { TestUser } from "@vakwen/test-framework/core";
 import type {
+  TCapitalReductionsApiAssistant,
   TAccountsApiAssistant,
   TAdminApiAssistant,
   TAnonymousShareTokensApiAssistant,
@@ -26,6 +27,7 @@ import type {
 } from "@vakwen/test-api/assistants";
 import { createApiSessionTest } from "@vakwen/test-api/fixtures/sessionBase";
 import {
+  CapitalReductionsEndpoint,
   AccountsEndpoint,
   AdminEndpoint,
   AnonymousShareTokensEndpoint,
@@ -46,6 +48,7 @@ import {
 const base = createApiSessionTest("oauth");
 
 type THttpApiFixtures = {
+  capitalReductionsApi: TCapitalReductionsApiAssistant;
   accountsApi: TAccountsApiAssistant;
   adminApi: TAdminApiAssistant;
   anonymousShareTokensApi: TAnonymousShareTokensApiAssistant;
@@ -74,6 +77,7 @@ type THttpApiTest = TestType<
 >;
 
 export const test: THttpApiTest = base.extend<THttpApiFixtures>({
+  capitalReductionsApi: createApiFixture<TCapitalReductionsApiAssistant>(CapitalReductionsEndpoint),
   sessionApi: createApiFixture<TSessionApiAssistant>(SessionEndpoint),
   settingsApi: createApiFixture<TSettingsApiAssistant>(SettingsEndpoint),
   profileApi: createApiFixture<TProfileApiAssistant>(ProfileEndpoint),

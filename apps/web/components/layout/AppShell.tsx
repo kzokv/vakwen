@@ -338,8 +338,14 @@ export function AppShell({
       "account_soft_deleted",
       "account_restored",
       "account_hard_purged",
+      "capital_reduction_changed",
     ],
-    onEvent: () => {
+    onEvent: (event) => {
+      if (event && typeof event === "object" && "type" in event && event.type === "capital_reduction_changed") {
+        clearPortfolioContextRouteCaches();
+        bumpContextRefreshSignal();
+        return;
+      }
       const refreshId = ++accountEventRefreshIdRef.current;
       clearPortfolioContextRouteCaches();
       bumpContextRefreshSignal();

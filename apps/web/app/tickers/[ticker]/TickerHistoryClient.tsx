@@ -45,6 +45,7 @@ import {
   getHoldingsQuoteStatusLabel,
 } from "../../../components/holdings/HoldingsDataHealth";
 import { HoldingActionDetail } from "../../../components/holdings/HoldingActionDetail";
+import { CapitalReductionPanel } from "../../../features/capital-reduction/CapitalReductionPanel";
 import { PriceStateChip } from "../../../components/holdings/PriceStateChip";
 import { holdingsFinanceSurfaceClass, holdingsFinanceToneClass, holdingsWarningBadgeClassName } from "../../../components/holdings/holdingsStyle";
 import { useTransactionMutations } from "../../../features/portfolio/hooks/useTransactionMutations";
@@ -704,6 +705,7 @@ export function TickerHistoryClient({
     return candidateAccounts.filter((account) => account.defaultCurrency === recordCurrency);
   }, [accounts, recordCurrency, transactionAccountFilter, transactionAccountIdsFilter]);
   const recordAccountIds = useMemo(() => recordAccounts.map((account) => account.id), [recordAccounts]);
+  const capitalReductionAccounts = useMemo(() => recordAccounts.map((account) => ({ id: account.id, name: account.name, currency: account.defaultCurrency })), [recordAccounts]);
   const recordAccountIdSet = useMemo(() => new Set(recordAccountIds), [recordAccountIds]);
   const defaultRecordAccountId = recordAccountIds[0] ?? "";
   const effectiveHoldingGroup = detailsState.holdingGroup;
@@ -1805,6 +1807,11 @@ export function TickerHistoryClient({
                 )}
                 </Card>
               </div>
+              {recordMarketCode === "TW" ? (
+                <div className="min-w-0 lg:col-span-2">
+                  <CapitalReductionPanel ticker={ticker} accounts={capitalReductionAccounts} locale={locale} onChanged={() => { void refresh(); }} />
+                </div>
+              ) : null}
               {actionDetailRow ? (
                 <div className="min-w-0 lg:col-span-2">
                   <HoldingActionDetail
@@ -1813,6 +1820,7 @@ export function TickerHistoryClient({
                     marketCode={detailsState.identity.marketCode}
                     onActionPosted={refresh}
                     row={actionDetailRow}
+                    showCapitalReduction={false}
                     transactions={displayTransactions}
                     allowAuthoring
                   />

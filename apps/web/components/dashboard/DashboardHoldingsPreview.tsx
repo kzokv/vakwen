@@ -102,6 +102,7 @@ import {
 } from "../holdings/HoldingsDataHealth";
 import { HoldingsDetailSheet } from "../holdings/HoldingsDetailSheet";
 import { HoldingActivityDetail } from "../holdings/HoldingActivityDetail";
+import { resolveCurrentHoldingDetail } from "../../features/portfolio/holdingDetailRow";
 import { CalendarUnknownWarnings } from "../holdings/CalendarUnknownWarnings";
 import { PriceStateChip } from "../holdings/PriceStateChip";
 import {
@@ -856,7 +857,7 @@ export function DashboardHoldingsPreview({
       <HoldingsDetailSheet
         description={dict.tickerHistory.actionTimelineSubtitle}
         onOpenChange={(open) => { if (!open) setSelectedActivity(null); }}
-        selected={selectedActivity}
+        selected={resolveCurrentHoldingDetail(selectedActivity, groups)}
         title={(row) => "accountId" in row
           ? `${row.ticker} · ${row.marketCode} · ${row.accountName?.trim() || row.accountId}`
           : `${row.ticker} · ${row.marketCode}`}

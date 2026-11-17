@@ -2472,7 +2472,7 @@ describePostgres("postgres migrations", () => {
       {
         trade_event_id: sellTrade.id,
         allocated_quantity: 5,
-        allocated_cost_amount: 505.3,
+        allocated_cost_amount: 505.28,
         lot_opened_sequence: 1,
       },
     ]);
@@ -2531,11 +2531,13 @@ describePostgres("postgres migrations", () => {
         accountId: "user-1-acc-1",
         ticker: "2330",
         quantity: 5,
-        costBasisAmount: 505.26,
+        costBasisAmount: 505.28,
       }),
     ]);
     const reloadedSell = reloaded.accounting.facts.tradeEvents.find((tx) => tx.id === sellTrade.id);
-    expect(reloadedSell?.realizedPnlAmount).toBe(120.37);
+    expect(reloadedSell?.realizedPnlAmount).toBe(120.39);
+    // Raw buy evidence is 1010.5555; normalized acquisition cost is 1010.56 (101056 cents).
+    expect(lotAllocations.rows[0]!.allocated_cost_amount + reloaded.accounting.projections.holdings[0]!.costBasisAmount).toBe(1010.56);
   });
 
   it("[posted trades]: selling after a fully allocated lot closes → keeps historical allocation references valid", async () => {

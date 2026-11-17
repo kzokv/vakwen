@@ -1534,6 +1534,32 @@ export class MemoryPersistence implements Persistence {
     );
     try {
       return await execute({
+        saveCapitalReductionStore: async (userId, store, commitAccounting = false) => {
+          if (userId !== ownerUserId || store.userId !== userId) throw new Error("transaction writer owner mismatch");
+          for (const announcement of store.accounting.facts.capitalReductions?.announcements ?? []) {
+            for (const existingStore of this.stores.values()) for (const existing of existingStore.accounting.facts.capitalReductions?.announcements ?? []) {
+              if (existing.eventId===announcement.eventId && (existing.ticker!==announcement.ticker || existing.venue!==announcement.venue)) throw routeError(409,"announcement_identity_conflict","Announcement identity belongs to another security or venue");
+              if (existing.eventId===announcement.eventId && existing.version===announcement.version && Object.entries(announcement).some(([key,value]) => existing[key as keyof typeof existing]!==value)) throw routeError(409,"announcement_immutable","Announcement version already contains different terms");
+              if (existing.eventId!==announcement.eventId && existing.ticker===announcement.ticker && existing.venue===announcement.venue && (existing.officialReference===announcement.officialReference || existing.conversionDate===announcement.conversionDate || existing.exchangeRecordDate===announcement.exchangeRecordDate)) throw routeError(409,"announcement_ambiguous","Resolve existing announcement identity");
+            }
+          }
+          const cashSourceKeys=new Set<string>();
+          for (const cash of store.accounting.facts.cashLedgerEntries) {
+            if (cash.sourceReference!==undefined) {
+              const sourceKey=JSON.stringify([cash.accountId,cash.source,cash.sourceReference]);
+              if (cashSourceKeys.has(sourceKey)) throw new Error("Duplicate cash ledger source effect");
+              cashSourceKeys.add(sourceKey);
+            }
+            const capital=["CAPITAL_REPAYMENT_RECEIPT","CAPITAL_FRACTION_RECEIPT","CAPITAL_REDUCTION_FEE_PAYMENT"].includes(cash.entryType);
+            if (capital) {
+              if (!Number.isFinite(cash.amount) || (cash.entryType==="CAPITAL_REDUCTION_FEE_PAYMENT" ? cash.amount>=0 : cash.amount<=0)) throw new Error("Capital reduction cash direction is invalid");
+              const action=store.accounting.facts.capitalReductions?.actions.find((row)=>row.id===cash.relatedCapitalReductionId);
+              if (!action || action.accountId!==cash.accountId || cash.userId!==userId || !cash.sourceReference || cash.relatedTradeEventId || cash.relatedDividendLedgerEntryId) throw new Error("Capital reduction cash effect owner, action link or source reference is invalid");
+            } else if (cash.relatedCapitalReductionId) throw new Error("Legacy cash entry cannot carry a capital reduction link");
+          }
+          if (commitAccounting) await this.saveStore(structuredClone(store));
+          else this.getOrCreateStore(userId).accounting.facts.capitalReductions = structuredClone(store.accounting.facts.capitalReductions);
+        },
         loadStore: async (userId) => {
           if (userId !== ownerUserId) throw new Error("transaction writer owner mismatch");
           return this.loadStore(userId);
@@ -3132,7 +3158,14 @@ export class MemoryPersistence implements Persistence {
   }
 
   async loadStore(userId: string) {
-    return this.getOrCreateStore(userId);
+    const store = this.getOrCreateStore(userId);
+    const announcements = new Map<string, import("@vakwen/shared-types").CapitalReductionAnnouncementDto>();
+    for (const existing of this.stores.values()) for (const row of existing.accounting.facts.capitalReductions?.announcements ?? []) announcements.set(`${row.eventId}:${row.version}`, row);
+    if (announcements.size || store.accounting.facts.capitalReductions) {
+      store.accounting.facts.capitalReductions ??= { announcements: [], actions: [], previews: [] };
+      store.accounting.facts.capitalReductions.announcements = structuredClone([...announcements.values()]);
+    }
+    return store;
   }
 
   private getOrCreateStore(userId: string): Store {
@@ -3210,6 +3243,8 @@ export class MemoryPersistence implements Persistence {
         throw routeError(409, "recompute_preview_drift", "Underlying records changed after preview");
       }
     }
+    // Legacy/full-store writers must not erase durable capital-reduction source history.
+    store.accounting.facts.capitalReductions ??= structuredClone(this.stores.get(store.userId)?.accounting.facts.capitalReductions);
     // Recompute jobs have their own lifecycle methods. Preserve their current
     // durable state when an older full-store snapshot is saved so a PREVIEWED
     // snapshot cannot delete or downgrade a RUNNING/CONFIRMED job.
@@ -5643,7 +5678,11 @@ export class MemoryPersistence implements Persistence {
         lotOpenedAt: allocation.lotOpenedAt,
       }));
 
-    return { trades, postedDividends, lotAllocations };
+    return { trades, postedDividends, lotAllocations,
+      capitalReductionAnnouncements: store.accounting.facts.capitalReductions?.announcements,
+      positionActions: store.accounting.facts.positionActions.filter((action) => !scope || (action.accountId === scope.accountId && action.ticker === scope.ticker && (!scope.marketCode || action.marketCode === scope.marketCode))),
+      capitalReductions: store.accounting.facts.capitalReductions?.actions.filter((action) => !scope || (action.accountId === scope.accountId && action.ticker === scope.ticker)),
+    };
   }
 
   async listHoldingSnapshotRepairScopesForTickerMarket(
@@ -9105,6 +9144,12 @@ export class MemoryPersistence implements Persistence {
         (e) => !removedDividendIds.has(e.dividendLedgerEntryId),
       );
       facts.positionActions = facts.positionActions.filter((action) => action.accountId !== accountId);
+      if (facts.capitalReductions) {
+        facts.capitalReductions.actions = facts.capitalReductions.actions.filter((action) => action.accountId !== accountId);
+        facts.capitalReductions.previews = facts.capitalReductions.previews.filter((record) => record.preview.input.accountId !== accountId);
+        facts.capitalReductions.announcementPreviews = facts.capitalReductions.announcementPreviews?.filter((record) => record.preview.input.accountId !== accountId);
+        facts.capitalReductions.announcementGenerations = facts.capitalReductions.announcementGenerations?.filter((entry) => entry.accountId !== accountId);
+      }
       facts.corporateActions = facts.corporateActions.filter((c) => c.accountId !== accountId);
       const removedLotIds = new Set(
         projections.lots.filter((l) => l.accountId === accountId).map((l) => l.id),

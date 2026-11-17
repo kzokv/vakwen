@@ -26,6 +26,7 @@ import type {
   EnrichedCashLedgerEntry,
 } from "../types";
 import { CashLedgerDrawer } from "./CashLedgerDrawer";
+import { cashLedgerEntryTypeLabel as entryTypeLabel, ENTRY_TYPE_FILTER_OPTIONS, FX_TRANSFER_ENTRY_TYPES, isFxTransferCashType, type EntryTypeFilterOption } from "../utils/entryTypes";
 import { Card } from "../../../components/ui/Card";
 import { Button } from "../../../components/ui/Button";
 import {
@@ -78,34 +79,8 @@ function SortHeader({
   );
 }
 
-const ENTRY_TYPE_OPTIONS: CashLedgerEntryType[] = [
-  "TRADE_SETTLEMENT_IN",
-  "TRADE_SETTLEMENT_OUT",
-  "DIVIDEND_RECEIPT",
-  "DIVIDEND_DEDUCTION",
-  "MANUAL_ADJUSTMENT",
-  "REVERSAL",
-];
-
-const FX_TRANSFER_ENTRY_TYPES: CashLedgerEntryType[] = ["FX_TRANSFER_OUT", "FX_TRANSFER_IN"];
-type EntryTypeFilterOption = CashLedgerEntryType | "FX_TRANSFER";
-const ENTRY_TYPE_FILTER_OPTIONS: EntryTypeFilterOption[] = [...ENTRY_TYPE_OPTIONS, "FX_TRANSFER"];
-
-function entryTypeLabel(entryType: CashLedgerEntryType, dict: AppDictionary): string {
-  switch (entryType) {
-    case "TRADE_SETTLEMENT_IN": return dict.cashLedger.entryTypeTradeSettlementIn;
-    case "TRADE_SETTLEMENT_OUT": return dict.cashLedger.entryTypeTradeSettlementOut;
-    case "DIVIDEND_RECEIPT": return dict.cashLedger.entryTypeDividendReceipt;
-    case "DIVIDEND_DEDUCTION": return dict.cashLedger.entryTypeDividendDeduction;
-    case "MANUAL_ADJUSTMENT": return dict.cashLedger.entryTypeManualAdjustment;
-    case "FX_TRANSFER_OUT": return dict.cashLedger.entryTypeFxTransferOut;
-    case "FX_TRANSFER_IN": return dict.cashLedger.entryTypeFxTransferIn;
-    case "REVERSAL": return dict.cashLedger.entryTypeReversal;
-  }
-}
-
 function isFxTransferEntry(entry: EnrichedCashLedgerEntry): boolean {
-  return entry.entryType === "FX_TRANSFER_OUT" || entry.entryType === "FX_TRANSFER_IN";
+  return isFxTransferCashType(entry.entryType);
 }
 
 // KZO-167: the account chip / dropdown label uses `formatAccountOption`
@@ -271,6 +246,7 @@ export function CashLedgerClient({
       "dividend_posted",
       "dividend_updated",
       "currency_wallet_recomputed",
+      "capital_reduction_changed",
       "account_created",
       "account_updated",
       "account_soft_deleted",

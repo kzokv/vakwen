@@ -1,3 +1,5 @@
+import type { CapitalReductionFacts } from "./capitalReduction.js";
+import type { CapitalReductionInputDto, CapitalReductionCashEffectLinkDto } from "@vakwen/shared-types";
 import type { CurrencyCode, FeeProfile, InstrumentRef, InstrumentType, Lot, MarketCode } from "@vakwen/domain";
 import type {
   AccountDto,
@@ -78,12 +80,15 @@ export type CashLedgerEntryType =
   | "TRADE_SETTLEMENT_OUT"
   | "DIVIDEND_RECEIPT"
   | "DIVIDEND_DEDUCTION"
+  | "CAPITAL_REPAYMENT_RECEIPT"
+  | "CAPITAL_FRACTION_RECEIPT"
+  | "CAPITAL_REDUCTION_FEE_PAYMENT"
   | "MANUAL_ADJUSTMENT"
   | "FX_TRANSFER_OUT"
   | "FX_TRANSFER_IN"
   | "REVERSAL";
 
-export interface CashLedgerEntry {
+export interface CashLedgerEntry extends CapitalReductionCashEffectLinkDto {
   id: string;
   userId: string;
   accountId: string;
@@ -266,9 +271,10 @@ export interface CorporateAction {
   actionDate: string;
 }
 
-export type PositionActionType = "STOCK_DIVIDEND" | "SPLIT" | "REVERSE_SPLIT";
+export type PositionActionType = "STOCK_DIVIDEND" | "SPLIT" | "REVERSE_SPLIT" | "CASH_CAPITAL_REDUCTION";
 
 export interface PositionAction {
+  capitalReduction?: CapitalReductionInputDto;
   id: string;
   accountId: string;
   ticker: string;
@@ -332,6 +338,7 @@ export interface DailyPortfolioSnapshot {
 }
 
 export interface AccountingFacts {
+  capitalReductions?: CapitalReductionFacts;
   tradeEvents: BookedTradeEvent[];
   cashLedgerEntries: CashLedgerEntry[];
   dividendLedgerEntries: DividendLedgerEntry[];

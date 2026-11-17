@@ -1,3 +1,4 @@
+import { capitalReductionAsOfDate, loadCapitalReductionValuations, registeredCapitalReductionValuationKey } from "./capitalReductionValuation.js";
 import {
   calculateDividendCashReconciliation,
   resolveDividendStockEntitlement,
@@ -194,7 +195,7 @@ export async function buildTickerDetails(
   const settledTradingDay = input.getSettledTradingDay
     ? await input.getSettledTradingDay(resolvedMarketCode)
     : null;
-  const quote = input.tradingCalendar
+  let quote = input.tradingCalendar
     ? await buildQuoteForTicker({
         persistence: input.persistence,
         ticker: normalizedTicker,
@@ -206,6 +207,28 @@ export async function buildTickerDetails(
         now: input.now,
       })
     : buildQuoteFromBars(quoteBars, settledTradingDay);
+  const valuationDate = capitalReductionAsOfDate((input.now ?? new Date()).toISOString());
+  const capitalValuations = await loadCapitalReductionValuations(input.store,input.persistence,valuationDate);
+  const capitalActions = (input.store.accounting.facts.capitalReductions?.actions ?? []).filter((action) => action.ticker===normalizedTicker && scopedAccountIds.has(action.accountId));
+  const capitalByAccount = new Map<string, import("@vakwen/shared-types").CapitalReductionValuationDto>();
+  for (const accountId of scopedAccountIds) {
+    const action = capitalActions.filter((row) => row.accountId===accountId && row.status==="POSTED").sort((a,b) => b.revisions[b.revisions.length-1].input.announcement.conversionDate.localeCompare(a.revisions[a.revisions.length-1].input.announcement.conversionDate))[0];
+    const announced = input.store.accounting.facts.capitalReductions?.announcements.filter((row) => row.ticker===normalizedTicker && row.suspensionStartDate<=valuationDate).sort((a,b) => b.conversionDate.localeCompare(a.conversionDate) || b.version-a.version)[0];
+    const valuation = announced && (!action || announced.conversionDate>action.revisions[action.revisions.length-1].input.announcement.conversionDate)
+      ? capitalValuations.get(registeredCapitalReductionValuationKey(accountId,announced)) : action ? capitalValuations.get(action.id) : undefined;
+    if (valuation) capitalByAccount.set(accountId,valuation);
+  }
+  if (capitalByAccount.size) {
+    const values = [...capitalByAccount.values()];
+    const price = values.every((row) => row.sharePrice===values[0].sharePrice) ? values[0].sharePrice : null;
+    const allMarket = values.every((row) => row.status==="MARKET");
+    if (!allMarket || price===null) {
+      const source = values.some((row) => row.status==="SUSPENDED") ? "capital_reduction:suspended" : price===null ? "capital_reduction:incomplete" : "capital_reduction:official_reference";
+      quote = { ...quote,currentUnitPrice:price,previousClose:null,change:null,changePercent:null,
+        asOf:values[0].valuationDate,source,quoteStatus:price===null ? "missing" : "provisional",
+        priceState:{...buildMissingPriceState(resolvedMarketCode),source,asOfDate:values[0].valuationDate} };
+    }
+  }
   const chart = buildChart({
     allLocalBars,
     latestBarDate,
@@ -233,7 +256,8 @@ export async function buildTickerDetails(
   const costBasisAmount = filteredHoldings.reduce((sum, holding) => sum + holding.costBasisAmount, 0);
   const averageCostPerShare = quantity > 0 ? roundToDecimal(costBasisAmount / quantity, 4) : null;
   const marketValueAmount = quote.currentUnitPrice !== null ? roundToDecimal(quantity * quote.currentUnitPrice, 2) : null;
-  const unrealizedPnlAmount = marketValueAmount !== null ? roundToDecimal(marketValueAmount - costBasisAmount, 2) : null;
+  const generationCurrent = capitalActions.every((action) => action.generation.status==="current");
+  const unrealizedPnlAmount = generationCurrent && marketValueAmount !== null ? roundToDecimal(marketValueAmount - costBasisAmount, 2) : null;
   const realizedPnlAmount = filteredTransactions.reduce((sum, trade) => sum + (trade.realizedPnlAmount ?? 0), 0);
   const currency = filteredHoldings[0]?.currency ?? filteredTransactions[0]?.priceCurrency ?? currencyFor(resolvedMarketCode);
   const reportingCurrency = input.reportingCurrency ?? currencyFor(resolvedMarketCode);
@@ -287,6 +311,9 @@ export async function buildTickerDetails(
     asOf: quote.asOf ?? filteredTransactions[0]?.tradeDate ?? new Date().toISOString().slice(0, 10),
   });
   const accountBreakdown = rawAccountBreakdown
+    .map((row) => ({ ...row, capitalReductionValuation: capitalByAccount.get(row.accountId),
+      unrealizedPnlAmount: capitalActions.some((action) => action.accountId===row.accountId && action.generation.status!=="current") ? null : row.unrealizedPnlAmount,
+      reportingUnrealizedPnlAmount: capitalActions.some((action) => action.accountId===row.accountId && action.generation.status!=="current") ? null : row.reportingUnrealizedPnlAmount }))
     .map((row) => applyMarketAllocation(row, marketAllocationTotal))
     .sort((left, right) => right.costBasisAmount - left.costBasisAmount || left.accountId.localeCompare(right.accountId));
   const holdingGroup = buildHoldingGroup({
@@ -304,6 +331,7 @@ export async function buildTickerDetails(
   const buildRealizedPnlBreakdown = createRealizedPnlBreakdownResolver(input.store.accounting);
 
   const details: TickerDetailsDto = {
+    capitalReductions: capitalActions.map((action) => ({...action,valuation:capitalValuations.get(action.id) ?? action.valuation})),
     identity: {
       ticker: normalizedTicker,
       marketCode: resolvedMarketCode,

@@ -15,3 +15,4 @@ export * from "./SessionEndpoint.js";
 export * from "./SharesEndpoint.js";
 export * from "./SettingsEndpoint.js";
 export * from "./TransactionsEndpoint.js";
+export * from "./CapitalReductionsEndpoint.js";

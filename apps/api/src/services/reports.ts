@@ -1,3 +1,5 @@
+import { loadCapitalReductionValuations } from "./capitalReductionValuation.js";
+import { buildCapitalReductionPortfolioSummary } from "./capitalReductionReporting.js";
 import type { FastifyInstance } from "fastify";
 import { derivePortfolioCapabilities, resolveRangeBounds, roundToDecimal, type QuoteSnapshot } from "@vakwen/domain";
 import {
@@ -66,6 +68,7 @@ export interface BuildReportInput {
 }
 
 interface PreparedReportData {
+  capitalReductions: ReturnType<typeof buildCapitalReductionPortfolioSummary>;
   capabilities: PortfolioCapabilitiesDto;
   reportQuery: ReportQueryStateDto;
   translatedSummary: Awaited<ReturnType<typeof translateOverviewSummary>>;
@@ -125,6 +128,7 @@ export async function buildDailyReviewReport(
     .slice(0, 5);
 
   return {
+    capitalReductions: prepared.capitalReductions,
     capabilities: prepared.capabilities,
     query: prepared.reportQuery,
     summary: buildSummaryTotals(
@@ -163,6 +167,7 @@ export async function buildPortfolioReport(
       currentValueAmount: prepared.dailyCompatibleCurrentValueAmount,
       holdingGroups: prepared.translatedHoldingGroups,
       performance,
+      includesCapitalReductionPendingValue: true,
       asOf: prepared.asOf,
     })
     : undefined;
@@ -177,6 +182,7 @@ export async function buildPortfolioReport(
   const snapshotGapHoldings = await buildSnapshotGapHoldings(app, userId, allRows, prepared.expectedValuationDatesByMarket, prepared.scopedStore);
 
   return {
+    capitalReductions: prepared.capitalReductions,
     capabilities: prepared.capabilities,
     query: prepared.reportQuery,
     summary: buildSummaryTotals(
@@ -230,6 +236,7 @@ export async function buildMarketReport(
       currentValueAmount: prepared.dailyCompatibleCurrentValueAmount,
       holdingGroups: prepared.translatedHoldingGroups,
       performance,
+      includesCapitalReductionPendingValue: true,
       asOf: prepared.asOf,
     })
     : undefined;
@@ -242,6 +249,7 @@ export async function buildMarketReport(
   const snapshotGapHoldings = await buildSnapshotGapHoldings(app, userId, allRows, prepared.expectedValuationDatesByMarket, prepared.scopedStore);
 
   return {
+    capitalReductions: prepared.capitalReductions,
     capabilities: prepared.capabilities,
     query: prepared.reportQuery,
     summary: buildSummaryTotals(
@@ -330,7 +338,8 @@ async function prepareReportData(
   });
   const quotes = Object.values(snapshotMap).filter((quote): quote is ResolvedQuoteSnapshot => quote !== null);
   const asOf = rangeBounds.endDate;
-  const overview = buildDashboardOverview(scopedStore, { integrityIssue: null, quotes, summaryAsOf: asOf });
+  const capitalReductionValuations = await loadCapitalReductionValuations(scopedStore, app.persistence, asOf);
+  const overview = buildDashboardOverview(scopedStore, { integrityIssue: null, quotes, summaryAsOf: asOf, capitalReductionValuations });
   const translatedSummary = await translateOverviewSummary(
     overview.summary,
     overview.holdings,
@@ -387,6 +396,7 @@ async function prepareReportData(
     asOf,
   };
   return {
+    capitalReductions: overview.capitalReductions,
     capabilities,
     reportQuery,
     translatedSummary,
@@ -465,6 +475,9 @@ function scopeStore(store: Store, scope: ReportScope): Store {
       facts: {
         ...store.accounting.facts,
         tradeEvents: scopedTrades,
+        positionActions: store.accounting.facts.positionActions.filter((row) => row.marketCode === scope && scopedAccountIds.has(row.accountId)),
+        cashLedgerEntries: store.accounting.facts.cashLedgerEntries.filter((row) => scopedAccountIds.has(row.accountId)),
+        capitalReductions: store.accounting.facts.capitalReductions ? { ...store.accounting.facts.capitalReductions, announcements: scope === "TW" ? store.accounting.facts.capitalReductions.announcements.filter((row) => scopedTickers.has(row.ticker)) : [], actions: scope === "TW" ? store.accounting.facts.capitalReductions.actions.filter((row) => scopedAccountIds.has(row.accountId)) : [] } : undefined,
         dividendLedgerEntries: scopedDividendLedgerEntries,
         dividendDeductionEntries: store.accounting.facts.dividendDeductionEntries
           .filter((entry) => scopedDividendLedgerIds.has(entry.dividendLedgerEntryId)),
@@ -592,6 +605,7 @@ function mapHoldingRows(groups: Awaited<ReturnType<typeof translateOverviewHoldi
       fxRateToReporting,
       dailyChangeAmount: translateDailyChange(group),
       dailyChangePercent: group.changePercent,
+      ...(group.capitalReductionValuation ? { capitalReductionValuation: group.capitalReductionValuation } : {}),
       quoteStatus: group.quoteStatus,
       fxStatus: group.fxStatus,
       priceState: group.priceState,
